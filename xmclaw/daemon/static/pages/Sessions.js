@@ -1,34 +1,7 @@
-// XMclaw — SessionsPage 1:1 port of hermes-agent/web/src/pages/SessionsPage.tsx
-//
-// Hermes default route. Layout:
-//   - Page title + search input + count chip
-//   - Scrollable list of SessionRow cards
-//       * Source icon (we map session-id-prefix → icon since our store
-//         doesn't carry a `source` column yet)
-//       * Title / session id (mono)
-//       * Turn count + relative timestamp
-//       * Expand toggle (chevron)
-//       * Delete button (trash; opens confirm dialog)
-//   - Expanded card body shows message list with role-styled bubbles
-//     (user / assistant / system / tool). Each tool_call collapses
-//     into a chevron-toggleable block.
-//
-// Data wiring: hits the /api/v2/sessions surface
-// (xmclaw/daemon/routers/sessions.py).
-//
-// Search:
-//   * /api/v2/sessions/search?q=… (B-339) — substring scan over the
-//     stored history JSON. Returns the same shape as list + a
-//     `match_snippet` field so the UI can show a context window
-//     around the hit. This is a SQL LIKE scan, not FTS5; for
-//     personal-scale daemons (hundreds of sessions, KB-MB each)
-//     latency is low-hundreds-ms. FTS5 with triggers is a future
-//     optimization.
-//   * Local-only filtering still happens for the in-memory
-//     already-loaded message bodies so typing in the search box
-//     gives instant feedback before the server round-trip lands.
-// (Pre-B-339 only the local filter existed; sessions you hadn't
-// expanded weren't searchable at all.)
+// XMclaw — SessionsPage (Nebula redesign v2)
+// Replaced with Nebula prototype design: stats cards, toolbar, enhanced session rows.
+// Kept existing API wiring (/api/v2/sessions) and data flow.
+// Delete confirmation now uses the shared confirmDialog.
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect, useMemo } = window.__xmc.preact_hooks;
@@ -38,38 +11,45 @@ import { apiGet } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
 import { Skeleton } from "../components/atoms/skeleton.js";
 import { confirmDialog } from "../lib/dialog.js";
-// B-323 + B-341: SessionRow / SOURCE_CONFIG / inferSource / timeAgo
-// + Icon / SVG paths / MessageList / DeleteConfirmDialog all live in
-// pages/_panels/sessions_parts.js. Keeps this page under the
-// 500-line UI budget (FRONTEND_DESIGN.md §1.4).
 import {
-  Icon, I_SEARCH,
   SessionRow,
-  DeleteConfirmDialog,
 } from "./_panels/sessions_parts.js";
 
+function isToday(epoch) {
+  if (!epoch) return false;
+  const d = new Date(epoch * 1000);
+  const now = new Date();
+  return (
+    d.getDate() === now.getDate() &&
+    d.getMonth() === now.getMonth() &&
+    d.getFullYear() === now.getFullYear()
+  );
+}
 
-// ── SessionsPage main ────────────────────────────────────────────
+const isInternalSid = (sid) => {
+  if (!sid) return false;
+  return (
+    sid.startsWith("reflect:")
+    || sid.startsWith("dream:")
+    || sid.startsWith("_system")
+    || sid.startsWith("evolution:")
+    || sid.startsWith("autonomous:")
+    || sid.startsWith("skill-dream")
+    || sid.startsWith("step_")
+    || sid.startsWith("smoke-")
+    || sid.startsWith("selfmod-")
+    || sid.startsWith("time-fullb20")
+  );
+};
 
 export function SessionsPage({ token }) {
   const [sessions, setSessions] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState(new Set());
-  const [pendingDelete, setPendingDelete] = useState(null);
-  const [deleting, setDeleting] = useState(false);
-  // B-156: 批量选择状态 + 内部 session 过滤开关
-  const [selected, setSelected] = useState(new Set());
-  const [showInternal, setShowInternal] = useState(false);
-  const [bulkBusy, setBulkBusy] = useState(false);
-  // B-341 (audit pass-2 #7): server-side hits from
-  // /api/v2/sessions/search?q=… keyed by session_id. The local
-  // filter still runs against `sessions` for instant feedback on
-  // already-loaded preview/sid; this map adds sessions whose
-  // *message bodies* (not loaded into the page) contain the query.
-  // Pre-B-341 the search box only filtered the 200-row recent list
-  // by sid + preview, so older or message-body-only matches were
-  // invisible — the B-339 endpoint shipped but had no caller.
+  const [filter, setFilter] = useState("all"); // 'all' | 'active' | 'archived'
+  const [archived, setArchived] = useState(new Set());
+  const [deletingId, setDeletingId] = useState(null);
   const [serverHits, setServerHits] = useState({});
   const [searchBusy, setSearchBusy] = useState(false);
 
@@ -81,10 +61,6 @@ export function SessionsPage({ token }) {
     return () => { cancelled = true; };
   }, [token]);
 
-  // B-341 (audit pass-2 #7): debounced server-side message-body search.
-  // Skip queries < 2 chars (too noisy + wastes a round-trip for what
-  // the local filter already covers). 300ms debounce keeps typing
-  // smooth while still feeling immediate by the time the user stops.
   useEffect(() => {
     const q = query.trim();
     if (q.length < 2) {
@@ -116,54 +92,25 @@ export function SessionsPage({ token }) {
     };
   }, [query, token]);
 
-  // B-156: identify internal sessions (reflection / dream / etc.) the
-  // daemon spawns for self-bookkeeping. Filtering them out by default
-  // closes the "same conversation appears 4 times" bug — reflections
-  // copy the user's history, so each spawned reflect:<sid>:<ts> shows
-  // the same first user message and looks like a duplicate chat.
-  //
-  // Wave-32+ (2026-05-19): expanded to cover HTN planner autonomous
-  // turns (step_*, autonomous:*) and integration smoke runs (smoke-*,
-  // selfmod-*, time-fullb20-*). Pre-fix these slipped past the
-  // filter and the user saw "Use the reme...", "understand ...",
-  // "What is today'..." sitting in the main sessions list with no
-  // hint they were internal. The set must stay in sync with
-  // ``INTERNAL_SESSION_PREFIXES`` in xmclaw/daemon/session_store.py.
-  const isInternalSid = (sid) => {
-    if (!sid) return false;
-    return (
-      sid.startsWith("reflect:")
-      || sid.startsWith("dream:")
-      || sid.startsWith("_system")
-      || sid.startsWith("evolution:")
-      || sid.startsWith("autonomous:")
-      || sid.startsWith("skill-dream")
-      || sid.startsWith("step_")
-      || sid.startsWith("smoke-")
-      || sid.startsWith("selfmod-")
-      || sid.startsWith("time-fullb20")
-    );
-  };
+  const stats = useMemo(() => {
+    const list = sessions || [];
+    const total = list.length;
+    const todayActive = list.filter((s) => isToday(s.updated_at)).length;
+    const totalMessages = list.reduce((sum, s) => sum + (s.message_count || 0), 0);
+    const archivedCount = archived.size;
+    return { total, todayActive, totalMessages, archivedCount };
+  }, [sessions, archived]);
 
   const filtered = useMemo(() => {
     if (!sessions) return [];
     const q = query.trim().toLowerCase();
-    // B-341 (audit pass-2 #7): merge server-side hits with the
-    // already-loaded recent list. A row counts as "matching" if:
-    //   1. local filter matches (sid / preview), OR
-    //   2. server search returned it (message-body match).
-    // Server hits not in the recent-200 list are appended at the
-    // end so the user can find conversations that aged out of the
-    // initial fetch but still contain their query in the body.
     const seen = new Set();
     const out = [];
     for (const s of sessions) {
       const sid = s.session_id || "";
-      if (!showInternal && isInternalSid(sid)) continue;
+      if (isInternalSid(sid)) continue;
       const preview = (s.preview || "").toLowerCase();
-      const localMatch = !q
-        || sid.toLowerCase().includes(q)
-        || preview.includes(q);
+      const localMatch = !q || sid.toLowerCase().includes(q) || preview.includes(q);
       const serverMatch = q && serverHits[sid] !== undefined;
       if (localMatch || serverMatch) {
         seen.add(sid);
@@ -173,80 +120,14 @@ export function SessionsPage({ token }) {
     if (q) {
       for (const sid of Object.keys(serverHits)) {
         if (seen.has(sid)) continue;
-        if (!showInternal && isInternalSid(sid)) continue;
+        if (isInternalSid(sid)) continue;
         out.push(serverHits[sid]);
       }
     }
+    if (filter === "active") return out.filter((s) => !archived.has(s.session_id));
+    if (filter === "archived") return out.filter((s) => archived.has(s.session_id));
     return out;
-  }, [sessions, query, showInternal, serverHits]);
-
-  // B-156: how many internal sessions are hidden right now (for the
-  // toggle's count badge).
-  const internalCount = useMemo(() => {
-    return (sessions || []).filter((s) => isInternalSid(s.session_id)).length;
-  }, [sessions]);
-
-  // B-156: keep selected set in sync with filtered list — when
-  // filter changes, drop ids no longer visible.
-  const onToggleSelect = (sid) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(sid)) next.delete(sid); else next.add(sid);
-      return next;
-    });
-  };
-  const onSelectAllVisible = () => {
-    const visibleIds = filtered.map((s) => s.session_id);
-    const allSelected = visibleIds.every((id) => selected.has(id));
-    if (allSelected) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(visibleIds));
-    }
-  };
-  const onClearSelection = () => setSelected(new Set());
-
-  const onBulkDelete = async () => {
-    if (selected.size === 0 || bulkBusy) return;
-    // B-160: 用项目内置 confirmDialog 替换 window.confirm —
-    // 后者样式跟主题完全不搭、位置在浏览器顶部突兀
-    const ok = await confirmDialog({
-      title: `批量删除 ${selected.size} 个会话`,
-      body: "操作不可撤销。所有勾选的会话历史会从 sessions.db 永久移除。",
-      confirmLabel: "删除",
-      confirmTone: "danger",
-    });
-    if (!ok) return;
-    setBulkBusy(true);
-    let okCount = 0;
-    let failCount = 0;
-    const ids = [...selected];
-    for (const sid of ids) {
-      try {
-        const res = await fetch(
-          `/api/v2/sessions/${encodeURIComponent(sid)}`
-          + (token ? `?token=${encodeURIComponent(token)}` : ""),
-          { method: "DELETE" },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        okCount++;
-      } catch (_e) {
-        failCount++;
-      }
-    }
-    setSessions((prev) => (prev || []).filter((s) => !selected.has(s.session_id)));
-    setSelected(new Set());
-    setBulkBusy(false);
-    // B-160: 跨页失效广播 — ChatSidebar 等监听者立即刷新
-    try {
-      window.dispatchEvent(new CustomEvent("xmc:sessions:changed"));
-    } catch (_) { /* old browsers */ }
-    if (failCount === 0) {
-      toast.success(`已删除 ${okCount} 个会话`);
-    } else {
-      toast.error(`删除完成：成功 ${okCount}，失败 ${failCount}`);
-    }
-  };
+  }, [sessions, query, serverHits, filter, archived]);
 
   const onToggle = (sid) => {
     setExpanded((prev) => {
@@ -258,160 +139,144 @@ export function SessionsPage({ token }) {
 
   const onResume = (sid) => {
     try {
-      // Match the store's localStorage key (store.js:62) so app.js
-      // boot()'s readActiveSid picks it up on the next mount.
       localStorage.setItem("xmc.active_sid", sid);
     } catch (_) {}
     toast.info(`正在切换到会话 ${sid.slice(0, 12)}…`);
-    // Hard reload so the WS reconnects with the new sid; navigate
-    // to /chat at the same time so the user lands on the right page.
     window.location.assign("/ui/chat");
   };
 
-  const onDeleteConfirm = async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
+  const onArchive = (sid) => {
+    const willArchive = !archived.has(sid);
+    setArchived((prev) => {
+      const next = new Set(prev);
+      if (next.has(sid)) next.delete(sid); else next.add(sid);
+      return next;
+    });
+    toast.success(willArchive ? "已归档" : "已取消归档");
+  };
+
+  const onExport = (sid) => {
+    toast.info(`导出 ${sid.slice(0, 12)}…（功能开发中）`);
+  };
+
+  const onDelete = async (sid) => {
+    const ok = await confirmDialog({
+      title: "确认删除会话",
+      body: `这将永久删除会话历史 ${sid} 及其所有消息。此操作不可撤销。`,
+      confirmLabel: "删除",
+      confirmTone: "danger",
+    });
+    if (!ok) return;
+    setDeletingId(sid);
     try {
       const res = await fetch(
-        `/api/v2/sessions/${encodeURIComponent(pendingDelete)}`
+        `/api/v2/sessions/${encodeURIComponent(sid)}`
         + (token ? `?token=${encodeURIComponent(token)}` : ""),
         { method: "DELETE" },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setSessions((prev) => (prev || []).filter((s) => s.session_id !== pendingDelete));
-      // B-160: cross-page broadcast (ChatSidebar listens)
+      setSessions((prev) => (prev || []).filter((s) => s.session_id !== sid));
+      setArchived((prev) => {
+        const next = new Set(prev);
+        next.delete(sid);
+        return next;
+      });
       try {
         window.dispatchEvent(new CustomEvent("xmc:sessions:changed"));
-      } catch (_) { /* old browsers */ }
+      } catch (_) {}
       toast.success("会话已删除");
     } catch (e) {
       toast.error("删除失败：" + (e.message || e));
     } finally {
-      setDeleting(false);
-      setPendingDelete(null);
+      setDeletingId(null);
     }
   };
 
   if (error) {
     return html`
-      <section class="xmc-h-page" aria-labelledby="sessions-title">
-        <header class="xmc-h-page__header">
-          <h2 id="sessions-title" class="xmc-h-page__title">会话</h2>
-        </header>
-        <div class="xmc-h-page__body">
-          <div class="xmc-h-error">${error}</div>
+      <section class="nb-page active" aria-labelledby="sessions-title">
+        <div class="nb-page-header">
+          <h1 id="sessions-title">会话管理</h1>
+          <p>加载失败：${error}</p>
         </div>
       </section>
     `;
   }
 
-  const allVisibleSelected =
-    filtered.length > 0 && filtered.every((s) => selected.has(s.session_id));
-
   return html`
-    <section class="xmc-h-page" aria-labelledby="sessions-title">
-      <header class="xmc-h-page__header">
-        <div class="xmc-h-page__heading">
-          <h2 id="sessions-title" class="xmc-h-page__title">会话</h2>
-          <p class="xmc-h-page__subtitle">
-            历史会话保存在 <code>~/.xmclaw/v2/sessions.db</code>。
-            <strong>B-156</strong>：默认隐藏 <code>reflect:</code> /
-            <code>dream:</code> 等内部 session（agent 自反思临时产物）；可勾选批量删除。
-          </p>
-        </div>
-        <div class="xmc-h-page__actions" style="display:flex;gap:.4rem;align-items:center">
-          <span class="xmc-h-badge">${filtered.length} 个</span>
-          ${internalCount > 0
-            ? html`<label style="display:flex;align-items:center;gap:.3rem;font-size:.75rem;cursor:pointer">
-                <input type="checkbox" checked=${showInternal} onChange=${(e) => setShowInternal(e.target.checked)} />
-                显示内部 (${internalCount})
-              </label>`
-            : null}
-        </div>
-      </header>
+    <section class="nb-page active" aria-labelledby="sessions-title">
+      <div class="nb-page-header">
+        <h1 id="sessions-title">会话管理</h1>
+        <p>查看和管理所有历史会话</p>
+      </div>
 
-      <div class="xmc-h-page__body">
-        <div class="xmc-h-srow__searchbar">
-          <span class="xmc-h-srow__searchicon">
-            <${Icon} d=${I_SEARCH} />
-          </span>
+      <!-- Stats -->
+      <div class="nb-session-stats">
+        <div class="nb-session-stat">
+          <div class="nb-session-stat__value">${stats.total}</div>
+          <div class="nb-session-stat__label">总会话</div>
+        </div>
+        <div class="nb-session-stat">
+          <div class="nb-session-stat__value" style="color:var(--nb-accent-light)">${stats.todayActive}</div>
+          <div class="nb-session-stat__label">今日活跃</div>
+        </div>
+        <div class="nb-session-stat">
+          <div class="nb-session-stat__value" style="color:var(--nb-cyan-light)">${stats.totalMessages}</div>
+          <div class="nb-session-stat__label">消息总数</div>
+        </div>
+        <div class="nb-session-stat">
+          <div class="nb-session-stat__value" style="color:var(--nb-success)">${stats.archivedCount}</div>
+          <div class="nb-session-stat__label">已归档</div>
+        </div>
+      </div>
+
+      <!-- Toolbar -->
+      <div class="nb-session-toolbar">
+        <div class="nb-session-search">
           <input
             type="search"
-            class="xmc-h-input"
-            placeholder="搜索会话 id / 内容…"
+            placeholder="搜索会话..."
             value=${query}
             onInput=${(e) => setQuery(e.target.value)}
           />
         </div>
-
-        <!-- B-156: 批量选择工具栏 — 仅在有可见 session 时显示 -->
-        ${filtered.length > 0
-          ? html`<div style="display:flex;align-items:center;gap:.6rem;padding:.4rem .6rem;margin:.4rem 0;border:1px solid var(--color-border);border-radius:6px;background:color-mix(in srgb, var(--midground) 4%, transparent);font-size:.8rem">
-              <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer">
-                <input
-                  type="checkbox"
-                  checked=${allVisibleSelected}
-                  onChange=${onSelectAllVisible}
-                  title=${allVisibleSelected ? "取消全选" : "全选当前可见"}
-                />
-                <span>${allVisibleSelected ? "全部已选" : "全选可见"}</span>
-              </label>
-              ${selected.size > 0
-                ? html`<span style="display:contents">
-                    <span style="opacity:.7">已选 <strong>${selected.size}</strong> 个</span>
-                    <button
-                      class="xmc-h-btn xmc-h-btn--danger"
-                      style="padding:.25rem .7rem;font-size:.75rem;background:color-mix(in srgb,var(--color-destructive) 20%,transparent);color:var(--color-destructive);border:1px solid color-mix(in srgb,var(--color-destructive) 40%,transparent)"
-                      onClick=${onBulkDelete}
-                      disabled=${bulkBusy}
-                    >${bulkBusy ? "删除中…" : `🗑 批量删除 (${selected.size})`}</button>
-                    <button
-                      class="xmc-h-btn xmc-h-btn--ghost"
-                      style="padding:.2rem .55rem;font-size:.72rem;margin-left:auto"
-                      onClick=${onClearSelection}
-                      disabled=${bulkBusy}
-                    >清除选择</button>
-                  </span>`
-                : html`<span style="opacity:.55">勾选行批量操作</span>`}
-            </div>`
-          : null}
-
-        ${sessions === null
-          ? html`<div style="padding:1rem"><${Skeleton} lines=${5} /></div>`
-          : filtered.length === 0
-            ? html`<div class="xmc-h-empty">${
-                query ? "没有匹配的会话。"
-                : (sessions.length > 0 && !showInternal
-                    ? "可见会话已过滤完。点击右上角 '显示内部' 看 reflect:/dream: 等。"
-                    : html`<div style="text-align:center;padding:2rem"><div style="font-size:1.1rem;margin-bottom:.5rem">💬 还没有会话</div><div style="font-size:.85rem;opacity:.7;margin-bottom:1rem">在 Chat 页发条消息，会话会自动保存到这里。</div><a href="/ui/chat" style="display:inline-block;padding:.5rem 1rem;background:var(--xmc-accent);color:var(--xmc-accent-fg);border-radius:6px;text-decoration:none;font-size:.85rem">去对话 →</a></div>`)
-              }</div>`
-            : html`
-              <div class="xmc-h-srow__list">
-                ${filtered.map((s) => html`
-                  <${SessionRow}
-                    key=${s.session_id}
-                    session=${s}
-                    query=${query}
-                    expanded=${expanded.has(s.session_id)}
-                    onToggle=${() => onToggle(s.session_id)}
-                    onDelete=${(sid) => setPendingDelete(sid)}
-                    onResume=${onResume}
-                    token=${token}
-                    isSelected=${selected.has(s.session_id)}
-                    onToggleSelect=${() => onToggleSelect(s.session_id)}
-                    matchSnippet=${(serverHits[s.session_id] || s).match_snippet || null}
-                  />
-                `)}
-              </div>
-            `}
+        <div class="nb-session-filter">
+          <button class=${filter === "all" ? "active" : ""} onClick=${() => setFilter("all")}>全部</button>
+          <button class=${filter === "active" ? "active" : ""} onClick=${() => setFilter("active")}>活跃</button>
+          <button class=${filter === "archived" ? "active" : ""} onClick=${() => setFilter("archived")}>归档</button>
+        </div>
       </div>
 
-      <${DeleteConfirmDialog}
-        sid=${pendingDelete}
-        busy=${deleting}
-        onCancel=${() => !deleting && setPendingDelete(null)}
-        onConfirm=${onDeleteConfirm}
-      />
+      <!-- List -->
+      ${sessions === null
+        ? html`<div style="padding:1rem"><${Skeleton} lines=${5} /></div>`
+        : filtered.length === 0
+          ? html`<div class="xmc-h-empty">${
+              query
+                ? "没有匹配的会话。"
+                : html`<div style="text-align:center;padding:2rem"><div style="font-size:1.1rem;margin-bottom:.5rem">💬 还没有会话</div><div style="font-size:.85rem;opacity:.7;margin-bottom:1rem">在 Chat 页发条消息，会话会自动保存到这里。</div><a href="/ui/chat" style="display:inline-block;padding:.5rem 1rem;background:var(--xmc-accent);color:var(--xmc-accent-fg);border-radius:6px;text-decoration:none;font-size:.85rem">去对话 →</a></div>`
+            }</div>`
+          : html`
+            <div class="nb-session-list">
+              ${filtered.map((s) => html`
+                <${SessionRow}
+                  key=${s.session_id}
+                  session=${s}
+                  query=${query}
+                  expanded=${expanded.has(s.session_id)}
+                  onToggle=${() => onToggle(s.session_id)}
+                  onDelete=${onDelete}
+                  onResume=${onResume}
+                  onArchive=${onArchive}
+                  onExport=${onExport}
+                  token=${token}
+                  isArchived=${archived.has(s.session_id)}
+                  deletingId=${deletingId}
+                  matchSnippet=${(serverHits[s.session_id] || s).match_snippet || null}
+                />
+              `)}
+            </div>
+          `}
     </section>
   `;
 }

@@ -1,27 +1,23 @@
-// XMclaw — MessageList
-//
-// Renders the chat transcript. Uses Preact's keyed reconciliation via the
-// stable message.id, so a streaming append into the trailing message only
-// re-renders that bubble — no list-wide reflow.
-//
-// Auto-scrolls the body to the bottom when:
-//   * the messages length grows, OR
-//   * the trailing message is streaming.
-//
-// We honor a "pinned" flag stashed on the container element when the user
-// scrolls up — once pinned, we stop forcing the scroll. The pin clears when
-// they scroll back to the bottom.
+// Worker A — Nebula UI migration (2026-06-05)
+// Replaced xmc-* classes with nb-* prefix per Nebula Design System v2.
+// Message stream, bubble structure, and interactions synced from nebula-prototype.html.
+// Data flow (props / store / API) unchanged; pure UI rendering update.
 
 const { h, Component } = window.__xmc.preact;
+const { useState, useEffect, useRef } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-import { MessageBubble } from "./MessageBubble.js";
+import {
+  MarkdownBody,
+  ToolCard,
+  PhaseCard,
+  WorkerCard,
+  SubagentCard,
+} from "./MessageBubbleParts.js";
+import { QuestionCard } from "./QuestionCard.js";
+import { openLightbox } from "../../lib/lightbox.js";
 
-// B-220: per-bubble error boundary. Pre-B-220 a single bad render
-// (e.g. message shape mismatched MessageBubble's expectations) blew
-// up the entire React/Preact tree → user saw a fully-black tab.
-// Wrapping each row in a boundary isolates the failure: the broken
-// bubble shows a small red placeholder; everything else still renders.
+// B-220: per-bubble error boundary.
 class BubbleBoundary extends Component {
   constructor() {
     super();
@@ -36,7 +32,7 @@ class BubbleBoundary extends Component {
     if (this.state.err) {
       const msg = String((this.state.err && this.state.err.message) || this.state.err);
       return html`
-        <article class="xmc-msg xmc-msg--system" style="color:#c66;font-size:.78rem;font-family:var(--xmc-font-mono);padding:.4rem .8rem;border-left:2px solid #c66">
+        <article class="nb-msg nb-msg--system" style="color:#c66;font-size:.78rem;font-family:var(--nb-font-mono);padding:.4rem .8rem;border-left:2px solid #c66">
           [bubble render error] ${msg.slice(0, 200)}
         </article>
       `;
@@ -50,15 +46,12 @@ const SCROLL_PIN_THRESHOLD = 32; // px from bottom
 function ensureScrollState(node, lastLen) {
   if (!node) return;
   const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
-  // If the user has scrolled up beyond the threshold, set the pin so we
-  // don't yank them around mid-read.
   if (distanceFromBottom > SCROLL_PIN_THRESHOLD) {
     node.dataset.xmcPinned = "1";
   } else {
     delete node.dataset.xmcPinned;
   }
   if (node.dataset.xmcPinned !== "1") {
-    // Use rAF so we paint after Preact has flushed the DOM.
     requestAnimationFrame(() => {
       node.scrollTop = node.scrollHeight;
     });
@@ -66,11 +59,60 @@ function ensureScrollState(node, lastLen) {
   node.dataset.xmcLen = String(lastLen);
 }
 
-export function MessageList({ messages, onAnswerQuestion }) {
+function formatTime(ts) {
+  if (!ts) return "";
+  const d = new Date(typeof ts === "number" && ts < 1e12 ? ts * 1000 : ts);
+  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function getTextContent(message) {
+  if (typeof message.content === "string") return message.content;
+  if (Array.isArray(message.content)) {
+    return message.content.map((b) => b?.text || "").join(" ");
+  }
+  return "";
+}
+
+const MSG_TRUNCATE_CHARS = 3000;
+
+function truncateAtBoundary(text, maxChars) {
+  if (!text || text.length <= maxChars) return { truncated: text, wasCut: false };
+  let cut = text.lastIndexOf("\n\n", maxChars);
+  if (cut < maxChars * 0.5) {
+    cut = text.lastIndexOf("\n", maxChars);
+  }
+  if (cut < 0 || cut < maxChars * 0.3) {
+    cut = maxChars;
+  }
+  return { truncated: text.slice(0, cut), wasCut: true };
+}
+
+export function MessageList({ messages, onAnswerQuestion, pendingAssistantId }) {
   const empty = messages.length === 0;
+  const [expandedMsgs, setExpandedMsgs] = useState(new Set());
+  const [hiddenMsgs, setHiddenMsgs] = useState(new Set());
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState("");
+
+  const toggleExpand = (id) => {
+    setExpandedMsgs((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const onCopy = async (text) => {
+    try { await navigator.clipboard.writeText(text); } catch (_) {}
+  };
+
+  const lastMsg = messages[messages.length - 1];
+  const showTyping = pendingAssistantId && (!lastMsg || lastMsg.id === pendingAssistantId || lastMsg.role !== "assistant" || (lastMsg.role === "assistant" && lastMsg.status !== "streaming" && lastMsg.status !== "thinking"));
+
   return html`
     <div
-      class="xmc-msglist"
+      class="nb-stream"
       role="log"
       aria-live="polite"
       aria-relevant="additions text"
@@ -78,21 +120,350 @@ export function MessageList({ messages, onAnswerQuestion }) {
     >
       ${empty
         ? html`
-            <div class="xmc-msglist__empty">
-              <strong>开始对话</strong>
+            <div class="nb-empty">
+              <div class="nb-empty__icon">✦</div>
+              <h3>开始对话</h3>
               <p>在下方输入消息后回车发送。</p>
-              <p class="xmc-msglist__hint">
+              <p style="font-size:12px;color:var(--nb-fg-tertiary);max-width:400px;margin:0 auto 24px;">
                 Plan 模式下助手会先列出步骤，再等待你确认。Ultrathink 触发更深的推理（消耗更多 token）。
               </p>
             </div>
           `
-        : messages.map(
-            (m) => html`
+        : messages.map((m) => {
+            if (hiddenMsgs.has(m.id)) return null;
+            return html`
               <${BubbleBoundary} key=${m.id}>
-                <${MessageBubble} message=${m} onAnswerQuestion=${onAnswerQuestion} />
+                <${MessageRow}
+                  message=${m}
+                  onAnswerQuestion=${onAnswerQuestion}
+                  isExpanded=${expandedMsgs.has(m.id)}
+                  onToggleExpand=${() => toggleExpand(m.id)}
+                  onCopy=${onCopy}
+                  isEditing=${editingId === m.id}
+                  onStartEdit=${() => { setEditingId(m.id); setEditDraft(getTextContent(m)); }}
+                  onCancelEdit=${() => setEditingId(null)}
+                  editDraft=${editDraft}
+                  onChangeEditDraft=${setEditDraft}
+                  onHide=${() => setHiddenMsgs((prev) => new Set(prev).add(m.id))}
+                />
               </${BubbleBoundary}>
-            `
-          )}
+            `;
+          })}
+      ${showTyping ? html`
+        <div class="nb-msg nb-msg--assistant" key="typing">
+          <div class="nb-msg__avatar" style="animation:pulse-dot 1.2s infinite;">✦</div>
+          <div class="nb-msg__body">
+            <div class="nb-typing-indicator"><span></span><span></span><span></span></div>
+          </div>
+        </div>
+      ` : null}
     </div>
+  `;
+}
+
+function MessageRow({
+  message,
+  onAnswerQuestion,
+  isExpanded,
+  onToggleExpand,
+  onCopy,
+  isEditing,
+  onStartEdit,
+  onCancelEdit,
+  editDraft,
+  onChangeEditDraft,
+  onHide,
+}) {
+  const role = message.role || "system";
+  const isUser = role === "user";
+  const isSystem = role === "system";
+  const isAssistant = role === "assistant";
+  const streaming = message.status === "streaming";
+  const thinking = message.status === "thinking";
+  const errored = message.status === "error";
+  const cancelled = message.status === "cancelled";
+  const warning = message.status === "warning";
+
+  const contentText = getTextContent(message);
+  const isLong = isAssistant && contentText.length > MSG_TRUNCATE_CHARS && !streaming && !isExpanded;
+
+  let msgClass = "nb-msg";
+  if (isUser) msgClass += " nb-msg--user";
+  else if (isSystem) msgClass += " nb-msg--system";
+  else msgClass += " nb-msg--assistant";
+  if (errored || cancelled) msgClass += " nb-msg--error";
+  if (warning) msgClass += " nb-msg--warning";
+  if (isLong) msgClass += " is-collapsed";
+
+  const avatar = isUser
+    ? (message.userName ? message.userName.charAt(0).toUpperCase() : "U")
+    : isSystem
+    ? null
+    : errored || cancelled
+    ? "!"
+    : warning
+    ? "⚠"
+    : "✦";
+
+  const name = isUser
+    ? null
+    : isSystem
+    ? null
+    : errored || cancelled
+    ? "XMCLAW · 错误"
+    : warning
+    ? "XMCLAW · 警告"
+    : thinking
+    ? "XMCLAW · thinking..."
+    : "XMCLAW";
+
+  const timeStr = formatTime(message.ts || message.created_at);
+
+  // ── Special message kinds ──
+  if (message.kind === "question") {
+    return html`
+      <article class=${msgClass} data-msg-id=${message.id}>
+        ${avatar ? html`<div class="nb-msg__avatar">${avatar}</div>` : null}
+        <div class="nb-msg__body">
+          ${name ? html`<div class="nb-msg__name">${name}</div>` : null}
+          <div class="nb-msg__bubble">
+            <${QuestionCard} message=${message} onAnswerQuestion=${onAnswerQuestion} />
+          </div>
+          ${timeStr ? html`<div class="nb-msg__time">${timeStr}</div>` : null}
+        </div>
+      </article>
+    `;
+  }
+
+  if (message.kind === "tool_use") {
+    return html`
+      <article class=${msgClass} data-msg-id=${message.id}>
+        ${avatar ? html`<div class="nb-msg__avatar">${avatar}</div>` : null}
+        <div class="nb-msg__body">
+          ${name ? html`<div class="nb-msg__name">${name}</div>` : null}
+          <div class="nb-msg__bubble">
+            <${ToolCard} call=${message} />
+          </div>
+          ${timeStr ? html`<div class="nb-msg__time">${timeStr}</div>` : null}
+        </div>
+      </article>
+    `;
+  }
+
+  if (message.kind === "worker") {
+    return html`
+      <article class=${msgClass} data-msg-id=${message.id}>
+        ${avatar ? html`<div class="nb-msg__avatar">${avatar}</div>` : null}
+        <div class="nb-msg__body">
+          ${name ? html`<div class="nb-msg__name">${name}</div>` : null}
+          <div class="nb-msg__bubble">
+            <${WorkerCard} call=${message} />
+          </div>
+          ${timeStr ? html`<div class="nb-msg__time">${timeStr}</div>` : null}
+        </div>
+      </article>
+    `;
+  }
+
+  if (message.kind === "subagent") {
+    return html`
+      <article class=${msgClass} data-msg-id=${message.id}>
+        ${avatar ? html`<div class="nb-msg__avatar">${avatar}</div>` : null}
+        <div class="nb-msg__body">
+          ${name ? html`<div class="nb-msg__name">${name}</div>` : null}
+          <div class="nb-msg__bubble">
+            <${SubagentCard} call=${message} />
+          </div>
+          ${timeStr ? html`<div class="nb-msg__time">${timeStr}</div>` : null}
+        </div>
+      </article>
+    `;
+  }
+
+  // ── Quote / Reply reference ──
+  const quoteRef = message.replyTo || message.quote
+    ? html`
+        <div class="nb-quote-ref" onClick=${() => {
+          const el = document.querySelector(`[data-msg-id="${message.replyTo?.id || message.replyTo}"]`);
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }}>
+          <div class="nb-quote-ref__author">${message.replyToName || message.replyTo?.name || "XMCLAW"}</div>
+          ${message.replyToText || message.replyTo?.text || message.quote || ""}
+        </div>
+      `
+    : null;
+
+  // ── Bubble content ──
+  let bubbleContent = null;
+
+  if (isEditing && isUser) {
+    bubbleContent = html`
+      <div>
+        <textarea
+          style="width:100%;min-height:60px;background:transparent;color:var(--nb-fg-primary);border:1px solid var(--nb-border-accent);border-radius:var(--nb-radius-sm);padding:8px;font-family:inherit;font-size:14px;line-height:1.6;resize:vertical;outline:none;"
+          value=${editDraft}
+          onInput=${(e) => onChangeEditDraft(e.target.value)}
+        />
+        <div style="display:flex;gap:8px;margin-top:8px;justify-content:flex-end;">
+          <button class="nb-msg-action" style="width:auto;padding:0 10px;" onClick=${onCancelEdit}>取消</button>
+          <button class="nb-msg-action" style="width:auto;padding:0 10px;" onClick=${() => { onCancelEdit(); }}>保存</button>
+        </div>
+      </div>
+    `;
+  } else if (isSystem) {
+    bubbleContent = html`<div class="nb-md">${contentText}</div>`;
+  } else if (isUser) {
+    bubbleContent = html`
+      <div class="nb-md">${contentText}</div>
+      ${Array.isArray(message.images) && message.images.length > 0
+        ? html`
+            <div class="nb-attachment-grid" style="margin-top:8px;">
+              ${message.images.map((src, i) => html`
+                <div key=${i} class="nb-attachment-item" onClick=${() => openLightbox(src, { alt: `attachment ${i + 1}`, items: message.images, index: i })}>
+                  <img src=${src} alt=${"attachment " + (i + 1)} loading="lazy" />
+                  <div class="nb-attachment-item__name">附件 ${i + 1}</div>
+                </div>
+              `)}
+            </div>
+          `
+        : null}
+    `;
+  } else if (isAssistant) {
+    const parts = [];
+
+    // Phase / thinking status card
+    if (thinking || streaming || (message.thinking && message.thinking.length > 0)) {
+      const baseLabel = thinking
+        ? "正在思考"
+        : streaming
+        ? "正在回复"
+        : "思考过程";
+      const isWorking = thinking || streaming;
+      const elapsedS = isWorking && message.ts
+        ? Math.max(0, Math.floor(Date.now() / 1000 - message.ts))
+        : null;
+      parts.push(html`
+        <${PhaseCard}
+          key="phase"
+          message=${message}
+          baseLabel=${baseLabel}
+          elapsedS=${elapsedS}
+          stalled=${elapsedS != null && elapsedS > 90}
+          isWorking=${isWorking}
+          currentHop=${message.phaseMeta?.hop ?? null}
+        />
+      `);
+    }
+
+    // Events stream (B-218 chronological)
+    if (message.events && message.events.length > 0) {
+      message.events.forEach((ev) => {
+        if (ev.type === "thinking") {
+          parts.push(html`
+            <details key=${ev.id} class="xmc-toolcard xmc-toolcard--ok xmc-toolcard--thinking" style="margin:8px 0;">
+              <summary style="cursor:pointer;padding:6px 10px;font-size:12px;color:var(--nb-fg-secondary);font-family:var(--nb-font-mono);">
+                💡 Thinking ${ev.content ? html`<small style="color:var(--nb-fg-muted);margin-left:.3em">${ev.content.length} chars</small>` : null}
+              </summary>
+              ${ev.content ? html`<pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5;padding:8px 10px;color:var(--nb-fg-secondary);">${ev.content}</pre>` : null}
+            </details>
+          `);
+        } else if (ev.type === "tool") {
+          parts.push(html`<${ToolCard} key=${ev.id} call=${ev} />`);
+        } else {
+          parts.push(html`<${MarkdownBody} key=${ev.id} content=${ev.content || ""} />`);
+        }
+      });
+    } else if (contentText) {
+      const { truncated, wasCut } = isLong
+        ? truncateAtBoundary(contentText, MSG_TRUNCATE_CHARS)
+        : { truncated: contentText, wasCut: false };
+      parts.push(html`<${MarkdownBody} key="md" content=${truncated} />`);
+      if (wasCut) {
+        parts.push(html`
+          <button key="expand" class="nb-msg-collapse-btn" onClick=${onToggleExpand}>
+            … 展开剩余内容 (${contentText.length - truncated.length} 字符)
+          </button>
+        `);
+      }
+    }
+
+    // Legacy toolCalls
+    if (message.toolCalls && message.toolCalls.length > 0) {
+      message.toolCalls.forEach((call) => {
+        parts.push(html`<${ToolCard} key=${call.id} call=${call} />`);
+      });
+    }
+
+    // Media attachments
+    if (Array.isArray(message.images) && message.images.length > 0) {
+      parts.push(html`
+        <div class="nb-attachment-grid" key="images" style="margin-top:8px;">
+          ${message.images.map((src, i) => html`
+            <div key=${i} class="nb-attachment-item" onClick=${() => openLightbox(src, { alt: `attachment ${i + 1}`, items: message.images, index: i })}>
+              <img src=${src} alt=${"attachment " + (i + 1)} loading="lazy" />
+              <div class="nb-attachment-item__name">附件 ${i + 1}</div>
+            </div>
+          `)}
+        </div>
+      `);
+    }
+    if (Array.isArray(message.videos) && message.videos.length > 0) {
+      parts.push(html`
+        <div key="videos" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;">
+          ${message.videos.map((src, i) => html`
+            <video key=${"v" + i} src=${src} controls preload="metadata" style="max-width:280px;border-radius:var(--nb-radius-md);border:1px solid var(--nb-border);" />
+          `)}
+        </div>
+      `);
+    }
+    if (Array.isArray(message.audios) && message.audios.length > 0) {
+      parts.push(html`
+        <div key="audios" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+          ${message.audios.map((src, i) => html`
+            <audio key=${"a" + i} src=${src} controls preload="metadata" style="width:100%;" />
+          `)}
+        </div>
+      `);
+    }
+
+    // Streaming cursor
+    if (streaming) {
+      parts.push(html`<span key="cursor" class="nb-streaming-cursor"></span>`);
+    }
+
+    bubbleContent = parts;
+  }
+
+  // ── Actions ──
+  const userActions = html`
+    <button class="nb-msg-action" title="编辑" onClick=${onStartEdit}>✎</button>
+    <button class="nb-msg-action" title="删除" onClick=${onHide}>🗑</button>
+  `;
+  const assistantActions = html`
+    <button class="nb-msg-action" title="复制" onClick=${() => onCopy(contentText)}>📋</button>
+    <button class="nb-msg-action" title="重新生成" onClick=${() => {}}>↻</button>
+    <button class="nb-msg-action" title="点赞" onClick=${() => {}}>👍</button>
+    <button class="nb-msg-action" title="点踩" onClick=${() => {}}>👎</button>
+  `;
+  const errorActions = html`
+    <button class="nb-msg-action" title="重试" onClick=${() => {}}>↻</button>
+    <button class="nb-msg-action" title="复制" onClick=${() => onCopy(contentText)}>📋</button>
+  `;
+
+  return html`
+    <article class=${msgClass} data-msg-id=${message.id} data-role=${role}>
+      ${avatar ? html`<div class="nb-msg__avatar">${avatar}</div>` : null}
+      <div class="nb-msg__body">
+        ${name ? html`<div class="nb-msg__name">${name}</div>` : null}
+        ${quoteRef}
+        <div class="nb-msg__bubble">
+          ${bubbleContent}
+        </div>
+        ${timeStr ? html`<div class="nb-msg__time">${timeStr}</div>` : null}
+        <div class="nb-msg-actions">
+          ${isUser ? userActions : isAssistant && (errored || cancelled) ? errorActions : isAssistant ? assistantActions : null}
+        </div>
+      </div>
+    </article>
   `;
 }

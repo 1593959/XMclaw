@@ -94,33 +94,30 @@ export function DialogViewport() {
   _useEscToCancel(!!state);
   if (!state) return null;
   const { opts } = state;
-  const confirmCls = "xmc-h-btn xmc-h-btn--" + (opts.confirmTone === "danger" ? "danger" : "primary");
+  const confirmCls = [
+    "nb-dialog__btn",
+    opts.confirmTone === "danger" ? "danger" : "primary",
+  ].join(" ");
+
   return html`
     <div
-      class="xmc-h-dialog__backdrop"
+      class="nb-dialog-overlay show"
       role="dialog"
       aria-modal="true"
       aria-labelledby=${state.id + "-title"}
       onClick=${(e) => { if (e.target === e.currentTarget) _close(false); }}
-      style="position:fixed;inset:0;z-index:9000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);backdrop-filter:blur(2px)"
     >
-      <div
-        class="xmc-h-dialog xmc-h-dialog--confirm"
-        style="background:var(--color-bg-elevated, #0c1c1c);border:1px solid var(--color-border, #1a3a3a);box-shadow:0 12px 40px rgba(0,0,0,0.6);min-width:320px;max-width:520px;padding:1.1rem 1.3rem;border-radius:6px;font-family:var(--xmc-font-mono);color:var(--xmc-fg)"
-      >
-        <h3
-          id=${state.id + "-title"}
-          style="margin:0 0 .5rem;font-size:1rem;letter-spacing:.04em;text-transform:uppercase;color:var(--xmc-fg-muted)"
-        >
-          ${opts.title}
-        </h3>
-        ${opts.body
-          ? html`<p style="margin:0 0 1rem;font-size:.9rem;line-height:1.55;white-space:pre-wrap;color:var(--xmc-fg)">${opts.body}</p>`
-          : null}
-        <div style="display:flex;gap:.5rem;justify-content:flex-end">
+      <div class="nb-dialog">
+        <div class="nb-dialog__header">
+          <h3 id=${state.id + "-title"}>${opts.title}</h3>
+          ${opts.body
+            ? html`<p>${opts.body}</p>`
+            : null}
+        </div>
+        <div class="nb-dialog__footer">
           <button
             type="button"
-            class="xmc-h-btn xmc-h-btn--ghost"
+            class="nb-dialog__btn"
             onClick=${() => _close(false)}
           >
             ${opts.cancelLabel}

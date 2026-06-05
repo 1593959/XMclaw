@@ -1,0 +1,892 @@
+/* XMclaw — Theme: Deep Space Claw (深空·爪)
+ *
+ * Signature visual system for the claw theme. Loaded AFTER design-system.css
+ * so these rules layer on top of the semantic tokens.
+ *
+ * Design motifs:
+ *   - Claw mark SVG (three arcs) as recurring brand element
+ *   - Electric lime #c8ff4d as primary accent
+ *   - "Alive" breathing animations + shimmer sweeps
+ *   - Heartbeat telemetry HUD in chat header
+ *   - Deep space ink backgrounds with subtle radial glows
+ */
+
+/* ── Global claw theme background ───────────────────────────────── */
+
+[data-theme="claw"] html {
+  background: #0a0b0f;
+}
+
+[data-theme="claw"] body {
+  background:
+    radial-gradient(900px 380px at 16% -12%, rgba(155, 123, 255, 0.09), transparent 60%),
+    radial-gradient(680px 300px at 95% 6%, rgba(93, 227, 255, 0.06), transparent 55%),
+    #0a0b0f;
+}
+
+/* ── Animations ─────────────────────────────────────────────────── */
+
+@keyframes claw-breathe {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50%       { opacity: 1; transform: scale(1.22); }
+}
+
+@keyframes claw-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(93, 227, 255, 0.5); }
+  70%  { box-shadow: 0 0 0 7px rgba(93, 227, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(93, 227, 255, 0); }
+}
+
+@keyframes claw-sheen {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+@keyframes claw-bardance {
+  0%, 100% { height: 5px; }
+  50%      { height: 13px; }
+}
+
+@keyframes claw-dots {
+  0%, 20% { opacity: 0.2; }
+  50%     { opacity: 1; }
+  100%    { opacity: 0.2; }
+}
+
+@keyframes claw-shimmer {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+
+@keyframes claw-toastin {
+  0%   { opacity: 0; transform: translateY(10px) scale(0.98); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* ── Claw mark SVG utility ──────────────────────────────────────── */
+
+.claw-mark {
+  display: inline-block;
+  vertical-align: middle;
+  color: var(--ds-claw-lime);
+  filter: drop-shadow(var(--ds-glow-lime));
+}
+
+/* ── Sidebar brand (claw signature) ───────────────────────────────── */
+
+[data-theme="claw"] .xmc-h-sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 5px 7px 17px;
+}
+
+[data-theme="claw"] .xmc-h-sidebar__title {
+  font-weight: 800;
+  font-size: 15.5px;
+  letter-spacing: 1.6px;
+  background: linear-gradient(90deg, var(--ds-claw-lime), var(--ds-claw-cyan), var(--ds-claw-lime));
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: claw-sheen 7s linear infinite;
+}
+
+[data-theme="claw"] .xmc-h-sidebar__title br {
+  display: none;
+}
+
+/* Sidebar "new session" button — claw style */
+[data-theme="claw"] .xmc-h-sidebar .xmc-new-session-btn,
+[data-theme="claw"] .xmc-new-session-btn {
+  margin: 0 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  justify-content: center;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--ds-claw-lime-dim);
+  background: rgba(200, 255, 77, 0.05);
+  border-radius: 11px;
+  color: var(--ds-claw-lime);
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: 0.15s;
+}
+
+[data-theme="claw"] .xmc-h-sidebar .xmc-new-session-btn:hover,
+[data-theme="claw"] .xmc-new-session-btn:hover {
+  background: rgba(200, 255, 77, 0.11);
+  box-shadow: var(--ds-glow-lime);
+}
+
+/* Sidebar section labels */
+[data-theme="claw"] .xmc-h-nav .xmc-nav-group-label {
+  font-family: var(--ds-font-mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
+  color: var(--ds-fg-tertiary);
+  padding: 11px 9px 7px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-theme="claw"] .xmc-h-nav .xmc-nav-group-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--ds-border-strong);
+}
+
+/* Sidebar nav items — claw active indicator */
+[data-theme="claw"] .xmc-h-nav a.xmc-h-nav__link.is-active {
+  background: var(--ds-bg-elevated);
+  color: var(--ds-fg-primary);
+  border-color: var(--ds-border-strong);
+  position: relative;
+}
+
+[data-theme="claw"] .xmc-h-nav a.xmc-h-nav__link.is-active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  width: 3px;
+  height: 18px;
+  background: var(--ds-claw-lime);
+  border-radius: 3px;
+  box-shadow: var(--ds-glow-lime);
+}
+
+/* Sidebar footer orb */
+[data-theme="claw"] .xmc-claw-orb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ds-claw-lime);
+  box-shadow: var(--ds-glow-lime);
+  animation: claw-breathe 2.6s ease-in-out infinite;
+  flex: none;
+}
+
+[data-theme="claw"] .xmc-claw-orb.think {
+  background: var(--ds-claw-cyan);
+  box-shadow: var(--ds-glow-cyan);
+  animation: claw-pulse 1.1s infinite;
+}
+
+/* ── HUD Status Bar (Heartbeat Telemetry) ───────────────────────── */
+
+.xmc-claw-hud {
+  display: flex;
+  align-items: center;
+  margin: 14px 30px 0;
+  border: 1px solid var(--ds-border);
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(155, 123, 255, 0.05), rgba(93, 227, 255, 0.035));
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  color: var(--ds-fg-secondary);
+  overflow: hidden;
+}
+
+.xmc-claw-hud__seg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 17px;
+  border-right: 1px solid var(--ds-border);
+  cursor: pointer;
+  transition: 0.13s;
+}
+
+.xmc-claw-hud__seg:last-child {
+  border-right: 0;
+}
+
+.xmc-claw-hud__seg:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ds-fg-primary);
+}
+
+.xmc-claw-hud__seg b {
+  color: var(--ds-fg-primary);
+  font-weight: 650;
+}
+
+.xmc-claw-hud__seg .k {
+  color: var(--ds-claw-lime);
+}
+
+.xmc-claw-hud__seg .cy {
+  color: var(--ds-claw-cyan);
+}
+
+.xmc-claw-hud__seg .l {
+  color: var(--ds-fg-tertiary);
+  font-size: 9.5px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.xmc-claw-hud__seg--right {
+  margin-left: auto;
+}
+
+/* Sparkline bars in HUD */
+.xmc-claw-spark {
+  display: inline-flex;
+  gap: 2px;
+  align-items: flex-end;
+  height: 13px;
+}
+
+.xmc-claw-spark i {
+  width: 3px;
+  background: var(--ds-claw-cyan);
+  border-radius: 1px;
+  display: block;
+  animation: claw-bardance 1.4s ease-in-out infinite;
+}
+
+.xmc-claw-spark i:nth-child(2) { animation-delay: 0.2s; }
+.xmc-claw-spark i:nth-child(3) { animation-delay: 0.45s; }
+.xmc-claw-spark i:nth-child(4) { animation-delay: 0.1s; }
+.xmc-claw-spark i:nth-child(5) { animation-delay: 0.55s; }
+.xmc-claw-spark i:nth-child(6) { animation-delay: 0.3s; }
+
+/* ── Chat message styling (claw theme) ─────────────────────────── */
+
+[data-theme="claw"] .xmc-chat {
+  --xmc-bg: #0a0b0f;
+  --xmc-bg-elev: #0f1118;
+  --xmc-bg-elev-2: #161a22;
+  --xmc-fg: #eaedf3;
+  --xmc-fg-muted: #969db0;
+  --xmc-fg-subtle: rgba(234, 237, 243, 0.35);
+  --xmc-border: #1d212b;
+  --xmc-border-strong: #2a2f3b;
+  --xmc-accent: #c8ff4d;
+  --xmc-accent-fg: #0a0b0f;
+  --xmc-accent-soft: rgba(200, 255, 77, 0.18);
+  --xmc-success: #4ade80;
+  --xmc-warn: #ffc24d;
+  --xmc-error: #fb2c36;
+  --xmc-info: #5de3ff;
+  --xmc-violet: #9b7bff;
+}
+
+/* User message — claw style: right lime edge */
+[data-theme="claw"] .xmc-msg--user {
+  background: var(--xmc-bg-elev-2);
+  border: 1px solid var(--xmc-border);
+  border-right: 2px solid var(--ds-claw-lime-dim);
+  border-radius: 13px;
+  padding: 11px 16px;
+}
+
+/* Assistant message — "editorial flow", no bubble wrapper */
+[data-theme="claw"] .xmc-msg--assistant {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 15px 0 4px;
+  box-shadow: none;
+}
+
+[data-theme="claw"] .xmc-msg--assistant:hover {
+  box-shadow: none;
+}
+
+/* Assistant avatar (claw mark) */
+[data-theme="claw"] .xmc-msg--assistant .xmc-msg__avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid var(--ds-claw-lime-dim);
+  display: grid;
+  place-items: center;
+  background: rgba(200, 255, 77, 0.04);
+  box-shadow: var(--ds-glow-lime);
+  color: var(--ds-claw-lime);
+  flex: none;
+}
+
+[data-theme="claw"] .xmc-msg--assistant .xmc-msg__avatar.think {
+  border-color: var(--ds-claw-cyan);
+  box-shadow: var(--ds-glow-cyan);
+  color: var(--ds-claw-cyan);
+  animation: claw-pulse 1.2s infinite;
+}
+
+/* Assistant name label */
+[data-theme="claw"] .xmc-msg--assistant .xmc-msg__name {
+  font-family: var(--ds-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 1px;
+  color: var(--ds-claw-lime);
+  margin-bottom: 6px;
+}
+
+[data-theme="claw"] .xmc-msg--assistant .xmc-msg__name.think {
+  color: var(--ds-claw-cyan);
+}
+
+/* Inline code */
+[data-theme="claw"] .xmc-chat code.xmc-code--inline,
+[data-theme="claw"] .xmc-msg code {
+  font-family: var(--ds-font-mono);
+  font-size: 12.5px;
+  background: var(--xmc-bg-elev-2);
+  border: 1px solid var(--xmc-border);
+  padding: 1px 7px;
+  border-radius: 6px;
+  color: var(--ds-claw-cyan);
+}
+
+/* ── Tool cards ─────────────────────────────────────────────────── */
+
+[data-theme="claw"] .xmc-toolcard {
+  border: 1px solid var(--xmc-border);
+  border-left: 2px solid var(--ds-claw-cyan);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 11px 0;
+  background: var(--xmc-bg-elev);
+}
+
+[data-theme="claw"] .xmc-toolcard__summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 13px;
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  color: var(--xmc-fg-muted);
+  background: rgba(93, 227, 255, 0.03);
+}
+
+[data-theme="claw"] .xmc-toolcard__summary b,
+[data-theme="claw"] .xmc-toolcard__name {
+  color: var(--ds-claw-cyan);
+}
+
+[data-theme="claw"] .xmc-toolcard__summary .ok {
+  margin-left: auto;
+  color: var(--ds-claw-lime);
+  font-weight: 600;
+}
+
+[data-theme="claw"] .xmc-toolcard__summary .run {
+  margin-left: auto;
+  color: var(--ds-claw-cyan);
+  font-weight: 600;
+}
+
+[data-theme="claw"] .xmc-toolcard__body {
+  padding: 9px 13px;
+  font-family: var(--ds-font-mono);
+  font-size: 11.5px;
+  color: var(--ds-fg-tertiary);
+  white-space: pre-wrap;
+}
+
+/* Running shimmer stripe */
+[data-theme="claw"] .xmc-toolcard.running,
+[data-theme="claw"] .xmc-toolcard.is-running {
+  position: relative;
+}
+
+[data-theme="claw"] .xmc-toolcard.running::after,
+[data-theme="claw"] .xmc-toolcard.is-running::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, var(--ds-claw-cyan), transparent);
+  animation: claw-shimmer 1.3s linear infinite;
+}
+
+/* ── Code blocks ────────────────────────────────────────────────── */
+
+[data-theme="claw"] pre.xmc-code-block,
+[data-theme="claw"] .xmc-toolcard__pre {
+  background: #06070b;
+  border: 1px solid var(--xmc-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow: auto;
+  font-family: var(--ds-font-mono);
+  font-size: 12.5px;
+  line-height: 1.66;
+  margin: 11px 0;
+  color: #cdd3de;
+}
+
+[data-theme="claw"] pre.xmc-code-block .k,
+[data-theme="claw"] .xmc-toolcard__pre .k { color: var(--ds-claw-violet); }
+[data-theme="claw"] pre.xmc-code-block .s,
+[data-theme="claw"] .xmc-toolcard__pre .s { color: var(--ds-claw-lime-dim); }
+[data-theme="claw"] pre.xmc-code-block .f,
+[data-theme="claw"] .xmc-toolcard__pre .f { color: var(--ds-claw-cyan); }
+[data-theme="claw"] pre.xmc-code-block .c,
+[data-theme="claw"] .xmc-toolcard__pre .c { color: #4d5566; }
+[data-theme="claw"] pre.xmc-code-block .n,
+[data-theme="claw"] .xmc-toolcard__pre .n { color: #e5c07b; }
+
+/* ── Thinking indicator ─────────────────────────────────────────── */
+
+[data-theme="claw"] .xmc-thinking {
+  color: var(--ds-claw-cyan);
+  font-family: var(--ds-font-mono);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+[data-theme="claw"] .xmc-thinking .dot {
+  animation: claw-dots 1.2s infinite;
+}
+
+[data-theme="claw"] .xmc-thinking .dot:nth-child(2) { animation-delay: 0.2s; }
+[data-theme="claw"] .xmc-thinking .dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* ── Claw separator (between turns) ─────────────────────────────── */
+
+.xmc-claw-sep {
+  max-width: 790px;
+  margin: 16px auto;
+  padding: 0 30px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--ds-fg-tertiary);
+}
+
+.xmc-claw-sep__scr {
+  flex: 1;
+  height: 13px;
+  background: repeating-linear-gradient(115deg, transparent 0 9px, var(--ds-border-strong) 9px 10px);
+  opacity: 0.7;
+}
+
+.xmc-claw-sep span {
+  font-family: var(--ds-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 2px;
+}
+
+/* ── Composer (input area) ──────────────────────────────────────── */
+
+/* Claw theme: composer gets a rounded card look with lime glow on focus */
+[data-theme="claw"] .xmc-composer {
+  background: var(--xmc-bg-elev);
+  border: 1px solid var(--xmc-border);
+  border-radius: 15px;
+  padding: 10px 14px;
+  margin: 0 16px 12px;
+  transition: 0.18s;
+}
+
+[data-theme="claw"] .xmc-composer:focus-within {
+  border-color: var(--ds-claw-lime-dim);
+  box-shadow: 0 0 0 3px rgba(200, 255, 77, 0.07), var(--ds-glow-lime);
+}
+
+/* Input field — transparent, no border, claw theme color */
+[data-theme="claw"] .xmc-composer__input {
+  background: transparent;
+  border: none;
+  color: var(--xmc-fg);
+  font-size: 15px;
+  line-height: 1.6;
+  padding: 6px 0;
+}
+
+[data-theme="claw"] .xmc-composer__input:focus-visible {
+  outline: none;
+  border: none;
+  box-shadow: none;
+}
+
+/* Attach button — claw style */
+[data-theme="claw"] .xmc-composer__attach {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--xmc-border);
+  background: var(--xmc-bg-elev-2);
+  color: var(--xmc-fg-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: 0.15s;
+}
+
+[data-theme="claw"] .xmc-composer__attach:hover {
+  background: var(--xmc-bg);
+  color: var(--xmc-fg);
+}
+
+/* Mic button — claw style */
+[data-theme="claw"] .xmc-composer__mic {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--xmc-border);
+  background: var(--xmc-bg-elev-2);
+  color: var(--xmc-fg-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: 0.15s;
+}
+
+[data-theme="claw"] .xmc-composer__mic:hover {
+  background: var(--xmc-bg);
+  color: var(--xmc-fg);
+}
+
+[data-theme="claw"] .xmc-composer__mic.is-on {
+  background: rgba(200, 255, 77, 0.12);
+  border-color: var(--ds-claw-lime-dim);
+  color: var(--ds-claw-lime);
+  box-shadow: var(--ds-glow-lime);
+}
+
+/* Primary send button — lime gradient */
+[data-theme="claw"] .xmc-composer .xmc-btn--primary,
+[data-theme="claw"] .xmc-composer button[variant="primary"] {
+  background: linear-gradient(135deg, var(--ds-claw-lime), var(--ds-claw-lime-dim));
+  color: #0a0b0f;
+  border: none;
+  box-shadow: var(--ds-glow-lime);
+  font-weight: 600;
+}
+
+[data-theme="claw"] .xmc-composer .xmc-btn--primary:hover,
+[data-theme="claw"] .xmc-composer button[variant="primary"]:hover {
+  background: linear-gradient(135deg, var(--ds-claw-lime-dim), var(--ds-claw-lime));
+  filter: brightness(1.08);
+}
+
+/* Toolbar chips */
+[data-theme="claw"] .xmc-composer__chip.is-on {
+  background: rgba(200, 255, 77, 0.12);
+  border-color: var(--ds-claw-lime-dim);
+  color: var(--ds-claw-lime);
+}
+
+/* Hint text */
+[data-theme="claw"] .xmc-composer__hint {
+  font-family: var(--ds-font-mono);
+  font-size: 10px;
+  color: var(--ds-fg-tertiary);
+  letter-spacing: 0.5px;
+}
+
+[data-theme="claw"] .xmc-composer__shortcut {
+  font-family: var(--ds-font-mono);
+  background: var(--xmc-bg-elev-2);
+  color: var(--xmc-fg-muted);
+  border: 1px solid var(--xmc-border);
+}
+
+/* ── Skill toast (floating notification) ────────────────────────── */
+
+.xmc-claw-toast {
+  position: absolute;
+  right: 26px;
+  bottom: 96px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  background: var(--ds-bg-elevated);
+  border: 1px solid var(--ds-claw-lime-dim);
+  border-radius: 13px;
+  padding: 12px 15px;
+  max-width: 320px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), var(--ds-glow-lime);
+  animation: claw-toastin 0.4s ease both;
+}
+
+.xmc-claw-toast__icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: rgba(200, 255, 77, 0.08);
+  display: grid;
+  place-items: center;
+  color: var(--ds-claw-lime);
+  flex: none;
+}
+
+.xmc-claw-toast__text {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.xmc-claw-toast__text b {
+  color: var(--ds-claw-lime);
+}
+
+.xmc-claw-toast__meta {
+  display: block;
+  color: var(--ds-fg-tertiary);
+  font-family: var(--ds-font-mono);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.xmc-claw-toast__action {
+  margin-left: auto;
+  font-family: var(--ds-font-mono);
+  font-size: 10.5px;
+  color: var(--ds-claw-lime);
+  border: 1px solid var(--ds-claw-lime-dim);
+  padding: 5px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  flex: none;
+}
+
+/* ── Watermark (giant claw mark, subtle) ────────────────────────── */
+
+.xmc-claw-watermark {
+  position: absolute;
+  right: -30px;
+  top: 120px;
+  width: 480px;
+  opacity: 0.03;
+  pointer-events: none;
+  color: var(--ds-claw-lime);
+}
+
+/* ── Mobile header (claw theme) ─────────────────────────────────── */
+
+[data-theme="claw"] .xmc-h-mobheader {
+  background: color-mix(in srgb, #0a0b0f 90%, transparent);
+  border-bottom: 1px solid #1d212b;
+}
+
+[data-theme="claw"] .xmc-h-mobheader__brand {
+  background: linear-gradient(90deg, var(--ds-claw-lime), var(--ds-claw-cyan), var(--ds-claw-lime));
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: claw-sheen 7s linear infinite;
+  font-weight: 800;
+  letter-spacing: 1.6px;
+}
+
+/* ── Scrollbar (claw theme) ─────────────────────────────────────── */
+
+[data-theme="claw"] .xmc-scrollbar::-webkit-scrollbar-thumb {
+  background: #2a2f3b;
+  border-radius: 3px;
+}
+
+[data-theme="claw"] .xmc-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #3a4050;
+}
+
+/* ── Tag / badge pills ──────────────────────────────────────────── */
+
+[data-theme="claw"] .xmc-tag {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  color: var(--ds-fg-secondary);
+  border: 1px solid var(--ds-border-strong);
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+[data-theme="claw"] .xmc-tag:hover {
+  border-color: var(--ds-claw-lime-dim);
+  color: var(--ds-fg-primary);
+}
+
+/* ============================================================
+   新版 claw 侧栏（彻底重做骨架，2026-06-05）
+   去掉图标轨 + 20 项分组导航 → 4 主导航 + 更多折叠。
+   用 --xmc-* 变量 + 硬编码兜底，切主题也不裸奔。
+   ============================================================ */
+.claw-sb{
+  display:flex; flex-direction:column; gap:6px;
+  padding:14px 11px;
+  background:linear-gradient(180deg, var(--xmc-bg-elev,#0f1118), var(--xmc-bg,#0a0b0f));
+  border-right:1px solid var(--xmc-border,#1d212b);
+}
+/* 品牌 */
+.claw-sb__brand{ display:flex; align-items:center; gap:11px; padding:4px 6px 14px; }
+.claw-sb__logo{ width:30px;height:30px;display:grid;place-items:center;
+  color:var(--xmc-accent,#c8ff4d); filter:drop-shadow(0 0 14px rgba(200,255,77,.3)); }
+.claw-sb__logo .claw-mark{ width:26px;height:26px; }
+.claw-sb__wordmark{ font-weight:800; font-size:15.5px; letter-spacing:1.6px;
+  background:linear-gradient(90deg,var(--xmc-accent,#c8ff4d),var(--xmc-info,#5de3ff),var(--xmc-accent,#c8ff4d));
+  background-size:200% auto; -webkit-background-clip:text; background-clip:text; color:transparent;
+  animation:claw-sheen 7s linear infinite; }
+@keyframes claw-sheen{ 0%{background-position:0% 50%} 100%{background-position:200% 50%} }
+.claw-sb__close{ margin-left:auto; display:none; background:none;border:0;color:var(--xmc-fg-muted,#969db0);cursor:pointer; }
+/* 新对话 */
+.claw-sb__new{ display:flex;align-items:center;justify-content:center;gap:9px;width:100%;
+  margin:0 0 12px; padding:10px; cursor:pointer; font-family:inherit; font-weight:600;
+  font-size:12.5px; letter-spacing:.4px;
+  color:var(--xmc-accent,#c8ff4d); background:rgba(200,255,77,.06);
+  border:1px solid color-mix(in srgb,var(--xmc-accent,#c8ff4d) 55%,transparent); border-radius:11px;
+  transition:.15s; }
+.claw-sb__new:hover{ background:rgba(200,255,77,.12); box-shadow:0 0 18px rgba(200,255,77,.22); }
+.claw-sb__new .claw-mark-sm{ width:14px;height:14px; }
+/* 导航 */
+.claw-sb__nav{ display:flex; flex-direction:column; gap:2px; margin-top:6px; }
+.claw-nav-item{ display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:10px;
+  color:var(--xmc-fg-muted,#969db0); text-decoration:none; font-size:13.5px; cursor:pointer;
+  position:relative; border:1px solid transparent; transition:.13s; }
+.claw-nav-item:hover{ background:var(--xmc-bg-elev-2,#161a22); color:var(--xmc-fg,#eaedf3); }
+.claw-nav-item.is-active{ background:var(--xmc-bg-elev-2,#161a22); color:var(--xmc-fg,#eaedf3);
+  border-color:var(--xmc-border-strong,#2a2f3b); }
+.claw-nav-item.is-active::before{ content:""; position:absolute; left:-1px; width:3px; height:18px;
+  border-radius:3px; background:var(--xmc-accent,#c8ff4d); box-shadow:0 0 12px rgba(200,255,77,.5); }
+.claw-nav-item__ic{ display:grid;place-items:center;width:18px;height:18px;flex:none;opacity:.9; }
+.claw-nav-item__ic svg{ width:17px;height:17px; }
+.claw-nav-item__lbl{ flex:1; }
+.claw-nav-item__dot{ width:6px;height:6px;border-radius:50%;background:var(--xmc-accent,#c8ff4d);
+  box-shadow:0 0 8px rgba(200,255,77,.6); }
+.claw-nav-item__chev{ font-size:10px;opacity:.6;transition:transform .15s; }
+/* 更多折叠 */
+.claw-sb__more{ margin-top:1px; }
+.claw-sb__more>summary{ list-style:none; }
+.claw-sb__more>summary::-webkit-details-marker{ display:none; }
+.claw-sb__more[open]>summary .claw-nav-item__chev{ transform:rotate(180deg); }
+.claw-sb__more-list{ display:flex;flex-direction:column;gap:1px; margin:2px 0 0 6px;
+  padding-left:8px; border-left:1px solid var(--xmc-border,#1d212b); }
+.claw-sb__more-list .claw-nav-item{ font-size:12.5px; padding:7px 10px; }
+.claw-sb__more-list .claw-nav-item__ic svg{ width:15px;height:15px; }
+/* 间隔把系统操作/页脚推到底 */
+.claw-sb__spacer{ flex:1; min-height:8px; }
+.claw-sb__footrow{ display:flex; gap:8px; align-items:center; margin-top:6px; }
+/* 移动端关闭按钮 */
+@media (max-width:1023px){ .claw-sb__close{ display:inline-grid;place-items:center; } }
+
+/* ============================================================
+   右侧会话/后台任务面板 —— claw 卡片化重做（2026-06-05）
+   信息保留（sid/ws/工具/最近/后台任务），视觉统一成新 claw 风。
+   ============================================================ */
+.xmc-h-chatside{
+  display:flex; flex-direction:column; gap:14px;
+  padding:16px 13px; overflow:auto;
+  background:linear-gradient(180deg,var(--xmc-bg-elev,#0f1118),var(--xmc-bg,#0a0b0f));
+  border-left:1px solid var(--xmc-border,#1d212b);
+}
+.xmc-h-chatside__section{
+  background:var(--xmc-bg-elev,#0f1118);
+  border:1px solid var(--xmc-border,#1d212b); border-radius:13px;
+  padding:12px; display:flex; flex-direction:column; gap:9px;
+}
+.xmc-h-chatside__head{
+  display:flex; align-items:center; justify-content:space-between;
+  font-family:var(--font-mono,ui-monospace,monospace);
+  font-size:10px; letter-spacing:1.4px; text-transform:uppercase;
+  color:var(--xmc-fg-subtle,rgba(234,237,243,.4)); font-weight:700;
+}
+.xmc-h-chatside__active{ display:flex; flex-direction:column; gap:6px; }
+.xmc-h-chatside__row{ display:flex; align-items:center; gap:10px; font-size:12px; }
+.xmc-h-chatside__row-key{
+  font-family:var(--font-mono,ui-monospace,monospace); font-size:10.5px;
+  color:var(--xmc-fg-subtle,rgba(234,237,243,.4)); min-width:30px; text-transform:uppercase; letter-spacing:.5px;
+}
+.xmc-h-chatside__row-val{
+  margin-left:auto; font-family:var(--font-mono,ui-monospace,monospace);
+  color:var(--xmc-fg,#eaedf3); font-size:11.5px; max-width:160px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+/* 新建会话按钮 —— 与侧栏「新对话」统一 */
+.xmc-h-chatside__newbtn{
+  display:flex !important; align-items:center; justify-content:center; gap:8px; width:100%;
+  padding:9px 12px !important; cursor:pointer; font-weight:600; font-size:12.5px;
+  color:var(--xmc-accent,#c8ff4d) !important; background:rgba(200,255,77,.06) !important;
+  border:1px solid color-mix(in srgb,var(--xmc-accent,#c8ff4d) 50%,transparent) !important; border-radius:11px !important;
+}
+.xmc-h-chatside__newbtn:hover{ background:rgba(200,255,77,.12) !important; box-shadow:0 0 16px rgba(200,255,77,.2); }
+.xmc-h-chatside__refresh{ background:none !important; border:0 !important; color:var(--xmc-fg-muted,#969db0) !important;
+  cursor:pointer; padding:2px 6px !important; border-radius:7px; }
+.xmc-h-chatside__refresh:hover{ color:var(--xmc-fg,#eaedf3) !important; background:var(--xmc-bg-elev-2,#161a22) !important; }
+/* 最近会话列表 */
+.xmc-h-chatside__list{ display:flex; flex-direction:column; gap:2px; }
+.xmc-h-chatside__item{
+  display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:10px;
+  cursor:pointer; border:1px solid transparent; transition:.12s; position:relative;
+}
+.xmc-h-chatside__item:hover{ background:var(--xmc-bg-elev-2,#161a22); }
+.xmc-h-chatside__item.is-active,.xmc-h-chatside__item[aria-current="true"]{
+  background:var(--xmc-bg-elev-2,#161a22); border-color:var(--xmc-border-strong,#2a2f3b);
+}
+.xmc-h-chatside__item-title{ font-size:13px; color:var(--xmc-fg,#eaedf3);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.xmc-h-chatside__item-meta,.xmc-h-chatside__item-sid{
+  font-family:var(--font-mono,ui-monospace,monospace); font-size:9.5px;
+  color:var(--xmc-fg-subtle,rgba(234,237,243,.4)); }
+.xmc-h-chatside__item-trash{ margin-left:auto; opacity:0; background:none;border:0;
+  color:var(--xmc-fg-muted,#969db0); cursor:pointer; transition:opacity .12s; padding:2px; border-radius:6px; }
+.xmc-h-chatside__item:hover .xmc-h-chatside__item-trash{ opacity:.7; }
+.xmc-h-chatside__item-trash:hover{ opacity:1 !important; color:var(--xmc-error,#fb2c36); }
+/* 后台任务区轻微强调 */
+.xmc-bgtasks{ border-color:color-mix(in srgb,var(--xmc-violet,#9b7bff) 30%,var(--xmc-border,#1d212b)) !important; }
+
+/* ============================================================
+   输入区重排（2026-06-05）：选项栏移到输入框上方，输入框下沉。
+   原顺序 输入框→选项→提示  改为  选项→输入框→提示。
+   用 flex order，不动 DOM。
+   ============================================================ */
+[data-theme="claw"] .nb-composer-area{ display:flex; flex-direction:column; }
+[data-theme="claw"] .nb-composer__toolbar{ order:-1; margin:0 0 9px; }   /* 选项移到最上 */
+[data-theme="claw"] .nb-composer{ order:0; }                              /* 输入框居中下沉 */
+[data-theme="claw"] .nb-composer-hint{ order:1; margin-top:8px; }        /* 提示保持最底 */
+
+/* 修正（2026-06-05）：上面的输入区重排误加了 [data-theme="claw"] 限定，
+   用户在 nebula 主题下没生效。这里用不限定主题 + !important 覆盖，
+   claw / nebula 都把「选项栏」排到输入框上方。 */
+.nb-composer-area{ display:flex !important; flex-direction:column !important; }
+.nb-composer__toolbar{ order:-1 !important; margin:0 0 9px !important; }
+.nb-composer{ order:0 !important; }
+.nb-composer-hint{ order:1 !important; margin-top:8px !important; }
+
+/* ============================================================
+   nebula 主题适配（2026-06-05）：我的新 claw-* / chatside 组件原本
+   用 --xmc-* + 硬编码柠檬绿，在 nebula(紫)下会绿紫打架。
+   这里在 nebula 下把变量别名到 nebula 调色板，并覆盖几处硬编码绿。
+   ============================================================ */
+[data-theme="nebula"]{
+  --xmc-bg:#0B0E14; --xmc-bg-elev:#111827; --xmc-bg-elev-2:#1E293B;
+  --xmc-fg:#F1F5F9; --xmc-fg-muted:#94A3B8; --xmc-fg-subtle:rgba(241,245,249,.4);
+  --xmc-border:rgba(148,163,184,.12); --xmc-border-strong:rgba(148,163,184,.22);
+  --xmc-accent:#8B5CF6; --xmc-info:#06B6D4; --xmc-violet:#A78BFA;
+}
+[data-theme="nebula"] .claw-sb__logo{ color:#8B5CF6; filter:drop-shadow(0 0 14px rgba(139,92,246,.35)); }
+[data-theme="nebula"] .claw-sb__wordmark{ background:linear-gradient(90deg,#8B5CF6,#06B6D4,#8B5CF6);
+  background-size:200% auto; -webkit-background-clip:text; background-clip:text; }
+[data-theme="nebula"] .claw-sb__new{ color:#A78BFA; background:rgba(139,92,246,.10);
+  border-color:rgba(139,92,246,.45); }
+[data-theme="nebula"] .claw-sb__new:hover{ background:rgba(139,92,246,.18); box-shadow:0 0 18px rgba(139,92,246,.3); }
+[data-theme="nebula"] .claw-nav-item.is-active::before{ background:#8B5CF6; box-shadow:0 0 12px rgba(139,92,246,.5); }
+[data-theme="nebula"] .claw-nav-item__dot{ background:#8B5CF6; box-shadow:0 0 8px rgba(139,92,246,.6); }
+[data-theme="nebula"] .xmc-h-chatside__newbtn{ color:#A78BFA !important; background:rgba(139,92,246,.10) !important;
+  border-color:rgba(139,92,246,.45) !important; }
+[data-theme="nebula"] .xmc-h-chatside__newbtn:hover{ background:rgba(139,92,246,.18) !important; box-shadow:0 0 16px rgba(139,92,246,.28); }

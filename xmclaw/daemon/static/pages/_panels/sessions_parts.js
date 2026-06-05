@@ -1,8 +1,13 @@
-// XMclaw — SessionsPage sub-components (B-323 split).
+// XMclaw — SessionsPage sub-components (Nebula redesign v2).
 //
-// Lifted out of pages/Sessions.js to keep that page under the 500-line
-// UI budget (FRONTEND_DESIGN.md §1.4). Pure presentation pieces —
-// the parent wires the dataflow (search, expand, delete).
+// Rewritten to match Nebula prototype design:
+//   - SessionRow uses nb-session-item / nb-session-dot / nb-session-tag /
+//     nb-session-actions classes
+//   - Tags are inferred from preview text + sid keywords
+//   - Hover actions: archive / export / delete
+//   - Expanded message list kept intact (xmc-h-msgbubble etc.)
+//
+// Kept existing exports for backward compatibility.
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect } = window.__xmc.preact_hooks;
@@ -135,10 +140,6 @@ export function MessageList({ messages, highlight }) {
 
 
 // ── Source-prefix mapping + relative-time helper ──
-//
-// B-341 (audit pass-2 #7): moved out of Sessions.js along with
-// SessionRow so the page stays under the 500-line UI budget after
-// the search-endpoint wiring landed. Pure helpers, no imports.
 
 export const SOURCE_CONFIG = {
   cli:      { glyph: "▮", label: "CLI" },
@@ -179,26 +180,66 @@ export function timeAgo(epoch) {
 }
 
 
-// ── SessionRow — one collapsible card per session ──
-//
-// B-341 (audit pass-2 #7): extracted from Sessions.js. Adds
-// ``matchSnippet`` prop — when the parent's server-side search
-// returned this session, the snippet is rendered as a muted
-// monospace preview under the row so the user sees WHERE the hit
-// landed without expanding the row first. Pre-B-341 the row
-// rendered no snippet; the search box only filtered already-loaded
-// previews and the B-339 endpoint had no caller.
+// ── Tag inference ──
+
+export function inferTags(preview = "", sid = "") {
+  const tags = [];
+  const p = (preview || "").toLowerCase();
+  if (p.includes("图片") || p.includes("png") || p.includes("jpg") || p.includes("jpeg") || p.includes("压缩") || p.includes("裁剪") || p.includes("缩放")) {
+    tags.push("图片处理");
+  }
+  if (p.includes("docker") || p.includes("部署") || p.includes("build") || p.includes("镜像") || p.includes("ci") || p.includes("cd")) {
+    tags.push("部署");
+  }
+  if (p.includes("ui") || p.includes("设计") || p.includes("前端") || p.includes("web") || p.includes("css") || p.includes("html")) {
+    tags.push("前端");
+  }
+  if (p.includes("调研") || p.includes("对比") || p.includes("选型") || p.includes("分析") || p.includes("研究")) {
+    tags.push("调研");
+  }
+  if (p.includes("技能") || p.includes("自动") || p.includes("触发") || p.includes("定时") || p.includes("cron")) {
+    tags.push("自动化");
+  }
+  if (p.includes("测试") || p.includes("验证") || p.includes("debug") || p.includes("排查")) {
+    tags.push("测试");
+  }
+  if (p.includes("代码") || p.includes("函数") || p.includes("重构") || p.includes("优化") || p.includes("fix")) {
+    tags.push("开发");
+  }
+  if (sid.startsWith("reflect:") || sid.startsWith("dream:") || sid.startsWith("_system")) {
+    tags.push("内部");
+  }
+  if (tags.length === 0) {
+    tags.push("对话");
+  }
+  return tags.slice(0, 3);
+}
+
+function tagStyle(tag) {
+  if (tag === "归档") return "background:rgba(100,116,139,0.15);color:var(--nb-fg-tertiary);border-color:var(--nb-border)";
+  if (tag === "图片处理") return "background:rgba(139,92,246,0.1);color:var(--nb-accent-light);border-color:var(--nb-border-accent)";
+  if (tag === "自动化") return "background:rgba(6,182,212,0.1);color:var(--nb-cyan-light);border-color:rgba(6,182,212,0.2)";
+  if (tag === "调研") return "background:rgba(16,185,129,0.1);color:var(--nb-success);border-color:rgba(16,185,129,0.2)";
+  if (tag === "测试") return "background:rgba(245,158,11,0.1);color:var(--nb-amber-light);border-color:rgba(245,158,11,0.2)";
+  if (tag === "部署") return "background:rgba(59,130,246,0.1);color:var(--nb-info);border-color:rgba(59,130,246,0.2)";
+  if (tag === "前端") return "background:rgba(236,72,153,0.1);color:#ec4899;border-color:rgba(236,72,153,0.2)";
+  if (tag === "开发") return "background:rgba(139,92,246,0.1);color:var(--nb-accent-light);border-color:var(--nb-border-accent)";
+  if (tag === "内部") return "background:rgba(100,116,139,0.15);color:var(--nb-fg-tertiary);border-color:var(--nb-border)";
+  return "background:rgba(139,92,246,0.1);color:var(--nb-accent-light);border-color:var(--nb-border-accent)";
+}
+
+
+// ── SessionRow — one enhanced row per session (Nebula design) ──
 
 export function SessionRow({
   session, query, expanded, onToggle, onDelete, onResume,
-  token, isSelected, onToggleSelect, matchSnippet,
+  token, isArchived, onArchive, onExport, deletingId, matchSnippet,
 }) {
   const [messages, setMessages] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const sid = session.session_id;
-  const source = inferSource(sid);
-  const sCfg = SOURCE_CONFIG[source] || SOURCE_CONFIG.unknown;
+  const tags = inferTags(session.preview, sid);
 
   useEffect(() => {
     if (!expanded || messages !== null || loading) return;
@@ -210,65 +251,65 @@ export function SessionRow({
   }, [expanded, sid, token, messages, loading]);
 
   return html`
-    <div class=${"xmc-h-srow" + (isSelected ? " is-selected" : "")} key=${sid}
-         style=${"display:flex;align-items:stretch;flex-wrap:wrap;" + (isSelected ? "background:color-mix(in srgb,var(--color-primary,#6aa3f0) 8%,transparent);border-color:color-mix(in srgb,var(--color-primary,#6aa3f0) 50%,transparent);" : "")}>
-      <!-- B-156: 行首 checkbox 触发批量选择，stopPropagation 防止误展开 -->
-      ${onToggleSelect
-        ? html`<label
-            style="display:flex;align-items:center;padding:0 .4rem 0 .6rem;cursor:pointer"
-            onClick=${(e) => e.stopPropagation()}
-            title="勾选用于批量删除"
-          >
-            <input
-              type="checkbox"
-              checked=${!!isSelected}
-              onChange=${onToggleSelect}
-            />
-          </label>`
-        : null}
-      <button
-        type="button"
-        class="xmc-h-srow__head"
+    <div>
+      <div
+        class=${"nb-session-item" + (expanded ? " active" : "")}
         onClick=${onToggle}
-        aria-expanded=${expanded ? "true" : "false"}
-        style="flex:1 1 auto;min-width:0;width:auto"
+        style=${isArchived ? "opacity:0.85;" : ""}
       >
-        <${Icon} d=${expanded ? I_CHEVRON_DOWN : I_CHEVRON_RIGHT} className="xmc-h-srow__chev" />
-        <span class="xmc-h-srow__source" title=${sCfg.label}>${sCfg.glyph}</span>
-        ${session.preview
-          ? html`
-              <span class="xmc-h-srow__preview" title=${sid} style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;color:var(--color-fg)">${session.preview}</span>
-              <code class="xmc-h-srow__sid" style="opacity:.5;font-size:.75em">${sid.slice(0, 12)}</code>
-            `
-          : html`<code class="xmc-h-srow__sid">${sid}</code>`}
-        <span class="xmc-h-srow__count">${session.message_count || 0} 轮</span>
-        <span class="xmc-h-srow__time">${timeAgo(session.updated_at)}</span>
-        <span class="xmc-h-srow__actions">
+        <div
+          class="nb-session-dot"
+          style=${isArchived
+            ? "background:var(--nb-fg-muted)"
+            : "background:var(--nb-accent);box-shadow:0 0 8px var(--nb-accent-glow)"}
+        ></div>
+        <div class="nb-session-info">
+          <div class="nb-session-title">${session.preview ? session.preview.split("\n")[0] : sid.slice(0, 16)}</div>
+          <div class="nb-session-preview">${session.preview || "无预览"}</div>
+          <div class="nb-session-meta">
+            ${isArchived
+              ? html`<span class="nb-session-tag" style="background:rgba(100,116,139,0.15);color:var(--nb-fg-tertiary);border-color:var(--nb-border)">归档</span>`
+              : null}
+            ${tags.map((tag) => html`
+              <span class="nb-session-tag" style=${tagStyle(tag)}>${tag}</span>
+            `)}
+            <span style="font-size:11px;color:var(--nb-fg-muted)">${session.message_count || 0} 消息 · ${timeAgo(session.updated_at)}</span>
+          </div>
+        </div>
+        <div class="nb-session-actions" onClick=${(e) => e.stopPropagation()}>
           ${onResume
             ? html`
               <button
-                type="button"
-                class="xmc-h-btn xmc-h-btn--ghost"
-                onClick=${(e) => { e.stopPropagation(); onResume(sid); }}
+                class="nb-session-action"
                 title="在 Chat 中恢复"
-              >
-                <${Icon} d=${I_PLAY} />
-              </button>
+                onClick=${(e) => { e.stopPropagation(); onResume(sid); }}
+              >▶</button>
             `
             : null}
           <button
-            type="button"
-            class="xmc-h-btn xmc-h-btn--ghost"
+            class="nb-session-action"
+            title=${isArchived ? "取消归档" : "归档"}
+            onClick=${(e) => { e.stopPropagation(); onArchive(sid); }}
+          >📦</button>
+          <button
+            class="nb-session-action"
+            title="导出"
+            onClick=${(e) => { e.stopPropagation(); onExport(sid); }}
+          >⬇</button>
+          <button
+            class="nb-session-action"
+            title="删除"
             onClick=${(e) => { e.stopPropagation(); onDelete(sid); }}
-            title="删除会话"
-          >
-            <${Icon} d=${I_TRASH} />
-          </button>
-        </span>
-      </button>
+            disabled=${deletingId === sid}
+          >${deletingId === sid ? "⏳" : "🗑"}</button>
+        </div>
+      </div>
       ${expanded
         ? html`
-          <div class="xmc-h-srow__body" style="flex:0 0 100%;width:100%">
+          <div
+            class="xmc-h-srow__body"
+            style="margin-top:8px;border-radius:var(--nb-radius-md);border:1px solid var(--nb-border);background:var(--nb-bg-glass);padding:12px 16px;"
+          >
             ${error
               ? html`<div class="xmc-h-error">${error}</div>`
               : loading
@@ -286,11 +327,7 @@ export function SessionRow({
           <div
             class="xmc-h-srow__snippet"
             title="服务端搜索命中片段"
-            style=${"flex:0 0 100%;width:100%;padding:.25rem .8rem .5rem 2.4rem;"
-              + "color:var(--color-fg-muted, rgba(127,127,127,.85));"
-              + "font-family:var(--xmc-mono, monospace);"
-              + "font-size:.78em;line-height:1.45;"
-              + "white-space:pre-wrap;word-break:break-word"}
+            style="padding:4px 16px 8px 16px;color:var(--nb-fg-muted);font-family:var(--nb-font-mono,monospace);font-size:0.78em;line-height:1.45;white-space:pre-wrap;word-break:break-word;"
           >…${matchSnippet}…</div>
         `
         : null}
@@ -299,7 +336,7 @@ export function SessionRow({
 }
 
 
-// ── DeleteConfirmDialog (port of components/DeleteConfirmDialog.tsx) ──
+// ── DeleteConfirmDialog (kept for backward compatibility) ──
 
 export function DeleteConfirmDialog({ sid, onCancel, onConfirm, busy }) {
   if (!sid) return null;

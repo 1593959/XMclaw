@@ -170,3 +170,116 @@ html {
   --ds-border-strong: #ffffff;
   --ds-ring: #ffff00;
 }
+
+/* ── Claw Theme (Deep Space · 深空爪) ───────────────────────────── */
+
+[data-theme="claw"] {
+  /* Surfaces — deep space ink palette */
+  --ds-bg-base: #0a0b0f;
+  --ds-bg-surface: #0f1118;
+  --ds-bg-elevated: #161a22;
+  --ds-bg-inset: #06070a;
+
+  /* Foregrounds */
+  --ds-fg-primary: #eaedf3;
+  --ds-fg-secondary: #969db0;
+  --ds-fg-tertiary: #596172;
+  --ds-fg-muted: #3a4050;
+  --ds-fg-on-accent: #0a0b0f;
+
+  /* Accents — electric lime (signature) */
+  --ds-accent: #c8ff4d;
+  --ds-accent-hover: #d4ff70;
+  --ds-accent-subtle: rgba(200, 255, 77, 0.12);
+
+  /* Extended claw palette (for HUD, code, tools) */
+  --ds-claw-lime: #c8ff4d;
+  --ds-claw-lime-dim: #9bd23a;
+  --ds-claw-cyan: #5de3ff;
+  --ds-claw-violet: #9b7bff;
+  --ds-claw-amber: #ffc24d;
+
+  /* Status */
+  --ds-success: #4ade80;
+  --ds-warning: #ffc24d;
+  --ds-destructive: #fb2c36;
+
+  /* Borders */
+  --ds-border: rgba(234, 237, 243, 0.08);
+  --ds-border-strong: rgba(234, 237, 243, 0.15);
+  --ds-ring: #c8ff4d;
+
+  /* Typography — JetBrains Mono for HUD + system sans for body */
+  --ds-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ds-font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --ds-base-size: 14px;
+  --ds-line-height: 1.62;
+
+  /* Layout */
+  --ds-radius-sm: 6px;
+  --ds-radius-md: 9px;
+  --ds-radius-lg: 11px;
+  --ds-radius-xl: 15px;
+  --ds-spacing-unit: 4px;
+
+  /* Glow effects */
+  --ds-glow-lime: 0 0 18px rgba(200, 255, 77, 0.22);
+  --ds-glow-cyan: 0 0 16px rgba(93, 227, 255, 0.30);
+}
+
+/* ── Nebula Theme (Deep Space · 星云紫) ─────────────────────────── */
+
+[data-theme="nebula"] {
+  /* Surfaces — deep space ink palette */
+  --ds-bg-base: #0B0E14;
+  --ds-bg-surface: #111827;
+  --ds-bg-elevated: #1E293B;
+  --ds-bg-inset: #0F172A;
+
+  /* Foregrounds */
+  --ds-fg-primary: #F1F5F9;
+  --ds-fg-secondary: #94A3B8;
+  --ds-fg-tertiary: #64748B;
+  --ds-fg-muted: #475569;
+  --ds-fg-on-accent: #ffffff;
+
+  /* Accents — nebula purple (signature) */
+  --ds-accent: #8B5CF6;
+  --ds-accent-hover: #A78BFA;
+  --ds-accent-subtle: rgba(139, 92, 246, 0.12);
+
+  /* Extended nebula palette */
+  --ds-nebula-purple: #8B5CF6;
+  --ds-nebula-purple-light: #A78BFA;
+  --ds-nebula-cyan: #06B6D4;
+  --ds-nebula-cyan-light: #22D3EE;
+  --ds-nebula-amber: #F59E0B;
+  --ds-nebula-amber-light: #FBBF24;
+
+  /* Status */
+  --ds-success: #10B981;
+  --ds-warning: #F59E0B;
+  --ds-destructive: #EF4444;
+
+  /* Borders */
+  --ds-border: rgba(148, 163, 184, 0.10);
+  --ds-border-strong: rgba(148, 163, 184, 0.20);
+  --ds-ring: #8B5CF6;
+
+  /* Typography */
+  --ds-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ds-font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --ds-base-size: 14px;
+  --ds-line-height: 1.62;
+
+  /* Layout */
+  --ds-radius-sm: 6px;
+  --ds-radius-md: 10px;
+  --ds-radius-lg: 14px;
+  --ds-radius-xl: 20px;
+  --ds-spacing-unit: 4px;
+
+  /* Glow effects */
+  --ds-glow-purple: 0 0 20px rgba(139, 92, 246, 0.25);
+  --ds-glow-cyan: 0 0 16px rgba(6, 182, 212, 0.25);
+}

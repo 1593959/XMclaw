@@ -19,12 +19,14 @@ import { MermaidView } from "./CanvasArtifact.js";
 export function ToolCard({ call }) {
   // Hermes ToolCall.tsx pattern: status-tinted card with bullet ●
   // (running/done/error tones), auto-expand on error, user can override.
-  // We use <details open> bound to a derived default so error rows
-  // open automatically the moment the result arrives.
+  // Nebula v2: flat .nb-toolcard with shimmer on running state.
   const tone =
     call.status === "ok" ? "success" : call.status === "error" ? "error" : "muted";
   const label =
     call.status === "ok" ? "ok" : call.status === "error" ? "error" : "running";
+  const statusIcon = call.status === "ok" ? "✓"
+    : call.status === "error" ? "✗"
+    : null;
   const argsPreview = (() => {
     try {
       // B-Canvas: if content is a JSON string (canvas_create/update),
@@ -49,16 +51,6 @@ export function ToolCard({ call }) {
       return String(call.args);
     }
   })();
-  // Wave 26 fix-3: media (images/videos/audios) renders OUTSIDE the
-  // collapsible <details>, so we DON'T need to auto-open the card on
-  // media presence anymore — the screenshot is always visible above
-  // or below the fold-button. Only auto-open on error so the user
-  // sees the failure detail without a click.
-  const hasMedia = (
-    (Array.isArray(call.images) && call.images.length > 0)
-    || (Array.isArray(call.videos) && call.videos.length > 0)
-    || (Array.isArray(call.audios) && call.audios.length > 0)
-  );
 
   // B-130: detect skill tool-calls so the user can SEE in-chat when
   // the agent autonomously picked a skill (vs reaching for a generic
@@ -97,47 +89,48 @@ export function ToolCard({ call }) {
     ? (call.args?.agent_id || (call.args?.task_id ? "(by task)" : null))
     : null;
 
-  const cardModifier = isAnySkill ? " xmc-toolcard--skill"
-    : isAgentTool ? " xmc-toolcard--agent" : "";
-  const bullet = isAnySkill ? "⚡" : isAgentTool ? "🤝" : "●";
-  // Wave 26 fix-3: tool-attached media (images/videos/audios) renders
-  // OUTSIDE the collapsible <details> so it stays visible even when the
-  // user folds away the args/result panel. Previously the user had to
-  // keep the "参数" section open to see screenshots — folding hid them.
   const hasImages = Array.isArray(call.images) && call.images.length > 0;
   const hasVideos = Array.isArray(call.videos) && call.videos.length > 0;
   const hasAudios = Array.isArray(call.audios) && call.audios.length > 0;
+  const hasMedia = hasImages || hasVideos || hasAudios;
+
+  // Shimmer animation bar for running state
+  const shimmer = call.status === "running"
+    ? html`<div style="position:absolute;top:0;left:0;height:2px;width:30%;background:linear-gradient(90deg,transparent,var(--nb-cyan),transparent);animation:shimmer 1.3s linear infinite;"></div>`
+    : null;
+
   return html`
-    <div class=${"xmc-toolcard-wrap" + (hasMedia ? " has-media" : "")}>
-      <details
-        class=${"xmc-toolcard xmc-toolcard--" + call.status + cardModifier}
-        open=${call.status === "error" || call.name === "canvas_create" || call.name === "canvas_update"}
-      >
-        <summary
-          class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
-        >
-          <span class="xmc-toolcard__bullet" aria-hidden="true">${bullet}</span>
+    <div class="nb-toolcard-wrap" style=${hasMedia ? "" : ""}>
+      <div class="nb-toolcard" style="position:relative;">
+        <div class="nb-toolcard__header">
+          <span aria-hidden="true">⌁</span>
+          <b>${displayName}</b>
+          ${targetAgent
+            ? html`<span style="color:var(--nb-fg-muted)">→ <code style="font-family:var(--nb-font-mono)">${targetAgent}</code></span>`
+            : null}
           ${(isAnySkill || isAgentTool)
             ? html`<${Badge} tone=${isAgentTool ? "warn" : "success"} title=${`${skillLabel} — agent 自主选取的`}>${skillLabel}</${Badge}>`
             : null}
-          <code class="xmc-toolcard__name">${displayName}</code>
-          ${targetAgent
-            ? html`<small style="color:var(--xmc-fg-muted)">→ <code style="font-family:var(--xmc-font-mono)">${targetAgent}</code></small>`
-            : null}
-          <${Badge} tone=${tone}>${label}</${Badge}>
+          <span class="ok" style="margin-left:auto;color:${call.status === 'ok' ? 'var(--nb-success)' : call.status === 'error' ? 'var(--nb-error)' : 'var(--nb-cyan-light)'};font-weight:600;">
+            ${statusIcon ? html`${statusIcon} ${label}` : label}
+          </span>
           ${call.status === "running"
             ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
             : null}
-        </summary>
-        <div class="xmc-toolcard__body">
-          <div class="xmc-toolcard__section">
-            <div class="xmc-toolcard__label">参数</div>
-            <${CodeBlock} code=${argsPreview} lang="json" />
-          </div>
+        </div>
+        <div class="nb-toolcard__body">
+          ${argsPreview
+            ? html`
+                <div style="margin-bottom:8px;">
+                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">参数</div>
+                  <${CodeBlock} code=${argsPreview} lang="json" />
+                </div>
+              `
+            : null}
           ${call.result != null
             ? html`
-                <div class="xmc-toolcard__section">
-                  <div class="xmc-toolcard__label">${call.status === "error" ? "错误" : "结果"}</div>
+                <div>
+                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">${call.status === "error" ? "错误" : "结果"}</div>
                   <${CodeBlock}
                     code=${(() => {
                       const raw = typeof call.result === "string"
@@ -153,24 +146,25 @@ export function ToolCard({ call }) {
               `
             : null}
         </div>
-      </details>
+        ${shimmer}
+      </div>
       ${hasImages
-        ? html`<${ToolMediaImages} images=${call.images} />`
+        ? html`<${AttachmentGrid} images=${call.images} />`
         : null}
       ${hasVideos
         ? html`
-            <div class="xmc-toolcard__media">
+            <div class="nb-attachment-grid">
               ${call.videos.map((src, i) => html`
-                <video key=${"v" + i} src=${src} controls preload="metadata" class="xmc-toolcard__video" />
+                <video key=${"v" + i} src=${src} controls preload="metadata" style="width:100%;height:120px;object-fit:cover;border-radius:var(--nb-radius-md);" />
               `)}
             </div>
           `
         : null}
       ${hasAudios
         ? html`
-            <div class="xmc-toolcard__media">
+            <div class="nb-attachment-grid">
               ${call.audios.map((src, i) => html`
-                <audio key=${"a" + i} src=${src} controls preload="metadata" class="xmc-toolcard__audio" />
+                <audio key=${"a" + i} src=${src} controls preload="metadata" style="width:100%;border-radius:var(--nb-radius-md);" />
               `)}
             </div>
           `
@@ -179,32 +173,30 @@ export function ToolCard({ call }) {
   `;
 }
 
-// Wave 26 fix-3: tool-screenshot gallery rendered OUTSIDE the
-// collapsible card. Clicking opens the in-app lightbox (no tab
-// switch, no scroll loss) and the row exposes the whole image list
-// so left/right arrow keys can flip between thumbnails.
-function ToolMediaImages({ images }) {
+function AttachmentGrid({ images }) {
   return html`
-    <div class="xmc-toolcard__media">
+    <div class="nb-attachment-grid">
       ${images.map((src, i) => html`
         <button
           key=${i}
           type="button"
-          class="xmc-toolcard__media-btn"
+          class="nb-attachment-item"
           onClick=${() => openLightbox(src, {
-            alt: `tool image ${i + 1}`,
+            alt: `attachment ${i + 1}`,
             items: images,
             index: i,
           })}
           title="点击查看大图"
-          aria-label=${`tool image ${i + 1}`}
+          aria-label=${`attachment ${i + 1}`}
         >
+          <div class="nb-attachment-item__type">IMG</div>
           <img
             src=${src}
-            alt=${"tool image " + (i + 1)}
+            alt=${"attachment " + (i + 1)}
             loading="lazy"
-            class="xmc-toolcard__media-img"
+            style="width:100%;height:120px;object-fit:cover;display:block;"
           />
+          <div class="nb-attachment-item__name">attachment ${i + 1}</div>
         </button>
       `)}
     </div>
@@ -238,7 +230,7 @@ const _SYSTEM_FENCES = [
   "recalled-memory-files",  // relevant file picker (agent_loop:1519)
 ];
 const _FENCE_RE = new RegExp(
-  "\\n*<(" + _SYSTEM_FENCES.join("|") + ")\\b[^>]*>[\\s\\S]*?<\\/\\1>\\n*",
+  "\\n*(" + _SYSTEM_FENCES.join("|") + ")\\b[^>]*>[\\s\\S]*?<\\/\\1>\\n*",
   "g",
 );
 function _stripSystemFences(s) {
@@ -255,7 +247,7 @@ export function MarkdownBody({ content }) {
   const cleaned = _stripSystemFences(content || "");
   const tokens = lex(cleaned);
   if (!tokens.length) {
-    return html`<div class="xmc-msg__body xmc-md"></div>`;
+    return html`<div class="nb-md"></div>`;
   }
   // Wave 26 fix-3: click delegation for inline markdown images. The
   // '<img>' lives inside a sanitized HTML blob (we can't attach an
@@ -270,7 +262,7 @@ export function MarkdownBody({ content }) {
     }
   };
   return html`
-    <div class="xmc-msg__body xmc-md" onClick=${onClickDelegate}>
+    <div class="nb-md" onClick=${onClickDelegate}>
       ${tokens.map((tok) => {
         // Intercept code tokens so we can render them through CodeBlock
         // (lang badge + copy button). marked@12 emits {type:"code",
@@ -302,7 +294,7 @@ export function MarkdownBody({ content }) {
               src=${src}
               alt=${alt}
               loading="lazy"
-              class="xmc-md__image"
+              class="nb-md__image"
               title=${tok.title || alt || "点击查看大图"}
             />
           `;
@@ -327,11 +319,13 @@ export function MarkdownBody({ content }) {
 
 export function ThinkingDots({ label = "正在思考" }) {
   return html`
-    <div class="xmc-thinking" role="status" aria-live="polite">
-      <span class="xmc-thinking__label">${label}</span>
-      <span class="xmc-thinking__dot"></span>
-      <span class="xmc-thinking__dot"></span>
-      <span class="xmc-thinking__dot"></span>
+    <div style="display:flex;align-items:center;gap:8px;padding:10px 0;" role="status" aria-live="polite">
+      <span style="font-size:12px;color:var(--nb-fg-muted);">${label}</span>
+      <div class="nb-typing-indicator" style="padding:0;">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
     </div>
   `;
 }
@@ -357,53 +351,52 @@ export function WorkerCard({ call }) {
     : call.status === "error" ? "失败"
     : "执行中";
   const bullet = "🐝";
+  const shimmer = call.status === "running"
+    ? html`<div style="position:absolute;top:0;left:0;height:2px;width:30%;background:linear-gradient(90deg,transparent,var(--nb-cyan),transparent);animation:shimmer 1.3s linear infinite;"></div>`
+    : null;
   return html`
-    <div class="xmc-toolcard-wrap">
-      <details
-        class=${"xmc-toolcard xmc-toolcard--" + call.status + " xmc-toolcard--worker"}
-        open=${call.status === "error"}
-      >
-        <summary
-          class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
-        >
-          <span class="xmc-toolcard__bullet" aria-hidden="true">${bullet}</span>
-          <code class="xmc-toolcard__name">worker ${call.workerId || "?"}</code>
-          <small style="color:var(--xmc-fg-muted)">· task <code style="font-family:var(--xmc-font-mono)">${call.taskId || "?"}</code></small>
+    <div class="nb-toolcard-wrap">
+      <div class="nb-toolcard" style="position:relative;">
+        <div class="nb-toolcard__header">
+          <span aria-hidden="true">${bullet}</span>
+          <b>worker ${call.workerId || "?"}</b>
+          <span style="color:var(--nb-fg-muted)">· task <code style="font-family:var(--nb-font-mono)">${call.taskId || "?"}</code></span>
           <${Badge} tone=${tone}>${label}</${Badge}>
           ${call.status === "running"
             ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
             : null}
           ${call.elapsedSeconds != null
-            ? html`<small style="color:var(--xmc-fg-muted)">${call.elapsedSeconds}s</small>`
+            ? html`<span style="color:var(--nb-fg-muted)">${call.elapsedSeconds}s</span>`
             : null}
-        </summary>
-        <div class="xmc-toolcard__body">
+        </div>
+        <div class="nb-toolcard__body">
           ${call.promptPreview
             ? html`
-                <div class="xmc-toolcard__section">
-                  <div class="xmc-toolcard__label">任务提示</div>
+                <div style="margin-bottom:8px;">
+                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">任务提示</div>
                   <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.promptPreview}</pre>
                 </div>
               `
             : null}
           ${call.outputPreview
             ? html`
-                <div class="xmc-toolcard__section">
-                  <div class="xmc-toolcard__label">输出预览</div>
+                <div style="margin-bottom:8px;">
+                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">输出预览</div>
                   <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.outputPreview}</pre>
                 </div>
               `
             : null}
           ${call.error
             ? html`
-                <div class="xmc-toolcard__section">
-                  <div class="xmc-toolcard__label">错误</div>
+                <div>
+                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">错误</div>
                   <${CodeBlock} code=${call.error} lang="" />
                 </div>
               `
             : null}
         </div>
-      </details>
+        ${shimmer}
+      </div>
     </div>
   `;
 }
@@ -425,54 +418,53 @@ export function SubagentCard({ call }) {
   const bullet = "⚡";
   const idx = call.subagentIndex ?? "?";
   const role = call.role_hint || "general";
+  const shimmer = call.status === "running"
+    ? html`<div style="position:absolute;top:0;left:0;height:2px;width:30%;background:linear-gradient(90deg,transparent,var(--nb-cyan),transparent);animation:shimmer 1.3s linear infinite;"></div>`
+    : null;
   return html`
-    <div class="xmc-toolcard-wrap">
-      <details
-        class=${"xmc-toolcard xmc-toolcard--" + call.status + " xmc-toolcard--subagent"}
-        open=${call.expanded !== false}
-      >
-        <summary
-          class=${"xmc-toolcard__summary" + (call.status === "running" ? " is-running" : "")}
-        >
-          <span class="xmc-toolcard__bullet" aria-hidden="true">${bullet}</span>
-          <code class="xmc-toolcard__name">subagent #${idx}</code>
-          <small style="color:var(--xmc-fg-muted)">· ${role}</small>
+    <div class="nb-toolcard-wrap">
+      <div class="nb-toolcard" style="position:relative;">
+        <div class="nb-toolcard__header">
+          <span aria-hidden="true">${bullet}</span>
+          <b>subagent #${idx}</b>
+          <span style="color:var(--nb-fg-muted)">· ${role}</span>
           <${Badge} tone=${tone}>${label}</${Badge}>
           ${call.status === "running"
             ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
             : null}
-          ${call.hops ? html`<small style="color:var(--xmc-fg-muted)">${call.hops} hops</small>` : null}
+          ${call.hops ? html`<span style="color:var(--nb-fg-muted)">${call.hops} hops</span>` : null}
           ${call.elapsedSeconds != null
-            ? html`<small style="color:var(--xmc-fg-muted)">${call.elapsedSeconds}s</small>`
+            ? html`<span style="color:var(--nb-fg-muted)">${call.elapsedSeconds}s</span>`
             : null}
-        </summary>
-        <div class="xmc-toolcard__body">
+        </div>
+        <div class="nb-toolcard__body">
           ${call.promptPreview
             ? html`
-                <div class="xmc-toolcard__section">
-                  <div class="xmc-toolcard__label">子任务</div>
+                <div style="margin-bottom:8px;">
+                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">子任务</div>
                   <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.promptPreview}</pre>
                 </div>
               `
             : null}
           ${call.outputPreview
             ? html`
-                <div class="xmc-toolcard__section">
-                  <div class="xmc-toolcard__label">产出</div>
+                <div style="margin-bottom:8px;">
+                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">产出</div>
                   <${MarkdownBody} content=${call.outputPreview} />
                 </div>
               `
             : null}
           ${call.error
             ? html`
-                <div class="xmc-toolcard__section">
-                  <div class="xmc-toolcard__label">错误</div>
+                <div>
+                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">错误</div>
                   <${CodeBlock} code=${call.error} lang="" />
                 </div>
               `
             : null}
         </div>
-      </details>
+        ${shimmer}
+      </div>
     </div>
   `;
 }

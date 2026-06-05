@@ -100,7 +100,7 @@ export function LightboxViewport() {
   };
   return html`
     <div
-      class="xmc-lightbox"
+      class="nb-lightbox show"
       role="dialog"
       aria-modal="true"
       aria-label="图片预览"
@@ -108,7 +108,7 @@ export function LightboxViewport() {
     >
       <button
         type="button"
-        class="xmc-lightbox__close"
+        class="nb-lightbox__close"
         onClick=${closeLightbox}
         aria-label="关闭"
         title="关闭 (Esc)"
@@ -116,14 +116,14 @@ export function LightboxViewport() {
       ${hasMany ? html`
         <button
           type="button"
-          class="xmc-lightbox__nav xmc-lightbox__nav--prev"
+          class="nb-lightbox__nav nb-lightbox__nav--prev"
           onClick=${() => go(-1)}
           aria-label="上一张"
           title="上一张 (←)"
         >‹</button>
       ` : null}
       <img
-        class="xmc-lightbox__img"
+        class="nb-lightbox__img"
         src=${snap.src}
         alt=${snap.alt}
         onClick=${(e) => e.stopPropagation()}
@@ -131,12 +131,12 @@ export function LightboxViewport() {
       ${hasMany ? html`
         <button
           type="button"
-          class="xmc-lightbox__nav xmc-lightbox__nav--next"
+          class="nb-lightbox__nav nb-lightbox__nav--next"
           onClick=${() => go(1)}
           aria-label="下一张"
           title="下一张 (→)"
         >›</button>
-        <div class="xmc-lightbox__counter">${snap.index + 1} / ${snap.items.length}</div>
+        <div class="nb-lightbox__counter">${snap.index + 1} / ${snap.items.length}</div>
       ` : null}
     </div>
   `;

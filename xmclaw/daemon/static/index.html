@@ -5,12 +5,12 @@
   Tech: Preact + htm via ESM (see bootstrap.js for CDN / vendor switch)
   No build step. Edit + refresh.
 -->
-<html lang="zh-CN" data-theme="teal" data-density="comfortable">
+<html lang="zh-CN" data-theme="nebula" data-density="comfortable">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#1a1f2a" />
+    <meta name="theme-color" content="#0a0b0f" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <!-- Wave-27 fix-15 (2026-05-16): mirror the legacy iOS-only
          name to the W3C standard so Chromium-family browsers
@@ -26,6 +26,7 @@
     <!-- Hermes 1:1 design system. Tokens first; everything else cascades. -->
     <link rel="stylesheet" href="./styles/hermes-tokens.css" />
     <link rel="stylesheet" href="./styles/design-system.css" />
+    <link rel="stylesheet" href="./styles/theme-claw.css" />
     <link rel="stylesheet" href="./styles/token-compat.css" />
     <link rel="stylesheet" href="./styles/navigation.css" />
     <link rel="stylesheet" href="./styles/reset.css" />
@@ -58,6 +59,7 @@
     <link rel="stylesheet" href="./styles/toast.css" />
     <link rel="stylesheet" href="./styles/page-layout.css" />
     <link rel="stylesheet" href="./components/atoms/atoms.css" />
+    <link rel="stylesheet" href="./styles/theme-nebula.css" />
     <!-- Sprint 1 Wave 4: mobile-responsive overrides. MUST be last
          in the stylesheet chain so its breakpoint rules win the cascade
          against earlier desktop styles. -->

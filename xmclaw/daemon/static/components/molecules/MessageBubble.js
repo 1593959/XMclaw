@@ -56,24 +56,23 @@ function ThinkingRow({ ev }) {
   const body = (ev && ev.content) || "";
   const hasBody = body.trim().length > 0;
   return html`
-    <details class="xmc-toolcard xmc-toolcard--ok xmc-toolcard--thinking">
-      <summary class="xmc-toolcard__summary">
-        <span class="xmc-toolcard__bullet" aria-hidden="true">💡</span>
-        <code class="xmc-toolcard__name">Thinking</code>
+    <div class="nb-toolcard" style="position:relative;">
+      <div class="nb-toolcard__header">
+        <span aria-hidden="true">💡</span>
+        <b>Thinking</b>
         ${hasBody
-          ? html`<small style="color:var(--xmc-fg-muted);margin-left:.3em">${body.length} chars</small>`
+          ? html`<span style="color:var(--nb-fg-muted);margin-left:.3em;font-size:11px;">${body.length} chars</span>`
           : null}
-      </summary>
+        <span class="ok" style="margin-left:auto;color:var(--nb-success);font-weight:600;font-size:11px;">✓</span>
+      </div>
       ${hasBody
         ? html`
-            <div class="xmc-toolcard__body">
-              <div class="xmc-toolcard__section">
-                <pre class="xmc-phasecard__thinking-body" style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${body}</pre>
-              </div>
+            <div class="nb-toolcard__body">
+              <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5;margin:0;">${body}</pre>
             </div>
           `
         : null}
-    </details>
+    </div>
   `;
 }
 
@@ -349,7 +348,7 @@ export function MessageBubble({ message, onAnswerQuestion }) {
                 onClick=${onTogglePlay}
                 aria-pressed=${playing ? "true" : "false"}
                 title=${playing ? "停止朗读" : "朗读这条回复"}
-                style="margin-left:auto;background:none;border:none;cursor:pointer;font-size:.9rem;color:var(--xmc-fg-muted);padding:.2rem .4rem;border-radius:4px"
+                style="margin-left:auto;background:none;border:none;cursor:pointer;font-size:.9rem;color:var(--nb-fg-muted);padding:.2rem .4rem;border-radius:4px"
               >${playing ? "⏹" : "🔊"}</button>
             `
           : null}
@@ -414,12 +413,12 @@ export function MessageBubble({ message, onAnswerQuestion }) {
             )}
             ${Array.isArray(message.images) && message.images.length > 0
               ? html`
-                  <div class="xmc-msg__images">
+                  <div class="nb-attachment-grid">
                     ${message.images.map((src, i) => html`
                       <button
                         key=${i}
                         type="button"
-                        class="xmc-msg__image-btn"
+                        class="nb-attachment-item"
                         onClick=${() => openLightbox(src, {
                           alt: `attachment ${i + 1}`,
                           items: message.images,
@@ -427,7 +426,9 @@ export function MessageBubble({ message, onAnswerQuestion }) {
                         })}
                         title="点击查看大图"
                       >
-                        <img src=${src} alt=${"attachment " + (i + 1)} loading="lazy" class="xmc-msg__image" />
+                        <div class="nb-attachment-item__type">IMG</div>
+                        <img src=${src} alt=${"attachment " + (i + 1)} loading="lazy" style="width:100%;height:120px;object-fit:cover;display:block;" />
+                        <div class="nb-attachment-item__name">attachment ${i + 1}</div>
                       </button>
                     `)}
                   </div>
@@ -435,18 +436,18 @@ export function MessageBubble({ message, onAnswerQuestion }) {
               : null}
             ${Array.isArray(message.videos) && message.videos.length > 0
               ? html`
-                  <div class="xmc-msg__videos">
+                  <div class="nb-attachment-grid">
                     ${message.videos.map((src, i) => html`
-                      <video key=${"v" + i} src=${src} controls preload="metadata" class="xmc-msg__video" />
+                      <video key=${"v" + i} src=${src} controls preload="metadata" style="width:100%;height:120px;object-fit:cover;border-radius:var(--nb-radius-md);" />
                     `)}
                   </div>
                 `
               : null}
             ${Array.isArray(message.audios) && message.audios.length > 0
               ? html`
-                  <div class="xmc-msg__audios">
+                  <div style="display:flex;flex-direction:column;gap:8px;margin:10px 0;">
                     ${message.audios.map((src, i) => html`
-                      <audio key=${"a" + i} src=${src} controls preload="metadata" class="xmc-msg__audio" />
+                      <audio key=${"a" + i} src=${src} controls preload="metadata" style="width:100%;border-radius:var(--nb-radius-md);" />
                     `)}
                   </div>
                 `
@@ -477,13 +478,14 @@ function MemoryMemo({ memo }) {
     : memo.layer || "记忆";
   return html`
     <div
-      class="xmc-memory-memo"
+      class="nb-memory-memo"
       role="note"
       title=${memo.reason ? `为什么记: ${memo.reason}` : "已写入记忆"}
+      style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin:4px 0;border-radius:var(--nb-radius-sm);background:var(--nb-bg-elevated);border:1px solid var(--nb-border);font-size:12px;"
     >
-      <span class="xmc-memory-memo__icon" aria-hidden="true">📝</span>
+      <span aria-hidden="true">📝</span>
       <${Badge} tone="success">${layerLabel}</${Badge}>
-      <span class="xmc-memory-memo__text">${memo.text}</span>
+      <span style="color:var(--nb-fg-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${memo.text}</span>
     </div>
   `;
 }
@@ -500,10 +502,14 @@ function SkillNote({ note }) {
     : "muted";
   const verdictLabel = note.verdict || "pending";
   return html`
-    <div class="xmc-skill-note" title=${`heuristic detection (B-122) · evidence=${note.evidence}`}>
-      <span class="xmc-skill-note__icon" aria-hidden="true">⚡</span>
-      <span class="xmc-skill-note__label">触发已学技能</span>
-      <code class="xmc-skill-note__id">${note.skill_id}</code>
+    <div
+      class="nb-skill-note"
+      title=${`heuristic detection (B-122) · evidence=${note.evidence}`}
+      style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin:4px 0;border-radius:var(--nb-radius-sm);background:var(--nb-bg-elevated);border:1px solid var(--nb-border);font-size:12px;flex-wrap:wrap;"
+    >
+      <span aria-hidden="true">⚡</span>
+      <span style="color:var(--nb-fg-secondary);">触发已学技能</span>
+      <code style="font-family:var(--nb-font-mono);font-size:11px;color:var(--nb-cyan-light);background:var(--nb-bg-input);padding:2px 6px;border-radius:4px;">${note.skill_id}</code>
       <${Badge} tone="muted">~ ${note.evidence}</${Badge}>
       <${Badge} tone=${tone}>${verdictLabel}</${Badge}>
       ${note.trigger_match

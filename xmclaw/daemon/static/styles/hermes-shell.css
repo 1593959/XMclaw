@@ -346,3 +346,80 @@
 /* Footer / theme switcher / language switcher / main pane / icons —
    moved to hermes-shell-footer.css in B-47 to keep this file under
    the 500-line UI budget. */
+
+/* ── Claw Theme Brand Overrides ──────────────────────────────────────── */
+
+/* Sidebar clawmark icon container */
+.xmc-h-sidebar__clawmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: var(--ds-claw-lime, #c8ff4d);
+  filter: drop-shadow(0 0 18px rgba(200, 255, 77, 0.22));
+  flex-shrink: 0;
+}
+
+.xmc-h-sidebar__clawmark .xmc-claw-mark {
+  width: 26px;
+  height: 26px;
+}
+
+/* Mobile header claw icon */
+.xmc-h-mobheader__claw {
+  width: 18px;
+  height: 18px;
+  color: var(--ds-claw-lime, #c8ff4d);
+  filter: drop-shadow(0 0 12px rgba(200, 255, 77, 0.25));
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* When claw theme is active, sidebar brand uses flex-start layout
+   (space-between conflicts with the clawmark + title side-by-side) */
+[data-theme="claw"] .xmc-h-sidebar__brand {
+  justify-content: flex-start;
+  gap: 11px;
+  padding: 5px 7px 17px;
+  height: auto;
+  border-bottom: none;
+}
+
+[data-theme="claw"] .xmc-h-sidebar__title {
+  font-weight: 800;
+  font-size: 15.5px;
+  letter-spacing: 1.6px;
+  line-height: 1.2;
+  background: linear-gradient(90deg, var(--ds-claw-lime, #c8ff4d), var(--ds-claw-cyan, #5de3ff), var(--ds-claw-lime, #c8ff4d));
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: claw-sheen 7s linear infinite;
+}
+
+[data-theme="claw"] .xmc-h-sidebar__title br {
+  display: none;
+}
+
+/* Mobile header brand in claw theme */
+[data-theme="claw"] .xmc-h-mobheader__brand {
+  display: flex;
+  align-items: center;
+  font-weight: 800;
+  letter-spacing: 1.6px;
+  font-size: 0.95rem;
+  background: linear-gradient(90deg, var(--ds-claw-lime, #c8ff4d), var(--ds-claw-cyan, #5de3ff), var(--ds-claw-lime, #c8ff4d));
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: claw-sheen 7s linear infinite;
+}
+
+/* Ensure claw-sheen keyframe exists (also defined in theme-claw.css) */
+@keyframes claw-sheen {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}

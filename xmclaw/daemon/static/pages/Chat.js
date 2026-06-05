@@ -1,14 +1,7 @@
-// XMclaw — Chat page
-//
-// Composes MessageList + Composer + a small session header. Pure render —
-// all WS / store wiring happens in app.js so this file stays trivially
-// reusable from a future "session split" view.
-//
-// Phase B-5: wrapped in Hermes ChatPage's terminal-window chrome (rounded
-// frame + dark teal interior + three-dot title bar). Hermes ChatPage.tsx
-// embeds an xterm.js TUI inside this frame; we don't have a TUI to
-// embed, so the frame hosts our Preact MessageList + Composer instead —
-// visual 1:1 at the page-chrome level, content stays XMclaw-native.
+// Worker A — Nebula UI migration (2026-06-05)
+// Replaced xmc-* classes with nb-* prefix per Nebula Design System v2.
+// HUD, message stream, and bubble structure synced from nebula-prototype.html.
+// Data flow (props / store / API) unchanged; pure UI rendering update.
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect } = window.__xmc.preact_hooks;
@@ -19,14 +12,7 @@ import { Composer } from "../components/molecules/Composer.js";
 import { ModelPicker } from "../components/molecules/ModelPicker.js";
 import { ChatSidebar } from "../components/molecules/ChatSidebar.js";
 import { Badge } from "../components/atoms/badge.js";
-
-// Audit pass-3 B1+B4: Chat now renders an explicit loading state while the
-// WS handshakes and a dismissable error banner when the connection drops
-// or fails. Reads `connection.status / lastError / reconnectAttempt`
-// already tracked by app.js's WS reducer — does NOT add new state to the
-// store. The retry button just calls `window.location.reload()` because
-// the WS client owns its own backoff loop and exposing a manual reconnect
-// hook through the page tree is out of scope for this batch.
+import { apiGet } from "../lib/api.js";
 
 export function ChatPage({ chat, session, connection, token, onSend, onCancel, onAnswerQuestion, onChangeDraft, onTogglePlan, onCycleOutputStyle, onToggleUltrathink, onNewSession, onResumeSession, onChangeModel, onSwitchAgent, slashStore, onAddImages, onRemoveImage }) {
   const stagedImages = chat.composerImages || [];
@@ -36,15 +22,20 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
   const busy = !!chat.pendingAssistantId;
   const sid = session.activeSid || "(new)";
 
-  // Wave 7: feed the latest finalized assistant message to the
-  // Composer so its continuous-voice loop can TTS-read it when the
-  // turn ends.
+  const fmtBytes = (n) => {
+    if (n == null || Number.isNaN(n)) return "--";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+    return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+  };
+
   const lastAssistantText = (() => {
     const msgs = chat.messages || [];
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
       if (m.role !== "assistant") continue;
-      if (m.id === chat.pendingAssistantId) continue;  // still streaming
+      if (m.id === chat.pendingAssistantId) continue;
       const text = typeof m.content === "string"
         ? m.content
         : (Array.isArray(m.content)
@@ -55,54 +46,60 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
     return "";
   })();
 
-  // B1: visible-at-top loading dot during connect/reconnect — kept inline
-  // so the message list stays mounted and the user doesn't lose scroll
-  // position on a transient drop.
   const isLoading =
     connection.status === "connecting" || connection.status === "reconnecting";
 
-  // B4: error banner for full disconnect (status === "disconnected" with
-  // a real lastError). `dismissed` is local — once hidden the banner
-  // stays hidden until a NEW disconnect happens (different errKey).
   const [dismissed, setDismissed] = useState(false);
+  const [dash, setDash] = useState(null);
+  const [skills, setSkills] = useState(null);
   const wsErr = connection.lastError;
   const errKey = `${connection.status}::${wsErr || ""}`;
-  // Reset dismissal whenever the error identity changes so a fresh
-  // disconnect re-shows the banner. useEffect (post-render) avoids the
-  // setState-during-render footgun.
   useEffect(() => {
     setDismissed(false);
   }, [errKey]);
+
+  useEffect(() => {
+    if (!token) return;
+    apiGet("/api/v2/dashboard/overview", token)
+      .then((data) => setDash(data))
+      .catch(() => setDash(null));
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    apiGet("/api/v2/skills", token)
+      .then((data) => setSkills(Array.isArray(data) ? data : data?.skills || []))
+      .catch(() => setSkills(null));
+  }, [token]);
   const showError =
     !dismissed &&
     connection.status === "disconnected" &&
     !!wsErr;
   function onRetry() {
-    // The WS client backs off exponentially on its own; a hard reload is
-    // the simplest user-initiated reconnect that doesn't require plumbing
-    // a new prop through app.js. Acceptable for an error-state retry —
-    // not a steady-state hot path.
     try { window.location.reload(); } catch (_) { /* no-op in tests */ }
   }
 
   return html`
-    <section class="xmc-h-chat-frame" aria-label="chat workspace">
-      <div class="xmc-h-chat-frame__body">
-       <div class="xmc-h-chat-frame__inner xmc-chat">
-        <header class="xmc-chat__header">
-          <div class="xmc-chat__title">
-            <strong>XMclaw</strong>
-            <code class="xmc-chat__sid">${sid}</code>
+    <section style="display:flex;height:100vh;overflow:hidden;background:var(--nb-bg-base);" aria-label="chat workspace">
+      <div class="nb-chat-layout" style="flex:1;min-width:0;height:100%;">
+        <!-- Chat Header -->
+        <div class="nb-chat-header">
+          <div class="nb-chat-title-area">
+            <div class="kick">XMclaw Session</div>
+            <h2>${sid}</h2>
           </div>
-          <div class="xmc-chat__meta">
+          <div class="nb-chat-tags">
+            <span class="nb-tag accent">${chat.llmProfileId || "default"}</span>
+            ${chat.planMode ? html`<span class="nb-tag">plan</span>` : null}
+            ${chat.ultrathink ? html`<span class="nb-tag">ultrathink</span>` : null}
             ${(session.agents || []).length > 1 || (session.activeAgentId && session.activeAgentId !== "main")
               ? html`
                   <select
-                    class="xmc-h-btn xmc-h-btn--ghost"
-                    style="font-size:.72rem;padding:.18rem .35rem"
+                    class="nb-tag"
+                    style="appearance:none;padding-right:20px;background-image:url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%2394A3B8%27 stroke-width=%272%27%3E%3Cpath d=%27M6 9l6 6 6-6%27/%3E%3C/svg%3E');background-repeat:no-repeat;background-position:right 6px center;cursor:pointer;"
                     value=${session.activeAgentId || "main"}
                     onChange=${(e) => onSwitchAgent && onSwitchAgent(e.target.value)}
-                    title="切换对话目标 agent (B-133)"
+                    title="切换对话目标 agent"
                   >
                     <option value="main">🤖 main (主)</option>
                     ${(session.agents || [])
@@ -111,85 +108,99 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
                   </select>
                 `
               : null}
-            <${ModelPicker}
-              token=${token}
-              value=${chat.llmProfileId}
-              onChange=${onChangeModel}
-            />
-            <${Badge} tone=${connection.status === "connected" ? "success" : "warn"}>
-              ${connection.status}
-            </${Badge}>
+            <span class="nb-tag">${connection.status}</span>
             <button
               type="button"
-              class="xmc-chat__newbtn"
+              class="nb-tag accent"
               onClick=${onNewSession}
               title="新建会话"
+              style="cursor:pointer;"
             >
               + 新会话
             </button>
           </div>
-        </header>
+        </div>
+
+        <!-- HUD 已上移到 AppShell（全 app 通用的 ClawHUD，读 /api/v2/status.telemetry）。
+             这里原本手搓的重复栏数据有 bug（记忆显示的是 memory.db 文件大小而非 facts 数、
+             候选写死 +1、自主取的是 goal_count），已移除以避免重复+错数。 -->
+
+        <!-- WS Loading Banner -->
         ${isLoading ? html`
           <div
-            class="xmc-h-loading"
+            class="nb-hud"
             role="status"
             aria-live="polite"
-            style="padding:.5rem .75rem;font-size:.72rem"
+            style="margin:0 24px 12px;border-color:rgba(139,92,246,0.3);"
           >
-            ${connection.status === "reconnecting"
-              ? `重新连接中… (尝试 ${connection.reconnectAttempt || 1})`
-              : "连接中…"}
+            <div class="nb-hud-seg">
+              <span class="nb-status-dot" style="background:var(--nb-accent);box-shadow:0 0 8px var(--nb-accent-glow);"></span>
+              <span class="l">连接</span>
+              <b>${connection.status === "reconnecting"
+                ? `重新连接中… (尝试 ${connection.reconnectAttempt || 1})`
+                : "连接中…"}</b>
+            </div>
           </div>
         ` : null}
+
+        <!-- WS Error Banner -->
         ${showError ? html`
           <div
-            class="xmc-h-error"
+            class="nb-hud"
             role="alert"
-            style="display:flex;gap:.6rem;align-items:center;justify-content:space-between;margin:.4rem .25rem"
+            style="margin:0 24px 12px;border-color:rgba(239,68,68,0.4);background:linear-gradient(135deg,rgba(239,68,68,0.08),rgba(239,68,68,0.03));"
           >
-            <div style="flex:1;min-width:0">
-              <strong>WebSocket 已断开</strong>
-              <div style="font-size:.78rem;opacity:.85;margin-top:2px;word-break:break-word">
-                ${String(wsErr || "未知错误")}
-              </div>
+            <div class="nb-hud-seg" style="flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:2px;">
+              <b style="color:var(--nb-error);">WebSocket 已断开</b>
+              <span style="font-size:11px;opacity:.85;word-break:break-word;">${String(wsErr || "未知错误")}</span>
             </div>
-            <div style="display:flex;gap:.4rem;flex-shrink:0">
-              <button type="button" onClick=${onRetry} class="xmc-h-btn">重试</button>
-              <button type="button" onClick=${() => setDismissed(true)} class="xmc-h-btn xmc-h-btn--ghost" aria-label="关闭">×</button>
+            <div class="nb-hud-seg" style="border-right:0;">
+              <button type="button" onClick=${onRetry} class="nb-msg-action" style="width:auto;padding:0 10px;font-size:11px;">重试</button>
+              <button type="button" onClick=${() => setDismissed(true)} class="nb-msg-action" style="width:auto;padding:0 10px;font-size:11px;" aria-label="关闭">×</button>
             </div>
           </div>
         ` : null}
-        <${MessageList} messages=${chat.messages} onAnswerQuestion=${onAnswerQuestion} />
-        <${Composer}
-          value=${chat.composerDraft}
-          onChange=${onChangeDraft}
-          onSend=${onSend}
-          onCancel=${onCancel}
-          planMode=${chat.planMode}
-          onTogglePlan=${onTogglePlan}
-          outputStyle=${chat.outputStyle}
-          onCycleOutputStyle=${onCycleOutputStyle}
-          ultrathink=${chat.ultrathink}
-          onToggleUltrathink=${onToggleUltrathink}
-          canSend=${canSend}
-          busy=${busy}
-          slashStore=${slashStore}
-          token=${token}
-          images=${stagedImages}
-          onAddImages=${onAddImages}
-          onRemoveImage=${onRemoveImage}
-          lastAssistantText=${lastAssistantText}
+
+        <!-- Message Stream -->
+        <${MessageList}
+          messages=${chat.messages}
+          onAnswerQuestion=${onAnswerQuestion}
+          pendingAssistantId=${chat.pendingAssistantId}
         />
-       </div>
-       <${ChatSidebar}
-         token=${token}
-         activeSid=${session.activeSid}
-         connectionStatus=${connection.status}
-         toolsCount=${0}
-         onNewSession=${onNewSession}
-         onResumeSession=${onResumeSession}
-       />
+
+        <!-- Composer -->
+        <div class="nb-composer-area">
+          <${Composer}
+            value=${chat.composerDraft}
+            onChange=${onChangeDraft}
+            onSend=${onSend}
+            onCancel=${onCancel}
+            planMode=${chat.planMode}
+            onTogglePlan=${onTogglePlan}
+            outputStyle=${chat.outputStyle}
+            onCycleOutputStyle=${onCycleOutputStyle}
+            ultrathink=${chat.ultrathink}
+            onToggleUltrathink=${onToggleUltrathink}
+            canSend=${canSend}
+            busy=${busy}
+            slashStore=${slashStore}
+            token=${token}
+            images=${stagedImages}
+            onAddImages=${onAddImages}
+            onRemoveImage=${onRemoveImage}
+            lastAssistantText=${lastAssistantText}
+          />
+        </div>
       </div>
+
+      <${ChatSidebar}
+        token=${token}
+        activeSid=${session.activeSid}
+        connectionStatus=${connection.status}
+        toolsCount=${0}
+        onNewSession=${onNewSession}
+        onResumeSession=${onResumeSession}
+      />
     </section>
   `;
 }

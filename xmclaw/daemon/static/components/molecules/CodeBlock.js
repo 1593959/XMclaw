@@ -1,15 +1,14 @@
-// XMclaw — CodeBlock molecule (port of hermes Markdown.tsx CodeBlock)
+// XMclaw — CodeBlock molecule (Nebula v2)
 //
 // Visual:
-//   ┌─ lang badge ────────── copy button ┐
-//   │                                    │
-//   │  monospace lines, dark bg          │
-//   └────────────────────────────────────┘
+//   ┌─ lang label ────────── copy / download buttons ┐
+//   │ 1  │  code...                                    │
+//   │ 2  │  code...                                    │
+//   └──────────────────────────────────────────────────┘
 //
 // hljs syntax-highlight loaded from esm.sh on first render. The
-// language packs are lazy-loaded per code block (one extra fetch per
-// new language seen). If the network is offline or hljs fails to
-// load, we fall back to plain monospace — no broken UI.
+// language packs are lazy-loaded per code block. If the network is
+// offline or hljs fails to load, we fall back to plain monospace.
 
 const { h } = window.__xmc.preact;
 const { useState, useEffect, useRef } = window.__xmc.preact_hooks;
@@ -58,12 +57,7 @@ async function _getHljsCore() {
 }
 
 // Wave-27 fix-15 (2026-05-16): pseudo-language tags that callers
-// commonly emit but hljs has no module for. Importing them
-// produces a 404 from esm.sh — the catch below swallows it,
-// but the browser still logs "Failed to load resource" in the
-// DevTools console (impossible to suppress at the JS layer
-// because it's a network-level error). Short-circuit the
-// well-known no-op tags so the console stays clean.
+// commonly emit but hljs has no module for.
 const _HLJS_NOOP_LANGS = new Set([
   "text", "txt", "plain", "plaintext", "output",
   "raw", "log", "none", "tty",
@@ -107,6 +101,12 @@ export function CodeBlock({ code, lang, maxLines = 20 }) {
   const displayCode = (shouldFold && !expanded)
     ? lines.slice(0, maxLines).join("\n") + "\n"
     : code;
+  const displayLines = displayCode.split("\n");
+  // Remove trailing empty line created by the fold suffix if present
+  if (displayLines.length > 1 && displayLines[displayLines.length - 1] === "") {
+    displayLines.pop();
+  }
+  const lineNumbers = displayLines.map((_, i) => i + 1).join("\n");
 
   // Run hljs once mount completes. We highlight imperatively (set
   // innerHTML) instead of mapping tokens to spans because hljs's
@@ -163,37 +163,46 @@ export function CodeBlock({ code, lang, maxLines = 20 }) {
     }
   };
 
+  const onDownload = () => {
+    try {
+      const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `snippet.${lang || "txt"}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error("下载失败：" + (e.message || e));
+    }
+  };
+
   const langLabel = (lang || "").trim() || "text";
 
   return html`
-    <div class="xmc-h-codeblock">
-      <div class="xmc-h-codeblock__chrome">
-        <span class="xmc-h-codeblock__lang">${langLabel}</span>
-        <div style="display:flex;gap:.35rem;align-items:center">
+    <div class="nb-codeblock-wrap">
+      <div class="nb-codeblock-header">
+        <span class="nb-codeblock-lang">${langLabel}</span>
+        <div class="nb-codeblock-actions">
           ${shouldFold
             ? html`
                 <button
                   type="button"
-                  class="xmc-h-codeblock__copy"
                   onClick=${() => setExpanded((v) => !v)}
                   title=${expanded ? "折叠代码" : "展开代码"}
                 >${expanded ? "折叠 ↑" : `展开 ↓ (${lines.length - maxLines} 行)`}</button>
               `
             : null}
-          <button
-            type="button"
-            class=${"xmc-h-codeblock__copy " + (copied ? "is-copied" : "")}
-            onClick=${onCopy}
-            title="复制代码"
-          >${copied ? "已复制 ✓" : "复制"}</button>
+          <button type="button" onClick=${onDownload} title="下载">⬇ 下载</button>
+          <button type="button" onClick=${onCopy} title="复制">${copied ? "✓ 已复制" : "📋 复制"}</button>
         </div>
       </div>
-      <pre class="xmc-h-codeblock__pre" data-folded=${shouldFold && !expanded ? "true" : "false"}>
-        <code ref=${codeRef}>${displayCode}</code>
-        ${shouldFold && !expanded
-          ? html`<div class="xmc-h-codeblock__fade" />`
-          : null}
-      </pre>
+      <div class="nb-codeblock-v2">
+        <div class="nb-codeblock-lines">${lineNumbers}</div>
+        <pre class="nb-codeblock-code"><code ref=${codeRef}>${displayCode}</code></pre>
+      </div>
     </div>
   `;
 }

@@ -25,6 +25,7 @@ import { toast } from "../lib/toast.js";
 import { AudioSection } from "./_panels/settings_audio.js";
 import { CognitionSettings } from "./_panels/settings_cognition.js";
 import { SecuritySettings } from "./_panels/settings_security.js";
+import { CommunicationSettings } from "./_panels/settings_comm.js";
 import { PROVIDER_PRESETS, findPreset, presetIdFromProfile } from "../lib/model_presets.js";
 
 async function postJson(path, token, body) {
@@ -310,7 +311,7 @@ export function SettingsPage({ token }) {
         <h2 id="settings-title">设置</h2>
       </header>
       <nav style="display:flex;gap:.4rem;border-bottom:1px solid var(--color-border);margin-bottom:1rem;flex-wrap:wrap">
-        ${[{id:"models",label:"模型"},{id:"cognition",label:"认知"},{id:"security",label:"安全"}].map(t => html`
+        ${[{id:"models",label:"模型"},{id:"cognition",label:"认知"},{id:"security",label:"安全"},{id:"comm",label:"通信集成"}].map(t => html`
           <button key=${t.id} onClick=${() => setTab(t.id)}
             style=${`appearance:none;background:none;border:none;padding:.5rem .9rem;cursor:pointer;color:${tab===t.id?"var(--color-primary)":"var(--xmc-fg-muted)"};border-bottom:2px solid ${tab===t.id?"var(--color-primary)":"transparent"};font-weight:${tab===t.id?"600":"500"}`}>
             ${t.label}
@@ -339,6 +340,7 @@ export function SettingsPage({ token }) {
 
       ${tab === "cognition" ? html`<${CognitionSettings} token=${token} />` : null}
       ${tab === "security" ? html`<${SecuritySettings} token=${token} />` : null}
+      ${tab === "comm" ? html`<${CommunicationSettings} token=${token} />` : null}
     </section>
   `;
 }

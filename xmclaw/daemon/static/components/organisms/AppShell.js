@@ -43,6 +43,9 @@ import {
 } from "./AppShellParts.js";
 import { IconRail } from "./IconRail.js";
 import { AppHeader } from "./AppHeader.js";
+import { ClawHUD } from "../molecules/ClawHUD.js";
+import { CommPanel } from "../molecules/CommPanel.js";
+import { NotificationPanel } from "../molecules/NotificationPanel.js";
 
 // Lucide-style inline SVG icons. Each takes className for sizing.
 // Direct shape ports of the Hermes nav-icon set so visual size + stroke
@@ -78,6 +81,7 @@ const ICONS = {
   Link:          "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
   ChevronRight:  "M9 18l6-6-6-6",
   ChevronLeft:   "M15 18l-6-6 6-6",
+  ClawMark:      "M6 21 C7 13 7 7 5 3 M12 22 C13 13 13 6 11 2 M18 21 C19 13 19 7 17 3",
 };
 
 export function Icon({ name, className }) {
@@ -190,11 +194,20 @@ function persistSidebarCollapsed(v) {
   catch (_) {}
 }
 
-export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", token, tokenUsage, children }) {
+export function AppShell({ activePath, brand = "XMclaw", subBrand, token, tokenUsage, children }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  const [commOpen, setCommOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const status = useDaemonStatus(token);
+
+  // Detect current theme for sub-brand label
+  const currentTheme = typeof document !== "undefined"
+    ? document.documentElement.getAttribute("data-theme") || "dark"
+    : "dark";
+  const resolvedSubBrand = subBrand || (currentTheme === "nebula" ? "NEBULA EDITION" : "Agent");
 
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((prev) => {
@@ -207,6 +220,40 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
   const navigateTo = useCallback((path) => {
     window.dispatchEvent(new CustomEvent("xmc-navigate", { detail: { path } }));
   }, []);
+
+  // Worker F (2026-06-05): Header panel toggles + focus mode.
+  const toggleComm = useCallback(() => setCommOpen((v) => !v), []);
+  const toggleNotif = useCallback(() => setNotifOpen((v) => !v), []);
+  const toggleFocus = useCallback(() => setFocusMode((v) => !v), []);
+
+  // Close panels on Escape.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        setCommOpen(false);
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Close panels on click outside (debounced so the open-click doesn't close).
+  useEffect(() => {
+    if (!commOpen && !notifOpen) return;
+    const onClick = (e) => {
+      const target = e.target;
+      if (target.closest(".nb-comm-panel") || target.closest(".nb-notif-panel")) return;
+      if (target.closest(".nb-header-btn")) return;
+      setCommOpen(false);
+      setNotifOpen(false);
+    };
+    const id = setTimeout(() => document.addEventListener("click", onClick), 50);
+    return () => {
+      clearTimeout(id);
+      document.removeEventListener("click", onClick);
+    };
+  }, [commOpen, notifOpen]);
 
   // Close on Escape (Hermes parity).
   useEffect(() => {
@@ -260,7 +307,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
   }, [mobileOpen]);
 
   return html`
-    <div class="xmc-h-app">
+    <div class=${"xmc-h-app " + (focusMode ? "nb-focus-mode" : "")}>
       <${Backdrop} />
 
       <header class="xmc-h-mobheader">
@@ -272,7 +319,10 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
         >
           <${Icon} name="Menu" />
         </button>
-        <span class="xmc-h-mobheader__brand blend-lighter">${brand}</span>
+        <span class="xmc-h-mobheader__brand">
+          <${Icon} name="ClawMark" className="xmc-h-mobheader__claw" />
+          ${brand}
+        </span>
       </header>
 
       ${mobileOpen
@@ -280,61 +330,107 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand = "Agent", tok
         : null}
 
       <div class="xmc-h-shell-body">
-        <${IconRail}
-          activePath=${activePath === "/" ? "/sessions" : activePath}
-          sidebarCollapsed=${sidebarCollapsed}
-          onToggleSidebar=${toggleSidebar}
-          onNavigate=${navigateTo}
-        />
-
         <aside
           id="app-sidebar"
-          class=${"xmc-h-sidebar " + (mobileOpen ? "is-mobile-open" : "") + (sidebarCollapsed ? " is-collapsed" : "")}
+          class=${"xmc-h-sidebar claw-sb " + (mobileOpen ? "is-mobile-open" : "")}
           aria-label="primary navigation"
           onTouchStart=${onSidebarTouchStart}
           onTouchEnd=${onSidebarTouchEnd}
         >
-          <div class="xmc-h-sidebar__brand">
-            <strong class="xmc-h-sidebar__title blend-lighter">
-              ${brand}<br/>${subBrand}
-            </strong>
+          <div class="claw-sb__brand">
+            <span class="claw-sb__logo"><${Icon} name="ClawMark" className="claw-mark" /></span>
+            <span class="claw-sb__wordmark">XMCLAW</span>
             <button
               type="button"
-              class="xmc-h-sidebar__close"
+              class="claw-sb__close"
               onClick=${closeMobile}
               aria-label="close navigation"
-            >
-              <${Icon} name="X" />
-            </button>
+            ><${Icon} name="X" /></button>
           </div>
+
+          <button
+            type="button"
+            class="claw-sb__new"
+            onClick=${() => { navigateTo("/chat"); closeMobile(); }}
+          ><${Icon} name="ClawMark" className="claw-mark-sm" /> 新对话</button>
 
           <${ContextStrip} status=${status} tokenUsage=${tokenUsage} />
 
-          <nav class="xmc-h-nav" aria-label="primary navigation">
-            <${NavRoot}
-              activePath=${activePath === "/" ? "/sessions" : activePath}
-              onItemClick=${closeMobile}
-            />
-          </nav>
+          ${(() => {
+            // 砍繁就简：主导航只留高频核心，其余收进「更多」。
+            // 全部页面入口仍可达（功能不丢）。
+            const ap = activePath === "/" ? "/dashboard" : activePath;
+            const all = NAV_GROUPS.flatMap((g) => g.items);
+            const PRIMARY = ["/chat", "/dashboard", "/memory", "/skills"];
+            const prim = PRIMARY
+              .map((p) => all.find((i) => i.path === p))
+              .filter(Boolean);
+            const rest = all.filter((i) => !PRIMARY.includes(i.path));
+            const navItem = (i) => html`
+              <a
+                class=${"claw-nav-item" + (i.path === ap ? " is-active" : "")}
+                href=${i.path}
+                onClick=${(e) => { e.preventDefault(); navigateTo(i.path); closeMobile(); }}
+              >
+                <span class="claw-nav-item__ic"><${Icon} name=${i.icon} /></span>
+                <span class="claw-nav-item__lbl">${i.label}</span>
+                ${i.accent ? html`<span class="claw-nav-item__dot"></span>` : null}
+              </a>`;
+            return html`
+              <nav class="claw-sb__nav" aria-label="primary navigation">
+                ${prim.map(navItem)}
+                <details class="claw-sb__more" open=${rest.some((i) => i.path === ap) || null}>
+                  <summary class="claw-nav-item claw-nav-item--more">
+                    <span class="claw-nav-item__ic"><${Icon} name="Sparkles" /></span>
+                    <span class="claw-nav-item__lbl">更多</span>
+                    <span class="claw-nav-item__chev">▾</span>
+                  </summary>
+                  <div class="claw-sb__more-list">${rest.map(navItem)}</div>
+                </details>
+              </nav>`;
+          })()}
+
+          <div class="claw-sb__spacer"></div>
 
           <${SidebarSystemActions} token=${token} />
-
-          <div class="xmc-h-sidebar__footrow">
+          <div class="claw-sb__footrow">
             <${ThemeSwitcher} dropUp=${true} />
             <${LanguageSwitcher} />
           </div>
-
           <${SidebarFooter} />
         </aside>
 
         <div class="xmc-h-content-area">
-          <${AppHeader} activePath=${activePath === "/" ? "/sessions" : activePath} />
+          <${AppHeader}
+            activePath=${activePath === "/" ? "/sessions" : activePath}
+            onToggleComm=${toggleComm}
+            onToggleNotif=${toggleNotif}
+            onToggleFocus=${toggleFocus}
+            focusMode=${focusMode}
+            commOnline=${true}
+          />
+          ${(() => {
+            // ClawHUD — signature "生命体征" telemetry bar, shown on every
+            // page below the header. Fed by /api/v2/status.telemetry
+            // (via useDaemonStatus). Heartbeat: alive once status loads,
+            // idle while未连. Numbers default to 0/50 until the first poll.
+            const tel = (status && status.telemetry) || {};
+            return html`<${ClawHUD}
+              status=${status ? "alive" : "idle"}
+              memoryFacts=${tel.memory_facts || 0}
+              skillCount=${tel.skill_count || 0}
+              skillPending=${tel.skill_pending || 0}
+              autonomy=${tel.autonomy != null ? tel.autonomy : 50}
+            />`;
+          })()}
           <main class="xmc-h-main" role="main">
             <${SetupBanner} token=${token} />
             ${children}
           </main>
         </div>
       </div>
+      ${commOpen ? html`<${CommPanel} onClose=${() => setCommOpen(false)} token=${token} />` : null}
+      ${notifOpen ? html`<${NotificationPanel} onClose=${() => setNotifOpen(false)} token=${token} />` : null}
       <${BuddyMascot} />
     </div>
   `;

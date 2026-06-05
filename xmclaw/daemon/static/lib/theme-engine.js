@@ -75,6 +75,46 @@ export const THEMES = {
     typography: DEFAULT_TYPO,
     layout: DEFAULT_LAYOUT,
   },
+  claw: {
+    name: "claw",
+    label: "Claw",
+    description: "Deep space ink with electric lime accents",
+    palette: {
+      background: { hex: "#0a0b0f", alpha: 1 },
+      midground:  { hex: "#c8ff4d", alpha: 1 },
+      foreground: { hex: "#eaedf3", alpha: 0 },
+      warmGlow: "rgba(200, 255, 77, 0.22)",
+      noiseOpacity: 0.9,
+    },
+    typography: {
+      fontSans: SYSTEM_SANS,
+      fontMono: '"JetBrains Mono", ' + SYSTEM_MONO,
+      baseSize: "14px",
+      lineHeight: "1.62",
+      letterSpacing: "0",
+    },
+    layout: { radius: "0.6rem", density: "comfortable" },
+  },
+  nebula: {
+    name: "nebula",
+    label: "Nebula",
+    description: "Deep space with nebula purple and aurora cyan",
+    palette: {
+      background: { hex: "#0B0E14", alpha: 1 },
+      midground:  { hex: "#8B5CF6", alpha: 1 },
+      foreground: { hex: "#F1F5F9", alpha: 0 },
+      warmGlow: "rgba(139, 92, 246, 0.25)",
+      noiseOpacity: 0.85,
+    },
+    typography: {
+      fontSans: SYSTEM_SANS,
+      fontMono: '"JetBrains Mono", ' + SYSTEM_MONO,
+      baseSize: "14px",
+      lineHeight: "1.62",
+      letterSpacing: "0",
+    },
+    layout: { radius: "0.75rem", density: "comfortable" },
+  },
 
   /* -- Legacy Hermes themes (inline vars only, no data-theme) -- */
   default: {
@@ -212,7 +252,7 @@ export const THEMES = {
   },
 };
 
-const DS_THEME_NAMES = new Set(["dark", "light", "teal"]);
+const DS_THEME_NAMES = new Set(["dark", "light", "teal", "claw", "nebula"]);
 const DENSITY_MUL = { compact: 0.85, comfortable: 1, spacious: 1.2 };
 
 const _injectedFonts = new Set();
@@ -318,13 +358,24 @@ export function applyTheme(themeName) {
   root.dataset.hermesTheme = themeName;
 }
 
-/** Read the persisted theme name (or fallback). */
+/** Read the persisted theme name (or fallback).
+ *
+ * Order: (1) the user's stored preference, (2) the data-theme baked
+ * into index.html (the project default — e.g. "claw"), (3) "claw".
+ * Pre-fix this fell straight back to "teal" AND ignored the baked
+ * data-theme, so applyTheme(readActiveTheme()) on module load clobbered
+ * index.html's default theme on every fresh browser — the "I set
+ * data-theme=claw but it shows teal" bug. */
 export function readActiveTheme() {
+  try {
+    const baked = document.documentElement.dataset.theme;
+    if (baked && THEMES[baked]) return baked;
+  } catch (_) {}
   try {
     const v = localStorage.getItem("xmc_hermes_theme");
     if (v && THEMES[v]) return v;
   } catch (_) {}
-  return "teal";
+  return "claw";
 }
 
 /** List all available themes for UI pickers. */
