@@ -196,14 +196,7 @@ export function ChatSidebar({
             <span class="xmc-h-chatside__row-val">${toolsCount || 0}</span>
           </div>
         </div>
-        <button
-          type="button"
-          class="xmc-h-btn xmc-h-btn--primary xmc-h-chatside__newbtn"
-          onClick=${onNewSession}
-        >
-          <${Icon} d=${I_PLUS} />
-          新建会话
-        </button>
+        ${/* 「新建会话」按钮已移除：全站统一用左栏「新对话」作唯一入口（2026-06-05）。 */ null}
       </section>
 
       <section class="xmc-h-chatside__section">

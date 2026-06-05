@@ -109,15 +109,7 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
                 `
               : null}
             <span class="nb-tag">${connection.status}</span>
-            <button
-              type="button"
-              class="nb-tag accent"
-              onClick=${onNewSession}
-              title="新建会话"
-              style="cursor:pointer;"
-            >
-              + 新会话
-            </button>
+            <!-- 「+ 新会话」已移除：全站统一用左栏「新对话」作唯一入口（2026-06-05）。 -->
           </div>
         </div>
 

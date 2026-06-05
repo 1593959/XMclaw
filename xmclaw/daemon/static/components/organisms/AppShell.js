@@ -194,7 +194,7 @@ function persistSidebarCollapsed(v) {
   catch (_) {}
 }
 
-export function AppShell({ activePath, brand = "XMclaw", subBrand, token, tokenUsage, children }) {
+export function AppShell({ activePath, brand = "XMclaw", subBrand, token, tokenUsage, onNewSession, children }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [commOpen, setCommOpen] = useState(false);
@@ -351,7 +351,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand, token, tokenU
           <button
             type="button"
             class="claw-sb__new"
-            onClick=${() => { navigateTo("/chat"); closeMobile(); }}
+            onClick=${() => { if (onNewSession) onNewSession(); navigateTo("/chat"); closeMobile(); }}
           ><${Icon} name="ClawMark" className="claw-mark-sm" /> 新对话</button>
 
           <${ContextStrip} status=${status} tokenUsage=${tokenUsage} />

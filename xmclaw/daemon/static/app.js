@@ -535,7 +535,7 @@ function App({ state }) {
   const route = routes[state.route.path] || routes["*"];
   const ready = !!state.auth.fetched;
   return html`
-    <${HermesAppShell} activePath=${state.route.path} token=${state.auth.token} tokenUsage=${state.chat.tokenUsage}>
+    <${HermesAppShell} activePath=${state.route.path} token=${state.auth.token} tokenUsage=${state.chat.tokenUsage} onNewSession=${startNewSession}>
       ${ready
         ? route(state)
         : html`<div class="xmc-h-loading" style="padding:2rem;text-align:center;color:var(--xmc-fg-muted)">正在初始化…</div>`}
