@@ -306,3 +306,60 @@
   font-size: .6rem; color: var(--xi-fg-dim); display: flex; align-items: center; gap: 8px;
 }
 .xi-seclabel::after { content: ""; flex: 1; height: 1px; background: repeating-linear-gradient(90deg, var(--xi-panel-border) 0 3px, transparent 3px 7px); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   7. 全屏总控大屏（Cockpit）— 概览页专用
+   负边距突破 .xmc-h-main 内边距铺满整个内容区；控制室背景(网格+辉光)；
+   读数 hero 放大；卡片网格加密填满。给 <section> 加 .xi-cockpit 类启用。
+   ═══════════════════════════════════════════════════════════════════════ */
+.xi-cockpit {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: -1.5rem;
+  padding: 1.4rem 1.6rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background:
+    radial-gradient(900px 420px at 18% -10%, color-mix(in srgb, var(--xi-tick) 11%, transparent), transparent 70%),
+    radial-gradient(760px 380px at 110% 0%, color-mix(in srgb, var(--xi-tick-2) 9%, transparent), transparent 65%),
+    linear-gradient(var(--xi-panel-border) 1px, transparent 1px) 0 0 / 100% 38px,
+    linear-gradient(90deg, var(--xi-panel-border) 1px, transparent 1px) 0 0 / 38px 100%,
+    var(--nb-bg-base, #0B0E14);
+  background-blend-mode: normal;
+}
+@media (max-width: 1023px) { .xi-cockpit { margin: -1rem -1.5rem -2rem; } }
+@media (max-width: 639px)  { .xi-cockpit { margin: -.5rem -.75rem -1rem; padding: 1rem .9rem 1.5rem; } }
+
+/* 顶部网格线只在上半部淡淡浮现，下面用 mask 渐隐，避免整屏方格太吵 */
+.xi-cockpit::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  /* 占位：背景已在元素上，这里留作未来扫描线 */
+}
+
+/* cockpit 头部：拉满 + 更大的 SYSTEM 横幅 */
+.xi-cockpit .xmc-datapage__header { margin-bottom: 2px !important; }
+.xi-cockpit .xmc-datapage__header h2 { font-size: 1.5rem; }
+
+/* hero 读数条：更高、gauge 更大、数字更壮 */
+.xi-cockpit .xi-vitals {
+  margin-bottom: 4px;
+  box-shadow: 0 0 0 1px var(--xi-panel-border), 0 12px 40px rgba(0,0,0,.35);
+}
+.xi-cockpit .xi-vitals__cell { padding: 18px 22px; gap: 16px; }
+.xi-cockpit .xi-readout__num { font-size: 2rem; }
+.xi-cockpit .xi-gauge { transform: scale(1.18); transform-origin: left center; }
+
+/* 卡片网格：加密铺满，卡片间距更紧凑、更硬朗 */
+.xi-cockpit .xmc-dash__grid {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)) !important;
+  gap: 12px !important;
+  margin: 0 !important;
+  align-content: start;
+}
+.xi-cockpit .xmc-dash__card { border-radius: 5px !important; }
+.xi-cockpit .xmc-dash__card--wide { grid-column: 1 / -1; }
+
+/* cockpit 内 section 自身需要 relative 给伪元素定位 */
+.xi-cockpit { position: relative; }

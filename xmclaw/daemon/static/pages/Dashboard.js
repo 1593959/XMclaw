@@ -67,10 +67,10 @@ function VitalsStrip({ data }) {
       <${VitalsCell} icon=${html`<${Sparkbar} live=${true} />`}>
         <${Readout} label="UPTIME" value=${fmtDuration(up.uptime_s)} unit=${up.version ? "v" + up.version : ""} />
       </${VitalsCell}>
-      <${VitalsCell} icon=${html`<${Gauge} value=${load} size=${48} />`}>
+      <${VitalsCell} icon=${html`<${Gauge} value=${load} size=${60} />`}>
         <${Readout} label="COGNITIVE LOAD" value=${goals} unit="目标" />
       </${VitalsCell}>
-      <${VitalsCell} icon=${html`<${Gauge} value=${hit != null ? hit : 0} size=${48} showVal=${hit != null} />`}>
+      <${VitalsCell} icon=${html`<${Gauge} value=${hit != null ? hit : 0} size=${60} showVal=${hit != null} />`}>
         <${Readout} label="今日花费" value=${"$" + (cost.total_usd ?? 0).toFixed(3)} unit=${(cost.call_count || 0) + " 次"} />
       </${VitalsCell}>
       <${VitalsCell} icon=${html`<${Sparkbar} live=${evs > 0} />`}>
@@ -492,7 +492,7 @@ export function DashboardPage({ token }) {
 
   if (loading) {
     return html`
-      <section class="xmc-datapage xmc-dash" aria-labelledby="dashboard-title">
+      <section class="xmc-datapage xmc-dash xi-cockpit" aria-labelledby="dashboard-title">
         <header class="xmc-datapage__header">
           <h2 id="dashboard-title">概览</h2>
           <p class="xmc-datapage__subtitle">系统运行状态一览</p>
@@ -504,7 +504,7 @@ export function DashboardPage({ token }) {
 
   if (error) {
     return html`
-      <section class="xmc-datapage xmc-dash" aria-labelledby="dashboard-title">
+      <section class="xmc-datapage xmc-dash xi-cockpit" aria-labelledby="dashboard-title">
         <header class="xmc-datapage__header">
           <h2 id="dashboard-title">概览</h2>
         </header>
@@ -515,7 +515,7 @@ export function DashboardPage({ token }) {
 
   const now = data ? data.now : 0;
   return html`
-    <section class="xmc-datapage xmc-dash" aria-labelledby="dashboard-title">
+    <section class="xmc-datapage xmc-dash xi-cockpit" aria-labelledby="dashboard-title">
       <header class="xmc-datapage__header">
         <h2 id="dashboard-title">概览</h2>
         <p class="xmc-datapage__subtitle">每 10 秒自动刷新 · 最近一次 ${fmtTs(now)}</p>
