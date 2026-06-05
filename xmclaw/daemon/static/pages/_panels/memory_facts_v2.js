@@ -26,6 +26,7 @@ import { apiGet, apiPost, apiDelete } from "../../lib/api.js";
 import { toast } from "../../lib/toast.js";
 import { FactsGraphView } from "./memory_facts_v2_graph.js";
 import { EmbedderInfoPanel } from "./memory_facts_v2_embedder.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../../components/molecules/Instrument.js";
 
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -131,12 +132,20 @@ function StatusBanner({ status, onRetry }) {
     `;
   }
   return html`
-    <div
-      style="margin:.4rem 0;padding:.5rem .8rem;background:color-mix(in srgb, var(--color-success) 8%, transparent);border-radius:6px;display:flex;gap:1rem;align-items:center;flex-wrap:wrap;font-size:.85rem"
-    >
-      <span><strong>${status.fact_count}</strong> facts</span>
-      <span>embedder: <code>${status.embedder_name}</code> (dim ${status.embedder_dim})</span>
-    </div>
+    <${Vitals}>
+      <${VitalsCell} icon=${html`<${Sparkbar} live=${true} />`}>
+        <${Readout} label="L1 FACTS" value=${status.fact_count} unit="结构化事实" />
+      </${VitalsCell}>
+      <${VitalsCell}>
+        <${Readout} label="EMBEDDER" value=${status.embedder_name || "—"} />
+      </${VitalsCell}>
+      <${VitalsCell}>
+        <${Readout} label="向量维度" value=${status.embedder_dim} unit="dim" />
+      </${VitalsCell}>
+      <${VitalsCell}>
+        <${Readout} label="状态" value=${status.healthy ? "ONLINE" : "DEGRADED"} />
+      </${VitalsCell}>
+    </${Vitals}>
   `;
 }
 

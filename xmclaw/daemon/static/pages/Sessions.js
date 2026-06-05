@@ -11,6 +11,7 @@ import { apiGet } from "../lib/api.js";
 import { toast } from "../lib/toast.js";
 import { Skeleton } from "../components/atoms/skeleton.js";
 import { confirmDialog } from "../lib/dialog.js";
+import { Vitals, VitalsCell, Readout } from "../components/molecules/Instrument.js";
 import {
   SessionRow,
 } from "./_panels/sessions_parts.js";
@@ -194,41 +195,29 @@ export function SessionsPage({ token }) {
 
   if (error) {
     return html`
-      <section class="nb-page active" aria-labelledby="sessions-title">
-        <div class="nb-page-header">
-          <h1 id="sessions-title">会话管理</h1>
-          <p>加载失败：${error}</p>
-        </div>
+      <section class="xmc-datapage" aria-labelledby="sessions-title">
+        <header class="xmc-datapage__header">
+          <h2 id="sessions-title">会话管理</h2>
+          <p class="xmc-datapage__subtitle">加载失败：${error}</p>
+        </header>
       </section>
     `;
   }
 
   return html`
-    <section class="nb-page active" aria-labelledby="sessions-title">
-      <div class="nb-page-header">
-        <h1 id="sessions-title">会话管理</h1>
-        <p>查看和管理所有历史会话</p>
-      </div>
+    <section class="xmc-datapage" aria-labelledby="sessions-title">
+      <header class="xmc-datapage__header">
+        <h2 id="sessions-title">会话管理</h2>
+        <p class="xmc-datapage__subtitle">查看和管理所有历史会话</p>
+      </header>
 
-      <!-- Stats -->
-      <div class="nb-session-stats">
-        <div class="nb-session-stat">
-          <div class="nb-session-stat__value">${stats.total}</div>
-          <div class="nb-session-stat__label">总会话</div>
-        </div>
-        <div class="nb-session-stat">
-          <div class="nb-session-stat__value" style="color:var(--nb-accent-light)">${stats.todayActive}</div>
-          <div class="nb-session-stat__label">今日活跃</div>
-        </div>
-        <div class="nb-session-stat">
-          <div class="nb-session-stat__value" style="color:var(--nb-cyan-light)">${stats.totalMessages}</div>
-          <div class="nb-session-stat__label">消息总数</div>
-        </div>
-        <div class="nb-session-stat">
-          <div class="nb-session-stat__value" style="color:var(--nb-success)">${stats.archivedCount}</div>
-          <div class="nb-session-stat__label">已归档</div>
-        </div>
-      </div>
+      <!-- Vitals 读数条（统一仪表台形态） -->
+      <${Vitals}>
+        <${VitalsCell}><${Readout} label="总会话" value=${stats.total} unit="sessions" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="今日活跃" value=${stats.todayActive} unit="today" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="消息总数" value=${stats.totalMessages} unit="msgs" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="已归档" value=${stats.archivedCount} unit="archived" /></${VitalsCell}>
+      </${Vitals}>
 
       <!-- Toolbar -->
       <div class="nb-session-toolbar">
