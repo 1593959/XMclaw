@@ -462,3 +462,64 @@
   font-family: var(--xi-mono); color: var(--nb-fg-secondary, #94A3B8);
   max-height: 320px; overflow: auto;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   10. 小巧思 · 记忆写入即时卡（用户很喜欢，做精致）
+   写入记忆时结晶式滑入 + 按记忆层级分色 + 图标一次性脉冲 + "已记住"渐显
+   ═══════════════════════════════════════════════════════════════════════ */
+.nb-memory-memo {
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 11px; margin: 5px 0;
+  border-radius: 7px;
+  font-size: 12px;
+  font-family: var(--xi-mono);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--mm-c) 12%, transparent), color-mix(in srgb, var(--mm-c) 4%, transparent));
+  border: 1px solid color-mix(in srgb, var(--mm-c) 35%, transparent);
+  border-left: 2.5px solid var(--mm-c);
+  --mm-c: var(--nb-success, #34D399);
+  overflow: hidden;
+}
+.nb-memory-memo[data-layer="long_term"]  { --mm-c: var(--nb-accent, #8B5CF6); }
+.nb-memory-memo[data-layer="working"]    { --mm-c: var(--nb-cyan, #06B6D4); }
+.nb-memory-memo[data-layer="short_term"] { --mm-c: #F59E0B; }
+.nb-memory-memo[data-layer="procedural"] { --mm-c: #34D399; }
+.nb-memory-memo__spark {
+  flex: 0 0 auto; font-size: 13px;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--mm-c) 70%, transparent));
+}
+.nb-memory-memo__layer {
+  flex: 0 0 auto; font-weight: 600; letter-spacing: .04em;
+  color: var(--mm-c);
+  text-transform: none;
+}
+.nb-memory-memo__text {
+  flex: 1 1 auto; min-width: 0;
+  color: var(--nb-fg-secondary, #94A3B8);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nb-memory-memo__tick {
+  flex: 0 0 auto;
+  font-size: 10px; letter-spacing: .06em;
+  color: var(--mm-c); opacity: .85;
+  padding: 1px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--mm-c) 14%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .nb-memory-memo {
+    animation: mm-crystallize .42s cubic-bezier(.22,.9,.3,1.2) both;
+  }
+  .nb-memory-memo__spark { animation: mm-spark .6s ease both; }
+  .nb-memory-memo__tick  { animation: fx-fade-in .5s ease .25s both; }
+  @keyframes mm-crystallize {
+    from { opacity: 0; transform: translateY(-4px) scaleX(.96);
+           box-shadow: 0 0 0 0 color-mix(in srgb, var(--mm-c) 60%, transparent); }
+    60%  { box-shadow: 0 0 14px 1px color-mix(in srgb, var(--mm-c) 45%, transparent); }
+    to   { opacity: 1; transform: none;
+           box-shadow: 0 0 0 0 transparent; }
+  }
+  @keyframes mm-spark {
+    0% { transform: scale(.4) rotate(-12deg); opacity: 0; }
+    55% { transform: scale(1.35) rotate(4deg); opacity: 1; }
+    100% { transform: scale(1) rotate(0); }
+  }
+}

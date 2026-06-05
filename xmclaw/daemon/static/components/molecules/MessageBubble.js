@@ -471,21 +471,23 @@ export function MessageBubble({ message, onAnswerQuestion }) {
 // "他说他记住了，结果一压缩啥都不知道" pain point — the persistence
 // now happens AND is visible.
 function MemoryMemo({ memo }) {
-  const layerLabel = memo.layer === "long_term" ? "长期记忆"
-    : memo.layer === "short_term" ? "短期记忆"
-    : memo.layer === "working" ? "工作记忆"
-    : memo.layer === "procedural" ? "程序记忆"
-    : memo.layer || "记忆";
+  const meta = {
+    long_term:  { label: "长期记忆", icon: "🧠" },
+    short_term: { label: "短期记忆", icon: "⏳" },
+    working:    { label: "工作记忆", icon: "✦" },
+    procedural: { label: "程序记忆", icon: "⚙" },
+  }[memo.layer] || { label: memo.layer || "记忆", icon: "📝" };
   return html`
     <div
       class="nb-memory-memo"
+      data-layer=${memo.layer || "other"}
       role="note"
-      title=${memo.reason ? `为什么记: ${memo.reason}` : "已写入记忆"}
-      style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin:4px 0;border-radius:var(--nb-radius-sm);background:var(--nb-bg-elevated);border:1px solid var(--nb-border);font-size:12px;"
+      title=${memo.reason ? `为什么记: ${memo.reason}` : "已写入记忆 — 下次还记得"}
     >
-      <span aria-hidden="true">📝</span>
-      <${Badge} tone="success">${layerLabel}</${Badge}>
-      <span style="color:var(--nb-fg-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${memo.text}</span>
+      <span class="nb-memory-memo__spark" aria-hidden="true">${meta.icon}</span>
+      <span class="nb-memory-memo__layer">${meta.label}</span>
+      <span class="nb-memory-memo__text">${memo.text}</span>
+      <span class="nb-memory-memo__tick" aria-hidden="true">✓ 已记住</span>
     </div>
   `;
 }
