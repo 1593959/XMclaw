@@ -20,6 +20,7 @@ import { SuggestionsPanel } from "./_panels/mind_suggestions.js";
 import { TaskDag } from "./_panels/cognition_task_dag.js";
 import { ExperimentsPanel } from "./_panels/cognition_experiments.js";
 import { AutonomousTasksPanel } from "./_panels/cognition_autonomous_tasks.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 function fmtTs(ts) {
   if (!ts) return "—";
@@ -282,6 +283,17 @@ export function CognitionPage({ token }) {
           注意力焦点 · 当前目标 · 任务队列 · 进化提案 · 记忆图谱（每 2 秒 WS 推送）
         </p>
       </header>
+
+      <!-- Vitals 读数条（统一仪表台形态） -->
+      <${Vitals}>
+        <${VitalsCell} icon=${html`<${Sparkbar} live=${(cogState?.goals?.length || 0) > 0} />`}>
+          <${Readout} label="当前目标" value=${cogState?.goals?.length || 0} unit="goals" />
+        </${VitalsCell}>
+        <${VitalsCell}><${Readout} label="注意力焦点" value=${cogState?.attention_focus?.length || 0} unit="focus" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="任务队列" value=${tasks?.length || 0} unit="tasks" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="进化提案" value=${proposals?.length || 0} unit="proposals" /></${VitalsCell}>
+      </${Vitals}>
+
       <nav class="xmc-mem-tabs" role="tablist" style="display:flex;gap:.4rem;border-bottom:1px solid var(--color-border);margin-bottom:.8rem;flex-wrap:wrap">
         ${tabs.map((t) => {
           const isActive = t.id === tab;

@@ -28,6 +28,7 @@ import { apiGet } from "../lib/api.js";
 import {
   LiveStatusPanel,
 } from "../components/molecules/EvolutionLive.js";
+import { Vitals, VitalsCell, Readout, Gauge, Sparkbar } from "../components/molecules/Instrument.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -240,32 +241,21 @@ export function EvolutionPage({ token }) {
 
       <div class="xmc-h-page__body" style="display:grid;gap:1rem;max-width:1100px">
 
-        <!-- Section 1: Summary cards -->
-        <div style="display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
-          <div class="xmc-h-skill-card" style="padding:.7rem .8rem">
-            <small style="opacity:.7">7 天内提议</small>
-            <div style="font-size:1.6rem;font-weight:600">${summary?.proposalCount ?? 0}</div>
-          </div>
-          <div class="xmc-h-skill-card" style="padding:.7rem .8rem">
-            <small style="opacity:.7">7 天内 promote</small>
-            <div style="font-size:1.6rem;font-weight:600;color:var(--xmc-success, currentColor)">
-              ${summary?.promoteCount ?? 0}
-            </div>
-          </div>
-          <div class="xmc-h-skill-card" style="padding:.7rem .8rem">
-            <small style="opacity:.7">7 天内 rollback</small>
-            <div style="font-size:1.6rem;font-weight:600;color:var(--xmc-warning, currentColor)">
-              ${summary?.rollbackCount ?? 0}
-            </div>
-          </div>
-          <div class="xmc-h-skill-card" style="padding:.7rem .8rem">
-            <small style="opacity:.7">最近 50 个 grader 平均</small>
-            <div style="font-size:1.6rem;font-weight:600">
-              ${summary?.gradeAvg != null ? summary.gradeAvg.toFixed(2) : "—"}
-            </div>
-            <small style="opacity:.6">${summary?.verdictCount ?? 0} verdicts</small>
-          </div>
-        </div>
+        <!-- Section 1: Vitals 读数条（统一仪表台形态） -->
+        <${Vitals}>
+          <${VitalsCell} icon=${html`<${Sparkbar} live=${(summary?.proposalCount ?? 0) > 0} />`}>
+            <${Readout} label="7 天内提议" value=${summary?.proposalCount ?? 0} unit="proposals" />
+          </${VitalsCell}>
+          <${VitalsCell}>
+            <${Readout} label="7 天内 PROMOTE" value=${summary?.promoteCount ?? 0} unit="↑" deltaDir="up" />
+          </${VitalsCell}>
+          <${VitalsCell}>
+            <${Readout} label="7 天内 ROLLBACK" value=${summary?.rollbackCount ?? 0} unit="↓" />
+          </${VitalsCell}>
+          <${VitalsCell} icon=${html`<${Gauge} value=${summary?.gradeAvg != null ? summary.gradeAvg * 100 : 0} size=${48} showVal=${summary?.gradeAvg != null} />`}>
+            <${Readout} label="GRADER 平均" value=${summary?.gradeAvg != null ? summary.gradeAvg.toFixed(2) : "—"} unit=${(summary?.verdictCount ?? 0) + " verdicts"} />
+          </${VitalsCell}>
+        </${Vitals}>
 
         <!-- Section 1.5 (B-301): live state of the in-memory chain. -->
         <${LiveStatusPanel} token=${token} />

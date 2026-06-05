@@ -35,6 +35,7 @@ import { apiGet, apiPost } from "../lib/api.js";
 import { confirmDialog } from "../lib/dialog.js";
 import { toast } from "../lib/toast.js";
 import { Skeleton } from "../components/atoms/skeleton.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 function Icon({ d, className }) {
   return html`
@@ -309,6 +310,18 @@ export function SkillsPage({ token }) {
           <span class="xmc-h-badge">${counts.all} 个</span>
         </div>
       </header>
+
+      <!-- Vitals 读数条（统一仪表台形态） -->
+      <div style="padding:0 16px">
+        <${Vitals}>
+          <${VitalsCell} icon=${html`<${Sparkbar} live=${true} />`}>
+            <${Readout} label="技能总数" value=${counts.all} unit="skills" />
+          </${VitalsCell}>
+          <${VitalsCell}><${Readout} label="内置" value=${counts["built-in"]} unit="built-in" /></${VitalsCell}>
+          <${VitalsCell}><${Readout} label="用户/进化" value=${counts.user} unit="user" /></${VitalsCell}>
+          <${VitalsCell}><${Readout} label="其中进化产出" value=${counts.evolved || 0} unit="evolved" /></${VitalsCell}>
+        </${Vitals}>
+      </div>
 
       ${loadFailures.length > 0
         ? html`
