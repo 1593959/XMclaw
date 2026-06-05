@@ -5,7 +5,18 @@
 // pieces — no shared state with the parent beyond props.
 
 const { h } = window.__xmc.preact;
+const { useState, useEffect } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
+
+// 小巧思：让组件在 active 时每秒重渲染一次，用于「正在思考」实时秒表。
+function useTick(active) {
+  const [, setN] = useState(0);
+  useEffect(() => {
+    if (!active) return undefined;
+    const id = setInterval(() => setN((n) => (n + 1) % 100000), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+}
 
 import { lex, renderTokenHtml } from "../../lib/markdown.js";
 import { Spinner } from "../atoms/spinner.js";
@@ -473,6 +484,12 @@ export function SubagentCard({ call }) {
 }
 
 export function PhaseCard({ message, baseLabel, elapsedS, stalled, isWorking, currentHop }) {
+  // 实时秒表：工作中每秒重算，秒数自己往上跳，而不是卡在事件到达的瞬间。
+  useTick(isWorking);
+  const liveElapsed = isWorking && message.ts
+    ? Math.max(0, Math.floor(Date.now() / 1000 - message.ts))
+    : elapsedS;
+  elapsedS = liveElapsed;
   const phase = message.phase;
   const hasThinkingHistory = !!(message.thinking && message.thinking.length > 0);
   // Card shows in two cases:

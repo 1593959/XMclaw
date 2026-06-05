@@ -65,6 +65,45 @@ function formatTime(ts) {
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
+// 小巧思：跨天日期分隔。
+function _toDate(ts) {
+  if (!ts) return null;
+  return new Date(typeof ts === "number" && ts < 1e12 ? ts * 1000 : ts);
+}
+function _dayKey(d) {
+  return d ? `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` : null;
+}
+function shouldShowDateDivider(prev, cur) {
+  const cd = _toDate(cur && (cur.ts || cur.created_at));
+  if (!cd) return false;
+  if (!prev) return true; // 第一条 → 顶部日期，兼作「开场」标记
+  const pd = _toDate(prev.ts || prev.created_at);
+  if (!pd) return false;
+  return _dayKey(pd) !== _dayKey(cd);
+}
+function friendlyDay(ts) {
+  const d = _toDate(ts);
+  if (!d) return "";
+  const now = new Date();
+  const today = _dayKey(now);
+  const y = new Date(now.getTime() - 86400000);
+  if (_dayKey(d) === today) return "今天";
+  if (_dayKey(d) === _dayKey(y)) return "昨天";
+  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
+}
+
+// 小巧思：复制回执 — 点一下按钮，原地变「✓ 已复制」一秒再恢复。
+function CopyButton({ text, onCopy }) {
+  const [done, setDone] = useState(false);
+  return html`
+    <button
+      class=${"nb-msg-action" + (done ? " is-done" : "")}
+      title=${done ? "已复制" : "复制"}
+      onClick=${async () => { try { await onCopy(text); } catch (_) {} setDone(true); setTimeout(() => setDone(false), 1100); }}
+    >${done ? "✓" : "📋"}</button>
+  `;
+}
+
 function getTextContent(message) {
   if (typeof message.content === "string") return message.content;
   if (Array.isArray(message.content)) {
@@ -147,9 +186,15 @@ export function MessageList({ messages, onAnswerQuestion, pendingAssistantId }) 
               </p>
             </div>
           `
-        : messages.map((m) => {
+        : messages.map((m, i) => {
             if (hiddenMsgs.has(m.id)) return null;
+            // 小巧思：跨天插入日期分隔（今天/昨天/日期 + 微光）。
+            const prev = messages[i - 1];
+            const divider = shouldShowDateDivider(prev, m)
+              ? html`<div class="nb-date-divider" key=${"dd-" + m.id}><span>${friendlyDay(m.ts || m.created_at)}</span></div>`
+              : null;
             return html`
+              ${divider}
               <${BubbleBoundary} key=${m.id}>
                 <${MessageRow}
                   message=${m}
@@ -465,19 +510,19 @@ function MessageRow({
     <button class="nb-msg-action" title="删除" onClick=${onHide}>🗑</button>
   `;
   const assistantActions = html`
-    <button class="nb-msg-action" title="复制" onClick=${() => onCopy(contentText)}>📋</button>
+    <${CopyButton} text=${contentText} onCopy=${onCopy} />
     <button class="nb-msg-action" title="重新生成" onClick=${() => {}}>↻</button>
     <button class="nb-msg-action" title="点赞" onClick=${() => {}}>👍</button>
     <button class="nb-msg-action" title="点踩" onClick=${() => {}}>👎</button>
   `;
   const errorActions = html`
     <button class="nb-msg-action" title="重试" onClick=${() => {}}>↻</button>
-    <button class="nb-msg-action" title="复制" onClick=${() => onCopy(contentText)}>📋</button>
+    <${CopyButton} text=${contentText} onCopy=${onCopy} />
   `;
 
   return html`
     <article class=${msgClass} data-msg-id=${message.id} data-role=${role}>
-      ${avatar ? html`<div class="nb-msg__avatar">${avatar}</div>` : null}
+      ${avatar ? html`<div class=${"nb-msg__avatar" + ((streaming || thinking) ? " nb-msg__avatar--live" : "")}>${avatar}</div>` : null}
       <div class="nb-msg__body">
         ${name ? html`<div class="nb-msg__name">${name}</div>` : null}
         ${quoteRef}

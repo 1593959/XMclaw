@@ -523,3 +523,73 @@
     100% { transform: scale(1) rotate(0); }
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   11. 更多小巧思批次：技能卡 / 头像呼吸 / 复制回执 / 爪痕光标 / 日期分隔
+   ═══════════════════════════════════════════════════════════════════════ */
+/* —— 技能触发卡（按 verdict 分色 + 滑入）—— */
+.nb-skill-note {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 11px; margin: 5px 0; border-radius: 7px;
+  font-family: var(--xi-mono); font-size: 12px;
+  --sn-c: var(--nb-cyan, #06B6D4);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--sn-c) 12%, transparent), color-mix(in srgb, var(--sn-c) 4%, transparent));
+  border: 1px solid color-mix(in srgb, var(--sn-c) 32%, transparent);
+  border-left: 2.5px solid var(--sn-c);
+}
+.nb-skill-note[data-verdict="success"] { --sn-c: var(--nb-success, #34D399); }
+.nb-skill-note[data-verdict="error"]   { --sn-c: var(--nb-error, #F87171); }
+.nb-skill-note[data-verdict="partial"] { --sn-c: #F59E0B; }
+.nb-skill-note__spark { color: var(--sn-c); filter: drop-shadow(0 0 5px color-mix(in srgb, var(--sn-c) 70%, transparent)); }
+.nb-skill-note__label { color: var(--nb-fg-secondary, #94A3B8); }
+.nb-skill-note__id { font-size: 11px; color: var(--sn-c); background: color-mix(in srgb, var(--sn-c) 13%, transparent); padding: 2px 6px; border-radius: 4px; }
+.nb-skill-note__ev { color: var(--nb-fg-muted, #64748B); opacity: .7; }
+.nb-skill-note__verdict { color: var(--sn-c); font-weight: 600; }
+.nb-skill-note__trig { opacity: .6; }
+@media (prefers-reduced-motion: no-preference) {
+  .nb-skill-note { animation: fx-fade-up .34s cubic-bezier(.22,.9,.3,1.1) both; }
+  .nb-skill-note__spark { animation: mm-spark .6s ease both; }
+}
+
+/* —— 头像呼吸（回复中左侧 ✦ 脉动撒星）—— */
+@media (prefers-reduced-motion: no-preference) {
+  .nb-msg__avatar--live { animation: avatar-breathe 1.7s ease-in-out infinite; }
+  @keyframes avatar-breathe {
+    0%,100% { box-shadow: 0 0 0 0 var(--nb-accent-glow, rgba(139,92,246,.45)); transform: scale(1); }
+    50%     { box-shadow: 0 0 18px 3px var(--nb-accent-glow, rgba(139,92,246,.45)); transform: scale(1.07); }
+  }
+}
+
+/* —— 复制回执 —— */
+.nb-msg-action.is-done {
+  color: var(--nb-success, #34D399) !important;
+  border-color: color-mix(in srgb, var(--nb-success, #34D399) 55%, transparent) !important;
+  background: color-mix(in srgb, var(--nb-success, #34D399) 12%, transparent) !important;
+}
+
+/* —— 流式光标 → 爪痕（紫青渐变 + 辉光 + 跳动）—— */
+.nb-streaming-cursor {
+  background: linear-gradient(180deg, var(--nb-accent, #8B5CF6), var(--nb-cyan, #06B6D4)) !important;
+  width: 3px !important; border-radius: 2px;
+  box-shadow: 0 0 9px var(--nb-accent-glow, rgba(139,92,246,.6));
+  transform: skewX(-10deg);
+}
+
+/* —— 跨天日期分隔（今天/昨天/日期，带微光）—— */
+.nb-date-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 20px 6px 12px;
+}
+.nb-date-divider::before, .nb-date-divider::after {
+  content: ""; flex: 1; height: 1px;
+  background: repeating-linear-gradient(90deg, var(--nb-border, rgba(148,163,184,.14)) 0 4px, transparent 4px 9px);
+}
+.nb-date-divider span {
+  flex: 0 0 auto;
+  font-family: var(--xi-mono); font-size: 11px; letter-spacing: .12em;
+  color: var(--nb-fg-secondary, #94A3B8);
+  padding: 3px 14px; border-radius: 999px;
+  background: color-mix(in srgb, var(--nb-accent, #8B5CF6) 9%, var(--nb-bg-surface, #161B26));
+  border: 1px solid color-mix(in srgb, var(--nb-accent, #8B5CF6) 28%, transparent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--nb-accent, #8B5CF6) 16%, transparent);
+}

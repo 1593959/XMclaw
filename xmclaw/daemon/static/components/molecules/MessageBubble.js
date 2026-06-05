@@ -497,25 +497,21 @@ function MemoryMemo({ memo }) {
 // via ToolCard (golden tint); this is the substring-match fallback so
 // the user still sees in-chat that a skill was detected.
 function SkillNote({ note }) {
-  const tone = note.verdict === "success" ? "success"
-    : note.verdict === "error" ? "error"
-    : note.verdict === "partial" ? "warn"
-    : note.verdict === "auto_disabled" ? "error"
-    : "muted";
+  const verdict = note.verdict === "auto_disabled" ? "error" : (note.verdict || "pending");
   const verdictLabel = note.verdict || "pending";
   return html`
     <div
       class="nb-skill-note"
+      data-verdict=${verdict}
       title=${`heuristic detection (B-122) · evidence=${note.evidence}`}
-      style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin:4px 0;border-radius:var(--nb-radius-sm);background:var(--nb-bg-elevated);border:1px solid var(--nb-border);font-size:12px;flex-wrap:wrap;"
     >
-      <span aria-hidden="true">⚡</span>
-      <span style="color:var(--nb-fg-secondary);">触发已学技能</span>
-      <code style="font-family:var(--nb-font-mono);font-size:11px;color:var(--nb-cyan-light);background:var(--nb-bg-input);padding:2px 6px;border-radius:4px;">${note.skill_id}</code>
-      <${Badge} tone="muted">~ ${note.evidence}</${Badge}>
-      <${Badge} tone=${tone}>${verdictLabel}</${Badge}>
+      <span class="nb-skill-note__spark" aria-hidden="true">⚡</span>
+      <span class="nb-skill-note__label">触发技能</span>
+      <code class="nb-skill-note__id">${note.skill_id}</code>
+      <span class="nb-skill-note__ev">~ ${note.evidence}</span>
+      <span class="nb-skill-note__verdict">${verdictLabel}</span>
       ${note.trigger_match
-        ? html`<small style="opacity:.7">trigger: <code>${note.trigger_match}</code></small>`
+        ? html`<small class="nb-skill-note__trig">trigger: <code>${note.trigger_match}</code></small>`
         : null}
     </div>
   `;
