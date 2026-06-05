@@ -66,14 +66,32 @@ let _visPromise = null;
 // esm.sh wasn't reachable from their network. Pre-fix the import
 // promise never settled and the loading state spun forever.
 const _VIS_CDNS = [
-  // Local vendor copy — tried first so offline use works. Drop
-  // ``vis-network.min.js`` (peer dist build) here to short-circuit
-  // every CDN attempt.
+  // Local vendor copy — tried first so offline use works. IMPORTANT:
+  // this MUST be the *standalone* build (bundles vis-data → exposes
+  // DataSet). The plain peer-dist `vis-network.min.js` only has
+  // Network, so `new vis.DataSet()` throws "vis.DataSet is not a
+  // constructor". _resolveVis() below now validates Network+DataSet
+  // and skips any build missing DataSet, so a wrong vendor file no
+  // longer hard-fails the graph — it just falls through to a CDN.
   "/ui/vendor/vis-network.min.js",
   "https://esm.sh/vis-network@9.1.9/standalone",
-  "https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/esm/vis-network.js",
-  "https://unpkg.com/vis-network@9.1.9/standalone/esm/vis-network.js",
+  "https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/esm/vis-network.min.js",
+  "https://unpkg.com/vis-network@9.1.9/standalone/esm/vis-network.min.js",
 ];
+
+// A loaded vis module can surface its API in several shapes depending on
+// build/format: named ESM exports (mod.Network), a default wrapper
+// (mod.default.Network), or a UMD global side-effect (window.vis). Return
+// the object that has BOTH Network and DataSet, or null if none does.
+function _resolveVis(mod) {
+  const candidates = [mod, mod && mod.default, (typeof window !== "undefined" && window.vis) || null];
+  for (const c of candidates) {
+    if (c && typeof c.Network === "function" && typeof c.DataSet === "function") {
+      return c;
+    }
+  }
+  return null;
+}
 const _VIS_CDN_TIMEOUT_MS = 12000;  // per-CDN cap
 
 function _withTimeout(promise, ms, label) {
@@ -97,8 +115,16 @@ async function _loadVisNetwork() {
           _VIS_CDN_TIMEOUT_MS,
           `vis-network@${url}`,
         );
-        _visModule = mod;
-        return mod;
+        const vis = _resolveVis(mod);
+        if (!vis) {
+          // Module loaded but lacks DataSet (e.g. peer-dist build, not
+          // standalone). Don't accept it — fall through to a CDN that
+          // bundles vis-data.
+          errors.push(`${url}: 缺少 DataSet（非 standalone 构建）`);
+          continue;
+        }
+        _visModule = vis;
+        return vis;
       } catch (err) {
         errors.push(`${url}: ${err && err.message || err}`);
         continue;
@@ -106,10 +132,12 @@ async function _loadVisNetwork() {
     }
     _visPromise = null;
     throw new Error(
-      "vis-network unreachable from any CDN. Tried:\n  - "
+      "vis-network 无法加载（所有源均失败）。已尝试:\n  - "
       + errors.join("\n  - ")
-      + "\n\nWorkaround: download vis-network/dist/vis-network.min.js to "
-      + "xmclaw/daemon/static/vendor/ and reload.",
+      + "\n\n离线修复：把 vis-network 的 *standalone* 构建"
+      + "（standalone/esm/vis-network.min.js，含 DataSet）放到 "
+      + "xmclaw/daemon/static/vendor/vis-network.min.js 后刷新。"
+      + "注意必须是 standalone 版，普通 dist 版不含 DataSet。",
     );
   })();
   return _visPromise;
