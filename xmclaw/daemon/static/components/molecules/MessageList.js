@@ -73,6 +73,20 @@ function getTextContent(message) {
   return "";
 }
 
+// 助手「空鬼泡」判定：内容/事件/工具/思考/媒体全空。thinking 占位消息在真正
+// 内容落到另一条消息后会变成这种空壳，旧逻辑仍渲染出一个空灰泡 → 这里判空后
+// 不渲染（仅当它不处于工作/错误态时）。
+function assistantIsEmpty(m) {
+  if (getTextContent(m)) return false;
+  if (Array.isArray(m.events) && m.events.length) return false;
+  if (Array.isArray(m.toolCalls) && m.toolCalls.length) return false;
+  if (Array.isArray(m.thinking) ? m.thinking.length : m.thinking) return false;
+  if ((Array.isArray(m.images) && m.images.length)
+    || (Array.isArray(m.videos) && m.videos.length)
+    || (Array.isArray(m.audios) && m.audios.length)) return false;
+  return true;
+}
+
 const MSG_TRUNCATE_CHARS = 3000;
 
 function truncateAtBoundary(text, maxChars) {
@@ -107,8 +121,12 @@ export function MessageList({ messages, onAnswerQuestion, pendingAssistantId }) 
     try { await navigator.clipboard.writeText(text); } catch (_) {}
   };
 
-  const lastMsg = messages[messages.length - 1];
-  const showTyping = pendingAssistantId && (!lastMsg || lastMsg.id === pendingAssistantId || lastMsg.role !== "assistant" || (lastMsg.role === "assistant" && lastMsg.status !== "streaming" && lastMsg.status !== "thinking"));
+  // 双气泡修复（2026-06-05）：独立的「正在输入」指示器只在「已有 pending
+  // 回复、但其助手气泡尚未出现在列表里」的短暂空档显示。一旦助手占位消息
+  // 已渲染（它内部 PhaseCard 显示「正在思考/正在回复」），就不再额外渲染这个
+  // "..." 气泡，否则同一时刻出现两个助手气泡。
+  const pendingRendered = !!pendingAssistantId && messages.some((m) => m.id === pendingAssistantId);
+  const showTyping = !!pendingAssistantId && !pendingRendered;
 
   return html`
     <div
@@ -278,6 +296,13 @@ function MessageRow({
         </div>
       </article>
     `;
+  }
+
+  // 空鬼泡守卫：助手消息既不工作也不报错，且内容全空 → 不渲染（消除回复后
+  // 残留的空灰泡 / thinking 占位空壳）。特殊 kind（question/tool_use/worker/
+  // subagent）已在上面提前 return，不会走到这里。
+  if (isAssistant && !streaming && !thinking && !errored && !cancelled && !warning && assistantIsEmpty(message)) {
+    return null;
   }
 
   // ── Quote / Reply reference ──
