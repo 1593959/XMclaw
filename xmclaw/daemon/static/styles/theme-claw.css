@@ -890,3 +890,27 @@
 [data-theme="nebula"] .xmc-h-chatside__newbtn{ color:#A78BFA !important; background:rgba(139,92,246,.10) !important;
   border-color:rgba(139,92,246,.45) !important; }
 [data-theme="nebula"] .xmc-h-chatside__newbtn:hover{ background:rgba(139,92,246,.18) !important; box-shadow:0 0 16px rgba(139,92,246,.28); }
+
+/* ============================================================
+   输入框压扁（2026-06-05）：用户反馈输入框太高。
+   减内边距 + 按钮缩小 + 单行垂直居中；多行仍自动长高(max-height 不变)。
+   覆盖 theme-nebula.css 的 .nb-composer 默认尺寸。
+   ============================================================ */
+.nb-composer{ padding:5px 8px 5px 14px !important; align-items:center !important; }
+.nb-composer textarea{ min-height:22px !important; padding:4px 0 !important; line-height:1.5 !important; }
+.nb-composer__btn{ width:32px !important; height:32px !important; font-size:15px !important; }
+.nb-composer__send{ width:34px !important; height:34px !important; font-size:15px !important; }
+/* 选项栏与输入框之间别留太多空 */
+.nb-composer__toolbar{ margin:0 0 7px !important; }
+
+/* ============================================================
+   输入框焊到页面底部（2026-06-05）—— 真正根因修复。
+   原 .nb-chat-layout 用固定四行 grid(auto auto 1fr auto)，
+   但中间两条 banner 是条件渲染；空闲时只有 3 个子元素，
+   导致消息区落到 auto 行、输入框落到 1fr 行被撑开 → 输入框浮在中下部。
+   改成 flex 列：消息区(.nb-stream 已有 flex:1)吃掉剩余空间，
+   输入框 flex:0 自然贴底。与 banner 数量无关，稳。
+   ============================================================ */
+.nb-chat-layout{ display:flex !important; flex-direction:column !important; }
+.nb-stream{ flex:1 1 auto !important; min-height:0 !important; }
+.nb-composer-area{ flex:0 0 auto !important; }

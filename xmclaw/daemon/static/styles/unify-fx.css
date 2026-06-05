@@ -1,0 +1,215 @@
+/* ============================================================================
+   unify-fx.css — XMclaw 全站统一动效 / 特效 / 富渲染层  (2026-06-05)
+
+   目的（用户诉求「统一一下 UI、添加动效特效、丰富渲染」）：
+     1) 给 Composer 工具栏 chip 补齐样式（原本完全没 CSS，挤成一坨）
+     2) 统一二级页面（xmc-h-* / xmc-datapage-*）与聊天页（nb-*）的交互质感：
+        卡片悬浮、按钮微交互、入场动画、聚焦光晕
+     3) 富渲染：消息气泡入场、空状态浮动、HUD/发送按钮呼吸光、骨架微光
+
+   设计：
+     - 本文件在 index.html 最末加载 → 自然赢层叠，几乎不用 !important
+     - 全部基于 nebula 调色板变量 (--nb-*)，已在 :root + [data-theme=nebula] 定义
+     - 所有动画都包在 prefers-reduced-motion: no-preference 内，尊重无障碍
+   ============================================================================ */
+
+/* ───────────────────────── 关键帧 ───────────────────────── */
+@keyframes fx-fade-up   { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes fx-fade-in   { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fx-pop       { 0% { opacity: 0; transform: scale(.94); } 100% { opacity: 1; transform: none; } }
+@keyframes fx-shimmer   { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes fx-float     { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes fx-glow-pulse{ 0%,100% { box-shadow: 0 0 8px var(--nb-accent-glow); } 50% { box-shadow: 0 0 22px 2px var(--nb-accent-glow); } }
+@keyframes fx-spin      { to { transform: rotate(360deg); } }
+
+/* ═══════════════════════════════════════════════════════════
+   1. COMPOSER 工具栏 chip（Act / Style / ★ Ultrathink / 🔁 对话）
+   ═══════════════════════════════════════════════════════════ */
+.nb-composer__toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nb-composer__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 13px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: .2px;
+  color: var(--nb-fg-secondary, #94A3B8);
+  background: var(--nb-bg-surface, #1E293B);
+  border: 1px solid var(--nb-border, rgba(148,163,184,.14));
+  border-radius: var(--nb-radius-pill, 999px);
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: color .18s, background .18s, border-color .18s, transform .18s, box-shadow .18s;
+}
+.nb-composer__chip:hover {
+  color: var(--nb-fg-primary, #F1F5F9);
+  background: var(--nb-bg-elevated, #283548);
+  border-color: var(--nb-border-accent, rgba(139,92,246,.5));
+  transform: translateY(-1px);
+}
+.nb-composer__chip:active { transform: translateY(0) scale(.96); }
+.nb-composer__chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--nb-accent-glow, rgba(139,92,246,.3));
+}
+.nb-composer__chip.is-on {
+  color: #fff;
+  background: linear-gradient(135deg, var(--nb-accent, #8B5CF6), var(--nb-cyan, #06B6D4));
+  border-color: transparent;
+  box-shadow: 0 0 14px var(--nb-accent-glow, rgba(139,92,246,.45));
+}
+.nb-composer__chip.is-on:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.nb-composer__chip.is-disabled,
+.nb-composer__chip:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+/* 连续语音激活时呼吸光，提示「在听」 */
+@media (prefers-reduced-motion: no-preference) {
+  .nb-composer__chip.is-on[aria-pressed="true"][title*="语音"],
+  .nb-composer__chip.is-on[title*="连续语音中"] { animation: fx-glow-pulse 1.8s ease-in-out infinite; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   2. 入场动画 — 二级页面 / 卡片 / 列表（带轻微 stagger）
+   ═══════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: no-preference) {
+  .xmc-h-page,
+  .xmc-datapage,
+  .xmc-dash {
+    animation: fx-fade-up .34s cubic-bezier(.22,.61,.36,1) both;
+  }
+  /* 卡片 / 列表项 stagger 入场 */
+  .xmc-h-card,
+  .xmc-h-skill-card,
+  .xmc-dash__list-item,
+  .xmc-datapage__row {
+    animation: fx-fade-up .42s cubic-bezier(.22,.61,.36,1) both;
+  }
+  .xmc-h-card:nth-child(2),  .xmc-h-skill-card:nth-child(2),  .xmc-dash__list-item:nth-child(2)  { animation-delay: .04s; }
+  .xmc-h-card:nth-child(3),  .xmc-h-skill-card:nth-child(3),  .xmc-dash__list-item:nth-child(3)  { animation-delay: .08s; }
+  .xmc-h-card:nth-child(4),  .xmc-h-skill-card:nth-child(4),  .xmc-dash__list-item:nth-child(4)  { animation-delay: .12s; }
+  .xmc-h-card:nth-child(5),  .xmc-h-skill-card:nth-child(5),  .xmc-dash__list-item:nth-child(5)  { animation-delay: .16s; }
+  .xmc-h-card:nth-child(n+6),.xmc-h-skill-card:nth-child(n+6),.xmc-dash__list-item:nth-child(n+6){ animation-delay: .2s; }
+
+  /* 聊天消息气泡逐条浮入 */
+  .nb-msg { animation: fx-fade-up .3s cubic-bezier(.22,.61,.36,1) both; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   3. 卡片悬浮 / 按钮微交互（聊天页 + 二级页统一手感）
+   ═══════════════════════════════════════════════════════════ */
+.xmc-h-card,
+.xmc-h-skill-card,
+.xmc-dash__list-item,
+.nb-card {
+  transition: transform .2s cubic-bezier(.4,0,.2,1), box-shadow .2s, border-color .2s;
+  will-change: transform;
+}
+.xmc-h-card:hover,
+.xmc-h-skill-card:hover,
+.nb-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--nb-border-accent, rgba(139,92,246,.45));
+  box-shadow: 0 10px 28px rgba(0,0,0,.38), 0 0 0 1px var(--nb-accent-glow, rgba(139,92,246,.25));
+}
+.xmc-dash__list-item:hover { border-color: var(--nb-border-accent, rgba(139,92,246,.4)); }
+
+/* 按钮：悬浮抬起 + 主按钮发送光晕，按下回弹 */
+.xmc-h-btn,
+.nb-tag,
+.nb-header-btn {
+  transition: transform .15s, box-shadow .15s, background .15s, border-color .15s, color .15s;
+}
+.xmc-h-btn:hover { transform: translateY(-1px); }
+.xmc-h-btn:active { transform: translateY(0) scale(.98); }
+.xmc-h-btn:not(.xmc-h-btn--ghost):not([disabled]):hover {
+  box-shadow: 0 0 14px var(--nb-accent-glow, rgba(139,92,246,.4));
+}
+.nb-tag[role]:hover,
+.nb-tag.accent:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.nb-header-btn:hover { transform: translateY(-1px); border-color: var(--nb-border-accent, rgba(139,92,246,.45)); }
+
+/* 发送按钮：悬浮放大已存在；这里加聚焦光圈 + 禁用态降饱和 */
+.nb-composer__send:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--nb-accent-glow, rgba(139,92,246,.4)); }
+.nb-composer__send:disabled { opacity: .45; filter: grayscale(.4); cursor: not-allowed; box-shadow: none; }
+
+/* ═══════════════════════════════════════════════════════════
+   4. 聚焦光晕 — 输入 / 选择统一为紫色 ring
+   ═══════════════════════════════════════════════════════════ */
+.xmc-h-input:focus,
+.xmc-h-input:focus-visible,
+input.xmc-h-input:focus,
+textarea:focus-visible,
+select.nb-tag:focus-visible {
+  outline: none;
+  border-color: var(--nb-accent, #8B5CF6);
+  box-shadow: 0 0 0 3px var(--nb-accent-glow, rgba(139,92,246,.28));
+}
+
+/* ═══════════════════════════════════════════════════════════
+   5. 富渲染细节
+   ═══════════════════════════════════════════════════════════ */
+/* 空状态图标轻浮动 + 发光 */
+@media (prefers-reduced-motion: no-preference) {
+  .nb-empty__icon {
+    animation: fx-float 3.4s ease-in-out infinite;
+    filter: drop-shadow(0 0 12px var(--nb-accent-glow, rgba(139,92,246,.5)));
+  }
+}
+.nb-empty__icon { color: var(--nb-accent, #8B5CF6); }
+
+/* 徽章/标签：主色描边 + 轻微高光 */
+.xmc-h-badge {
+  transition: transform .15s, box-shadow .15s;
+}
+.xmc-h-badge:hover { transform: translateY(-1px); }
+
+/* 代码块顶部一抹高光（仅视觉，不挡交互） */
+.nb-codeblock, .xmc-h-codeblock, pre.hljs {
+  position: relative;
+  overflow: hidden;
+}
+.nb-codeblock::before, .xmc-h-codeblock::before {
+  content: "";
+  position: absolute; inset: 0 0 auto 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--nb-accent, #8B5CF6), var(--nb-cyan, #06B6D4), transparent);
+  opacity: .6;
+}
+
+/* 加载骨架 / loading 文本：流动微光 */
+@media (prefers-reduced-motion: no-preference) {
+  .xmc-h-loading, .xmc-h-skeleton {
+    background: linear-gradient(90deg,
+      var(--nb-bg-surface, #1E293B) 25%,
+      var(--nb-bg-elevated, #283548) 37%,
+      var(--nb-bg-surface, #1E293B) 63%);
+    background-size: 200% 100%;
+    animation: fx-shimmer 1.4s linear infinite;
+  }
+  /* 旋转 spinner（如果页面用 .xmc-h-spinner 类） */
+  .xmc-h-spinner { animation: fx-spin .8s linear infinite; }
+}
+
+/* ClawHUD 段：悬浮微亮，强化「活着」的仪表感 */
+.xmc-claw-hud__seg { transition: background .2s, color .2s; }
+.xmc-claw-hud__seg:hover { background: rgba(139,92,246,.06); }
+
+/* 侧栏导航项：滑入指示 + 平滑高亮（与已有 .claw-nav-item 协同，仅补 transition 兜底） */
+.claw-nav-item { transition: background .16s, color .16s, transform .12s; }
+.claw-nav-item:active { transform: scale(.985); }
+
+/* ═══════════════════════════════════════════════════════════
+   6. 路由切换：给挂载点淡入（App 根容器）
+   ═══════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: no-preference) {
+  .xmc-h-main > * { animation: fx-fade-in .25s ease both; }
+}
