@@ -99,6 +99,10 @@ node_modules/
 # Vendored UI assets (fetched by scripts/fetch_vendor.py on install)
 xmclaw/daemon/static/vendor/*.js
 xmclaw/daemon/static/vendor/*.js.map
+# Exception: vis-network standalone build is committed so the knowledge-graph
+# view works offline / behind CDN-blocked networks (CN). Must be the
+# *standalone* build (bundles vis-data → exports DataSet). 2026-06-05.
+!xmclaw/daemon/static/vendor/vis-network.min.js
 
 # OS
 .DS_Store
