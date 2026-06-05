@@ -26,6 +26,7 @@ const html = window.__xmc.htm.bind(h);
 import { useSafeFetch } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
 import { confirmDialog } from "../lib/dialog.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 function Icon({ d, className }) {
   return html`
@@ -338,6 +339,16 @@ export function CronPage({ token }) {
           <span class="xmc-h-badge">${(jobs || []).length} 个</span>
         </div>
       </header>
+
+      <div style="padding:0 16px 0">
+        <${Vitals}>
+          <${VitalsCell} icon=${html`<${Sparkbar} live=${(jobs || []).some((j) => j.enabled)} />`}>
+            <${Readout} label="调度任务" value=${(jobs || []).length} unit="jobs" />
+          </${VitalsCell}>
+          <${VitalsCell}><${Readout} label="启用中" value=${(jobs || []).filter((j) => j.enabled).length} unit="enabled" /></${VitalsCell}>
+          <${VitalsCell}><${Readout} label="已暂停" value=${(jobs || []).filter((j) => !j.enabled).length} unit="paused" /></${VitalsCell}>
+        </${Vitals}>
+      </div>
 
       <div class="xmc-h-page__body xmc-h-cron__body">
         <${NewJobForm} onCreated=${load} token=${token} />

@@ -13,6 +13,7 @@ const { useState, useMemo } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { useSafeFetch } from "../lib/use_safe_fetch.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 function Icon({ d, className }) {
   return html`
@@ -437,46 +438,18 @@ export function AnalyticsPage({ token }) {
         ${data === null
           ? html`<div class="xmc-h-loading">载入中…</div>`
           : html`
-            <div class="xmc-h-ana__summary">
-              <${SummaryCard}
-                icon=${I_HASH}
-                label="LLM 调用"
-                value=${data.summary.total_calls}
-                sub=${"近 " + data.period_days + " 天"}
-              />
-              <${SummaryCard}
-                icon=${I_TREND}
-                label="输入 token"
-                value=${formatTokens(data.summary.total_prompt_tokens)}
-                sub="累计"
-              />
-              <${SummaryCard}
-                icon=${I_TREND}
-                label="输出 token"
-                value=${formatTokens(data.summary.total_completion_tokens)}
-                sub="累计"
-              />
-              <${SummaryCard}
-                icon=${I_BRAIN}
-                label="使用模型数"
-                value=${data.summary.models_used}
-                sub=${(data.models[0]?.model || "—").slice(0, 24) + "…"}
-              />
-              <${SummaryCard}
-                icon=${I_DOLLAR}
-                label="估算成本"
-                value=${formatCost(data.summary.total_cost_usd || 0)}
-                sub="按公开价目, heuristic"
-              />
+            <${Vitals}>
+              <${VitalsCell} icon=${html`<${Sparkbar} live=${(data.summary.total_calls || 0) > 0} />`}>
+                <${Readout} label="LLM 调用" value=${data.summary.total_calls} unit=${"近 " + data.period_days + " 天"} />
+              </${VitalsCell}>
+              <${VitalsCell}><${Readout} label="输入 TOKEN" value=${formatTokens(data.summary.total_prompt_tokens)} unit="累计" /></${VitalsCell}>
+              <${VitalsCell}><${Readout} label="输出 TOKEN" value=${formatTokens(data.summary.total_completion_tokens)} unit="累计" /></${VitalsCell}>
+              <${VitalsCell}><${Readout} label="使用模型数" value=${data.summary.models_used} unit="models" /></${VitalsCell}>
+              <${VitalsCell}><${Readout} label="估算成本" value=${formatCost(data.summary.total_cost_usd || 0)} unit="heuristic" /></${VitalsCell}>
               ${(data.summary.total_failed_calls || 0) > 0 ? html`
-                <${SummaryCard}
-                  icon=${I_ALERT}
-                  label="失败调用"
-                  value=${data.summary.total_failed_calls}
-                  sub="LLM 报错次数"
-                />
+                <${VitalsCell}><${Readout} label="失败调用" value=${data.summary.total_failed_calls} unit="errors" /></${VitalsCell}>
               ` : null}
-            </div>
+            </${Vitals}>
 
             <${TokenBarChart} daily=${data.daily} />
             <${ModelTable} models=${data.models} />

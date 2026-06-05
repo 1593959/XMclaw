@@ -10,6 +10,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { Badge } from "../components/atoms/badge.js";
 import { apiGet } from "../lib/api.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 export function ToolsPage({ token }) {
   const [data, setData] = useState(null);
@@ -37,6 +38,13 @@ export function ToolsPage({ token }) {
           已加载 ${tools.length} 个工具，${mcps.length} 个 MCP 服务。
         </p>
       </header>
+
+      <${Vitals}>
+        <${VitalsCell} icon=${html`<${Sparkbar} live=${tools.length > 0} />`}>
+          <${Readout} label="内置工具" value=${tools.length} unit="tools" />
+        </${VitalsCell}>
+        <${VitalsCell}><${Readout} label="MCP 服务" value=${mcps.length} unit="servers" /></${VitalsCell}>
+      </${Vitals}>
 
       <h3 style="margin:1rem 0 .5rem">内置工具</h3>
       ${tools.length === 0

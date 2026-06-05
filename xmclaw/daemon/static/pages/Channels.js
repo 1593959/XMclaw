@@ -18,6 +18,7 @@ const html = window.__xmc.htm.bind(h);
 import { Badge } from "../components/atoms/badge.js";
 import { useSafeFetch } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 async function putJson(path, token, body) {
   const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
@@ -198,6 +199,15 @@ export function ChannelsPage({ token }) {
           <strong>改完保存后需重启 daemon</strong>（adapter 启动时绑凭据）。
         </p>
       </header>
+
+      <${Vitals}>
+        <${VitalsCell}><${Readout} label="接入渠道" value=${channels.length} unit="channels" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="已实现" value=${readyCount} unit="ready" /></${VitalsCell}>
+        <${VitalsCell} icon=${html`<${Sparkbar} live=${runningCount > 0} />`}>
+          <${Readout} label="运行中" value=${runningCount} unit="running" />
+        </${VitalsCell}>
+      </${Vitals}>
+
       ${channels.map((ch) => html`<${ChannelCard} ch=${ch} token=${token} onSaved=${load} />`)}
     </section>
   `;
