@@ -444,10 +444,17 @@ fact 是少量原子知识单元（句子级）。
 - [ ] **M1.2** FactRow 仪表化（kind/scope/layer chip、conf 迷你条、改正改行内编辑）
 - [ ] **M2** 后端 `/api/v2/memory/v2/overview` 聚合接口 + 前端单请求渲染
 - [ ] **M3** `MEMORY_RECALLED` 事件 + 对话流「💭 想起 N 条」召回卡（写/读对称）
+- [x] **M-fix1** 记忆污染根因：内部反思会话（goal-from-percept-/reflect:/
+      autonomous:/_system: …）不再抽取 lesson/preference 写入用户记忆。反思
+      每轮重跑、自言自语反复入库是「记忆越积越脏」的根因。文件：
+      `xmclaw/daemon/post_sampling_hooks.py`（两个抽取 hook 的 `is_enabled`
+      加 `_is_internal_session` 门）+ `tests/unit/test_v2_post_sampling_hooks.py`。
 - [ ] **M4**（stretch）召回管线收敛为 `MemoryRecallPipeline`（只重组不改语义）
 
 **进度日志**
-2026-06-05: M1 落地 — 标签分组 + 维护抽屉 + bucket 分组置顶 (commit 待填)
+2026-06-05: M1 落地 — 标签分组 + 维护抽屉 + bucket 分组置顶 (commit 81c5e3f)
+2026-06-06: 后台任务面板折叠重复条目 ×N (commit 4504f5c)
+2026-06-06: M-fix1 — 内部反思会话跳过记忆抽取，断掉污染根因 (commit 待填)
 
 ---
 

@@ -662,3 +662,32 @@ async def test_lessons_double_date_prefix_collapses(tmp_path: Path) -> None:
         # Count "2026-" occurrences in the bullet — must be 1.
         assert line.count("2026-") == 1, f"double-date in: {line}"
     assert "this is the actual lesson body" in text
+
+
+# ── 2026-06-06 记忆污染修复：内部反思会话不抽取 lesson/preference ──
+
+
+def _internal_ctx(persona_dir, sid):
+    return HookContext(
+        session_id=sid,
+        agent_id="main",
+        user_message="hi",
+        assistant_response="hello",
+        history=[],
+        llm=_StubLLM('{"facts": []}'),
+        persona_dir=persona_dir,
+        cfg={"evolution": {"memory": {"extract_facts": {"enabled": True},
+                                       "extract_memories": {"enabled": True}}}},
+    )
+
+
+def test_internal_sessions_skip_extraction(tmp_path: Path) -> None:
+    """goal-from-percept / reflect: 等内部反思会话不该抽取记忆，否则反思
+    自言自语反复入库污染记忆库。正常聊天会话照常抽取。"""
+    for hook in (ExtractLessonsHook(), ExtractMemoriesHook()):
+        # 内部会话 → 失活
+        assert hook.is_enabled(_internal_ctx(tmp_path, "goal-from-percept-x")) is False
+        assert hook.is_enabled(_internal_ctx(tmp_path, "reflect:abc")) is False
+        assert hook.is_enabled(_internal_ctx(tmp_path, "autonomous:y")) is False
+    # 正常聊天会话 → ExtractLessons 仍启用（extract_facts.enabled=True）
+    assert ExtractLessonsHook().is_enabled(_internal_ctx(tmp_path, "chat-123")) is True

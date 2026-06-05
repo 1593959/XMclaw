@@ -118,6 +118,23 @@ class HookContext:
     memory_v2_service: Any = None  # MemoryService | None
 
 
+# 2026-06-06 记忆污染修复：内部会话（CognitiveDaemon 的 goal-from-percept
+# 反应目标、reflect:/dream: 反思、autonomous: 自主、_system: 等）的「自言
+# 自语」turn 不该再被抽成新的 lesson/preference 写进用户记忆 —— 否则反思
+# 每轮重跑，近似教训反复入库，把记忆库越积越脏（用户报「重复 → 记忆污染」）。
+# 用户真实对话的 turn 照常抽取。前缀与 agent_loop._INTERNAL_SESSION_PREFIXES
+# / session_store.is_internal_session_id 保持一致。
+_INTERNAL_SESSION_PREFIXES = (
+    "autonomous:", "goal-from-percept-", "reflect:", "dream:",
+    "_system:", "evolution:", "skill-dream",
+)
+
+
+def _is_internal_session(session_id: str) -> bool:
+    sid = session_id or ""
+    return any(sid.startswith(p) for p in _INTERNAL_SESSION_PREFIXES)
+
+
 class PostSamplingHook(abc.ABC):
     """One pluggable post-turn task. Subclasses implement ``run``."""
 
@@ -452,6 +469,9 @@ class ExtractMemoriesHook(PostSamplingHook):
     def is_enabled(self, ctx: HookContext) -> bool:
         if ctx.persona_dir is None:
             return False
+        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）。
+        if _is_internal_session(ctx.session_id):
+            return False
         section = (
             ((ctx.cfg.get("evolution") or {}).get("memory") or {})
             .get("extract_memories") or {}
@@ -706,6 +726,9 @@ class ExtractLessonsHook(PostSamplingHook):
 
     def is_enabled(self, ctx: HookContext) -> bool:
         if ctx.persona_dir is None:
+            return False
+        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）。
+        if _is_internal_session(ctx.session_id):
             return False
         memory_cfg = ((ctx.cfg.get("evolution") or {}).get("memory") or {})
         # Forward name first; legacy name as backward-compat alias.
