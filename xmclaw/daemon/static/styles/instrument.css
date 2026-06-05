@@ -363,3 +363,51 @@
 
 /* cockpit 内 section 自身需要 relative 给伪元素定位 */
 .xi-cockpit { position: relative; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   8. 工具 / worker / subagent 卡片 — 状态 + 类型染色（对话流可读性）
+   左边框颜色按 data-kind(工具青 / worker 琥珀 / subagent 紫)，
+   再被 data-status(ok 绿 / error 红)覆盖；running 时脉动。
+   ═══════════════════════════════════════════════════════════════════════ */
+.nb-toolcard__glyph {
+  display: inline-grid; place-items: center;
+  width: 18px; height: 18px; border-radius: 4px;
+  font-size: 12px; line-height: 1;
+  background: color-mix(in srgb, var(--nb-cyan, #06B6D4) 16%, transparent);
+  color: var(--nb-cyan, #06B6D4);
+  flex: 0 0 auto;
+}
+/* 类型基色（kind 在前，status 在后覆盖） */
+.nb-toolcard[data-kind="tool"]     { border-left-color: var(--nb-cyan, #06B6D4) !important; }
+.nb-toolcard[data-kind="worker"]   { border-left-color: #F59E0B !important; }
+.nb-toolcard[data-kind="subagent"] { border-left-color: var(--nb-accent, #8B5CF6) !important; }
+.nb-toolcard[data-kind="worker"]   .nb-toolcard__glyph { background: rgba(245,158,11,.16); color: #F59E0B; }
+.nb-toolcard[data-kind="subagent"] .nb-toolcard__glyph { background: color-mix(in srgb, var(--nb-accent, #8B5CF6) 18%, transparent); color: var(--nb-accent-light, #A78BFA); }
+
+/* 状态覆盖左边框 + 头部色调 */
+.nb-toolcard[data-status="ok"]    { border-left-color: var(--nb-success, #34D399) !important; }
+.nb-toolcard[data-status="error"] { border-left-color: var(--nb-error, #F87171) !important; }
+.nb-toolcard[data-status="error"] .nb-toolcard__header { background: rgba(239,68,68,.07); }
+.nb-toolcard[data-status="error"] .nb-toolcard__header b { color: var(--nb-error, #F87171); }
+.nb-toolcard[data-status="error"] .nb-toolcard__glyph { background: rgba(239,68,68,.16); color: var(--nb-error, #F87171); }
+.nb-toolcard[data-status="ok"] .nb-toolcard__glyph { background: rgba(52,211,153,.16); color: var(--nb-success, #34D399); }
+
+/* running 脉动左边框 + 状态点 */
+@media (prefers-reduced-motion: no-preference) {
+  .nb-toolcard[data-status="running"] { animation: xi-tool-pulse 1.6s ease-in-out infinite; }
+  @keyframes xi-tool-pulse {
+    0%,100% { box-shadow: inset 2px 0 0 0 var(--nb-cyan, #06B6D4); }
+    50%     { box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--nb-cyan,#06B6D4) 30%, transparent); }
+  }
+}
+
+/* 卡片整体：四角刻度括号已由 §1 给到(.xmc-h-codeblock 等)，这里给 toolcard
+   也加上同款 hover 抬升，保持与全站手感一致 */
+.nb-toolcard { transition: border-color .2s, box-shadow .2s, transform .15s; }
+.nb-toolcard:hover { transform: translateX(1px); box-shadow: 0 4px 18px rgba(0,0,0,.28); }
+
+/* 参数/结果 小标题统一成等宽刻度标签 */
+.nb-toolcard__body > div > div:first-child {
+  font-family: var(--xi-mono) !important;
+  text-transform: uppercase; letter-spacing: .1em;
+}

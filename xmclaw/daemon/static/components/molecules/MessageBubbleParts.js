@@ -101,9 +101,9 @@ export function ToolCard({ call }) {
 
   return html`
     <div class="nb-toolcard-wrap" style=${hasMedia ? "" : ""}>
-      <div class="nb-toolcard" style="position:relative;">
+      <div class="nb-toolcard" data-kind=${isAgentTool ? "subagent" : "tool"} data-status=${call.status || "running"} style="position:relative;">
         <div class="nb-toolcard__header">
-          <span aria-hidden="true">⌁</span>
+          <span class="nb-toolcard__glyph" aria-hidden="true">${isAnySkill ? "✦" : isAgentTool ? "⤳" : "⌁"}</span>
           <b>${displayName}</b>
           ${targetAgent
             ? html`<span style="color:var(--nb-fg-muted)">→ <code style="font-family:var(--nb-font-mono)">${targetAgent}</code></span>`
@@ -356,9 +356,9 @@ export function WorkerCard({ call }) {
     : null;
   return html`
     <div class="nb-toolcard-wrap">
-      <div class="nb-toolcard" style="position:relative;">
+      <div class="nb-toolcard" data-kind="worker" data-status=${call.status || "running"} style="position:relative;">
         <div class="nb-toolcard__header">
-          <span aria-hidden="true">${bullet}</span>
+          <span class="nb-toolcard__glyph" aria-hidden="true">${bullet}</span>
           <b>worker ${call.workerId || "?"}</b>
           <span style="color:var(--nb-fg-muted)">· task <code style="font-family:var(--nb-font-mono)">${call.taskId || "?"}</code></span>
           <${Badge} tone=${tone}>${label}</${Badge}>
@@ -423,9 +423,9 @@ export function SubagentCard({ call }) {
     : null;
   return html`
     <div class="nb-toolcard-wrap">
-      <div class="nb-toolcard" style="position:relative;">
+      <div class="nb-toolcard" data-kind="subagent" data-status=${call.status || "running"} style="position:relative;">
         <div class="nb-toolcard__header">
-          <span aria-hidden="true">${bullet}</span>
+          <span class="nb-toolcard__glyph" aria-hidden="true">${bullet}</span>
           <b>subagent #${idx}</b>
           <span style="color:var(--nb-fg-muted)">· ${role}</span>
           <${Badge} tone=${tone}>${label}</${Badge}>
