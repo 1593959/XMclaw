@@ -411,3 +411,54 @@
   font-family: var(--xi-mono) !important;
   text-transform: uppercase; letter-spacing: .1em;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   9. 折叠式工具/worker/subagent 卡 — 默认一行摘要，点开看详情
+   解决「JSON 参数+结果整坨砸进对话流」的噪音问题。
+   ═══════════════════════════════════════════════════════════════════════ */
+.nb-toolcard { padding: 0 !important; }
+.nb-toolcard > summary.nb-toolcard__summary {
+  list-style: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 11px;
+  font-family: var(--xi-mono); font-size: 12px;
+  color: var(--nb-fg-secondary, #94A3B8);
+  cursor: pointer; user-select: none; -webkit-user-select: none;
+}
+.nb-toolcard__summary::-webkit-details-marker,
+.nb-toolcard__summary::marker { display: none; content: ""; }
+.nb-toolcard__name { font-weight: 600; flex: 0 0 auto; color: var(--nb-cyan-light, #67E8F9); }
+.nb-toolcard[data-kind="worker"]   .nb-toolcard__name { color: #FBBF24; }
+.nb-toolcard[data-kind="subagent"] .nb-toolcard__name { color: var(--nb-accent-light, #A78BFA); }
+.nb-toolcard__to { color: var(--nb-fg-muted, #64748B); flex: 0 0 auto; }
+.nb-toolcard__to code { font-family: var(--xi-mono); }
+.nb-toolcard__arg {
+  color: var(--nb-fg-muted, #64748B); opacity: .9;
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nb-toolcard__spacer { flex: 1 1 auto; }
+.nb-toolcard__dur { color: var(--nb-fg-muted, #64748B); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.nb-toolcard__state { flex: 0 0 auto; font-weight: 600; }
+.nb-toolcard__state[data-s="ok"]      { color: var(--nb-success, #34D399); }
+.nb-toolcard__state[data-s="error"]   { color: var(--nb-error, #F87171); }
+.nb-toolcard__state[data-s="running"] { color: var(--nb-cyan-light, #67E8F9); }
+.nb-toolcard__chev { flex: 0 0 auto; color: var(--nb-fg-muted, #64748B); transition: transform .18s; font-size: 11px; }
+.nb-toolcard[open] .nb-toolcard__chev { transform: rotate(90deg); }
+.nb-toolcard:hover > .nb-toolcard__summary { background: rgba(148,163,184,.05); }
+
+/* body segments */
+.nb-toolcard__body { padding: 4px 11px 10px !important; }
+.nb-toolcard__seg { margin: 0 0 9px; }
+.nb-toolcard__seg:last-child { margin-bottom: 0; }
+.nb-toolcard__seglabel {
+  font-family: var(--xi-mono); text-transform: uppercase; letter-spacing: .1em;
+  font-size: 10px; color: var(--nb-fg-muted, #64748B); margin-bottom: 4px;
+}
+.nb-toolcard__segmeta { opacity: .6; text-transform: none; letter-spacing: 0; }
+.nb-toolcard__pre {
+  white-space: pre-wrap; word-break: break-word;
+  font-size: .85em; line-height: 1.55; margin: 0;
+  font-family: var(--xi-mono); color: var(--nb-fg-secondary, #94A3B8);
+  max-height: 320px; overflow: auto;
+}

@@ -16,6 +16,44 @@ import { openLightbox } from "../../lib/lightbox.js";
 import { MermaidView } from "./CanvasArtifact.js";
 
 
+// 折叠摘要：从工具参数里挑一个最有信息量的值作单行预览（path / command /
+// query / url …优先），让折叠态也能一眼看出这次调用在干嘛。
+function _argSummary(call) {
+  const a = call && call.args;
+  if (!a || typeof a !== "object") return "";
+  const PREF = ["path", "file", "filename", "command", "cmd", "query", "q",
+    "url", "pattern", "text", "name", "prompt", "message", "content", "key", "id"];
+  let val = null;
+  for (const k of PREF) {
+    if (typeof a[k] === "string" && a[k].trim()) { val = a[k]; break; }
+  }
+  if (val == null) {
+    for (const k of Object.keys(a)) {
+      const v = a[k];
+      if (typeof v === "string" && v.trim()) { val = `${k}=${v}`; break; }
+      if (typeof v === "number" || typeof v === "boolean") { val = `${k}=${v}`; break; }
+    }
+  }
+  if (val == null) {
+    const n = Object.keys(a).length;
+    return n ? `${n} 个参数` : "";
+  }
+  let s = String(val).replace(/\s+/g, " ").trim();
+  if (s.length > 72) s = s.slice(0, 72) + "…";
+  return s;
+}
+
+// 结果摘要（折叠态显示几行 / 多少字符），点开看全文。
+function _resultSummary(call) {
+  if (call.result == null) return "";
+  const raw = typeof call.result === "string"
+    ? call.result
+    : JSON.stringify(call.result);
+  const lines = String(raw).split("\n").length;
+  const chars = String(raw).length;
+  return chars > 0 ? `${chars} 字符${lines > 1 ? ` · ${lines} 行` : ""}` : "";
+}
+
 export function ToolCard({ call }) {
   // Hermes ToolCall.tsx pattern: status-tinted card with bullet ●
   // (running/done/error tones), auto-expand on error, user can override.
@@ -99,55 +137,64 @@ export function ToolCard({ call }) {
     ? html`<div style="position:absolute;top:0;left:0;height:2px;width:30%;background:linear-gradient(90deg,transparent,var(--nb-cyan),transparent);animation:shimmer 1.3s linear infinite;"></div>`
     : null;
 
+  const argSummary = _argSummary(call);
+  const resultSummary = _resultSummary(call);
+  const durTxt = call.elapsedSeconds != null ? `${call.elapsedSeconds}s`
+    : (call.duration_ms != null ? `${(call.duration_ms / 1000).toFixed(1)}s` : null);
+  const hasDetail = !!(argsPreview || call.result != null);
+  // 默认折叠；出错时自动展开（错误最需要被看到）。
   return html`
-    <div class="nb-toolcard-wrap" style=${hasMedia ? "" : ""}>
-      <div class="nb-toolcard" data-kind=${isAgentTool ? "subagent" : "tool"} data-status=${call.status || "running"} style="position:relative;">
-        <div class="nb-toolcard__header">
+    <div class="nb-toolcard-wrap">
+      <details class="nb-toolcard" data-kind=${isAgentTool ? "subagent" : "tool"} data-status=${call.status || "running"} open=${call.status === "error"}>
+        <summary class="nb-toolcard__summary">
           <span class="nb-toolcard__glyph" aria-hidden="true">${isAnySkill ? "✦" : isAgentTool ? "⤳" : "⌁"}</span>
-          <b>${displayName}</b>
+          <b class="nb-toolcard__name">${displayName}</b>
           ${targetAgent
-            ? html`<span style="color:var(--nb-fg-muted)">→ <code style="font-family:var(--nb-font-mono)">${targetAgent}</code></span>`
+            ? html`<span class="nb-toolcard__to">→ <code>${targetAgent}</code></span>`
             : null}
           ${(isAnySkill || isAgentTool)
             ? html`<${Badge} tone=${isAgentTool ? "warn" : "success"} title=${`${skillLabel} — agent 自主选取的`}>${skillLabel}</${Badge}>`
             : null}
-          <span class="ok" style="margin-left:auto;color:${call.status === 'ok' ? 'var(--nb-success)' : call.status === 'error' ? 'var(--nb-error)' : 'var(--nb-cyan-light)'};font-weight:600;">
-            ${statusIcon ? html`${statusIcon} ${label}` : label}
-          </span>
+          ${argSummary ? html`<span class="nb-toolcard__arg">${argSummary}</span>` : null}
+          <span class="nb-toolcard__spacer"></span>
           ${call.status === "running"
             ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
             : null}
-        </div>
-        <div class="nb-toolcard__body">
-          ${argsPreview
-            ? html`
-                <div style="margin-bottom:8px;">
-                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">参数</div>
-                  <${CodeBlock} code=${argsPreview} lang="json" />
-                </div>
-              `
-            : null}
-          ${call.result != null
-            ? html`
-                <div>
-                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">${call.status === "error" ? "错误" : "结果"}</div>
-                  <${CodeBlock}
-                    code=${(() => {
-                      const raw = typeof call.result === "string"
-                        ? call.result
-                        : JSON.stringify(call.result, null, 2);
-                      // Same \n un-escaping as argsPreview so stdout
-                      // and other multi-line JSON strings wrap correctly.
-                      return raw.replace(/\\n/g, "\n");
-                    })()}
-                    lang=${call.status === "error" ? "" : "text"}
-                  />
-                </div>
-              `
-            : null}
-        </div>
-        ${shimmer}
-      </div>
+          ${durTxt ? html`<span class="nb-toolcard__dur">${durTxt}</span>` : null}
+          <span class="nb-toolcard__state" data-s=${call.status || "running"}>
+            ${statusIcon ? html`${statusIcon} ` : null}${label}
+          </span>
+          ${hasDetail ? html`<span class="nb-toolcard__chev" aria-hidden="true">▸</span>` : null}
+        </summary>
+        ${hasDetail ? html`
+          <div class="nb-toolcard__body">
+            ${argsPreview
+              ? html`
+                  <div class="nb-toolcard__seg">
+                    <div class="nb-toolcard__seglabel">参数</div>
+                    <${CodeBlock} code=${argsPreview} lang="json" />
+                  </div>
+                `
+              : null}
+            ${call.result != null
+              ? html`
+                  <div class="nb-toolcard__seg">
+                    <div class="nb-toolcard__seglabel">${call.status === "error" ? "错误" : "结果"}${resultSummary ? html` <span class="nb-toolcard__segmeta">${resultSummary}</span>` : null}</div>
+                    <${CodeBlock}
+                      code=${(() => {
+                        const raw = typeof call.result === "string"
+                          ? call.result
+                          : JSON.stringify(call.result, null, 2);
+                        return raw.replace(/\\n/g, "\n");
+                      })()}
+                      lang=${call.status === "error" ? "" : "text"}
+                    />
+                  </div>
+                `
+              : null}
+          </div>
+        ` : null}
+      </details>
       ${hasImages
         ? html`<${AttachmentGrid} images=${call.images} />`
         : null}
@@ -351,52 +398,29 @@ export function WorkerCard({ call }) {
     : call.status === "error" ? "失败"
     : "执行中";
   const bullet = "🐝";
-  const shimmer = call.status === "running"
-    ? html`<div style="position:absolute;top:0;left:0;height:2px;width:30%;background:linear-gradient(90deg,transparent,var(--nb-cyan),transparent);animation:shimmer 1.3s linear infinite;"></div>`
-    : null;
+  const hasDetail = !!(call.promptPreview || call.outputPreview || call.error);
   return html`
     <div class="nb-toolcard-wrap">
-      <div class="nb-toolcard" data-kind="worker" data-status=${call.status || "running"} style="position:relative;">
-        <div class="nb-toolcard__header">
+      <details class="nb-toolcard" data-kind="worker" data-status=${call.status || "running"} open=${call.status === "error"}>
+        <summary class="nb-toolcard__summary">
           <span class="nb-toolcard__glyph" aria-hidden="true">${bullet}</span>
-          <b>worker ${call.workerId || "?"}</b>
-          <span style="color:var(--nb-fg-muted)">· task <code style="font-family:var(--nb-font-mono)">${call.taskId || "?"}</code></span>
-          <${Badge} tone=${tone}>${label}</${Badge}>
-          ${call.status === "running"
-            ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
-            : null}
-          ${call.elapsedSeconds != null
-            ? html`<span style="color:var(--nb-fg-muted)">${call.elapsedSeconds}s</span>`
-            : null}
-        </div>
-        <div class="nb-toolcard__body">
-          ${call.promptPreview
-            ? html`
-                <div style="margin-bottom:8px;">
-                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">任务提示</div>
-                  <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.promptPreview}</pre>
-                </div>
-              `
-            : null}
-          ${call.outputPreview
-            ? html`
-                <div style="margin-bottom:8px;">
-                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">输出预览</div>
-                  <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.outputPreview}</pre>
-                </div>
-              `
-            : null}
-          ${call.error
-            ? html`
-                <div>
-                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">错误</div>
-                  <${CodeBlock} code=${call.error} lang="" />
-                </div>
-              `
-            : null}
-        </div>
-        ${shimmer}
-      </div>
+          <b class="nb-toolcard__name">worker ${call.workerId || "?"}</b>
+          <span class="nb-toolcard__to">task <code>${call.taskId || "?"}</code></span>
+          ${call.promptPreview ? html`<span class="nb-toolcard__arg">${call.promptPreview}</span>` : null}
+          <span class="nb-toolcard__spacer"></span>
+          ${call.status === "running" ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />` : null}
+          ${call.elapsedSeconds != null ? html`<span class="nb-toolcard__dur">${call.elapsedSeconds}s</span>` : null}
+          <span class="nb-toolcard__state" data-s=${call.status || "running"}>${label}</span>
+          ${hasDetail ? html`<span class="nb-toolcard__chev" aria-hidden="true">▸</span>` : null}
+        </summary>
+        ${hasDetail ? html`
+          <div class="nb-toolcard__body">
+            ${call.promptPreview ? html`<div class="nb-toolcard__seg"><div class="nb-toolcard__seglabel">任务提示</div><pre class="nb-toolcard__pre">${call.promptPreview}</pre></div>` : null}
+            ${call.outputPreview ? html`<div class="nb-toolcard__seg"><div class="nb-toolcard__seglabel">输出预览</div><pre class="nb-toolcard__pre">${call.outputPreview}</pre></div>` : null}
+            ${call.error ? html`<div class="nb-toolcard__seg"><div class="nb-toolcard__seglabel">错误</div><${CodeBlock} code=${call.error} lang="" /></div>` : null}
+          </div>
+        ` : null}
+      </details>
     </div>
   `;
 }
@@ -418,53 +442,32 @@ export function SubagentCard({ call }) {
   const bullet = "⚡";
   const idx = call.subagentIndex ?? "?";
   const role = call.role_hint || "general";
-  const shimmer = call.status === "running"
-    ? html`<div style="position:absolute;top:0;left:0;height:2px;width:30%;background:linear-gradient(90deg,transparent,var(--nb-cyan),transparent);animation:shimmer 1.3s linear infinite;"></div>`
-    : null;
+  // subagent 产出最有价值 → 完成/出错时默认展开产出；运行中折叠。
+  const hasDetail = !!(call.promptPreview || call.outputPreview || call.error);
+  const autoOpen = call.status === "error" || (call.status === "ok" && !!call.outputPreview);
   return html`
     <div class="nb-toolcard-wrap">
-      <div class="nb-toolcard" data-kind="subagent" data-status=${call.status || "running"} style="position:relative;">
-        <div class="nb-toolcard__header">
+      <details class="nb-toolcard" data-kind="subagent" data-status=${call.status || "running"} open=${autoOpen}>
+        <summary class="nb-toolcard__summary">
           <span class="nb-toolcard__glyph" aria-hidden="true">${bullet}</span>
-          <b>subagent #${idx}</b>
-          <span style="color:var(--nb-fg-muted)">· ${role}</span>
-          <${Badge} tone=${tone}>${label}</${Badge}>
-          ${call.status === "running"
-            ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />`
-            : null}
-          ${call.hops ? html`<span style="color:var(--nb-fg-muted)">${call.hops} hops</span>` : null}
-          ${call.elapsedSeconds != null
-            ? html`<span style="color:var(--nb-fg-muted)">${call.elapsedSeconds}s</span>`
-            : null}
-        </div>
-        <div class="nb-toolcard__body">
-          ${call.promptPreview
-            ? html`
-                <div style="margin-bottom:8px;">
-                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">子任务</div>
-                  <pre style="white-space:pre-wrap;font-size:.85em;line-height:1.5">${call.promptPreview}</pre>
-                </div>
-              `
-            : null}
-          ${call.outputPreview
-            ? html`
-                <div style="margin-bottom:8px;">
-                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">产出</div>
-                  <${MarkdownBody} content=${call.outputPreview} />
-                </div>
-              `
-            : null}
-          ${call.error
-            ? html`
-                <div>
-                  <div style="font-size:10px;color:var(--nb-fg-muted);margin-bottom:4px;">错误</div>
-                  <${CodeBlock} code=${call.error} lang="" />
-                </div>
-              `
-            : null}
-        </div>
-        ${shimmer}
-      </div>
+          <b class="nb-toolcard__name">subagent #${idx}</b>
+          <span class="nb-toolcard__to">${role}</span>
+          ${call.promptPreview ? html`<span class="nb-toolcard__arg">${call.promptPreview}</span>` : null}
+          <span class="nb-toolcard__spacer"></span>
+          ${call.status === "running" ? html`<${Spinner} size="sm" label="running" hideLabel=${true} />` : null}
+          ${call.hops ? html`<span class="nb-toolcard__dur">${call.hops} hops</span>` : null}
+          ${call.elapsedSeconds != null ? html`<span class="nb-toolcard__dur">${call.elapsedSeconds}s</span>` : null}
+          <span class="nb-toolcard__state" data-s=${call.status || "running"}>${label}</span>
+          ${hasDetail ? html`<span class="nb-toolcard__chev" aria-hidden="true">▸</span>` : null}
+        </summary>
+        ${hasDetail ? html`
+          <div class="nb-toolcard__body">
+            ${call.promptPreview ? html`<div class="nb-toolcard__seg"><div class="nb-toolcard__seglabel">子任务</div><pre class="nb-toolcard__pre">${call.promptPreview}</pre></div>` : null}
+            ${call.outputPreview ? html`<div class="nb-toolcard__seg"><div class="nb-toolcard__seglabel">产出</div><${MarkdownBody} content=${call.outputPreview} /></div>` : null}
+            ${call.error ? html`<div class="nb-toolcard__seg"><div class="nb-toolcard__seglabel">错误</div><${CodeBlock} code=${call.error} lang="" /></div>` : null}
+          </div>
+        ` : null}
+      </details>
     </div>
   `;
 }
