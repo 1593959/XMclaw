@@ -19,6 +19,7 @@ const html = window.__xmc.htm.bind(h);
 import { Badge } from "../components/atoms/badge.js";
 import { useSafeFetch } from "../lib/use_safe_fetch.js";
 import { toast } from "../lib/toast.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 async function postJson(path, token, body) {
   const url = path + (token ? `?token=${encodeURIComponent(token)}` : "");
@@ -308,6 +309,15 @@ export function AgentsPage({ token }) {
           <code>chat_with_agent</code> / <code>submit_to_agent</code> 工具派活给它们。
         </p>
       </header>
+
+      <${Vitals}>
+        <${VitalsCell} icon=${html`<${Sparkbar} live=${agents.length > 0} />`}>
+          <${Readout} label="已注册" value=${agents.length} unit="agents" />
+        </${VitalsCell}>
+        <${VitalsCell}><${Readout} label="对话型 LLM" value=${llmCount} unit="llm" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="观察者" value=${evoCount} unit="evolution" /></${VitalsCell}>
+      </${Vitals}>
+
       <${CreateAgentForm} token=${token} onCreated=${load} />
       <ul class="xmc-datapage__list">
         ${agents.map((a) => html`<${AgentRow} a=${a} onDelete=${onDelete} busy=${busy} />`)}

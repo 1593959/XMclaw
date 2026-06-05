@@ -23,6 +23,7 @@ const html = window.__xmc.htm.bind(h);
 import { apiGet, apiSend } from "../lib/api.js";
 import { confirmDialog } from "../lib/dialog.js";
 import { toast } from "../lib/toast.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 function Icon({ d }) {
   return html`
@@ -212,13 +213,18 @@ export function MarketplacePage({ token }) {
     `;
   }
 
+  const totalSkills = index ? index.skills.length : 0;
+  const installedCount = Object.keys(installed).length;
   return html`
-    <section style="padding:1rem">
-      <header style="display:flex;justify-content:space-between;align-items:baseline;gap:.6rem;flex-wrap:wrap">
-        <span style="display:flex;gap:.5rem;align-items:center">
-          <h2 style="margin:0;display:flex;gap:.5rem;align-items:center"><${Icon} d=${I_STORE} /> 技能商店</h2>
-          <code style="font-size:.7rem;color:var(--xmc-fg-muted)">B-390 MVP · curated</code>
-        </span>
+    <section class="xmc-datapage">
+      <header class="xmc-datapage__header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:.6rem;flex-wrap:wrap">
+        <div>
+          <h2 style="display:flex;gap:.5rem;align-items:center"><${Icon} d=${I_STORE} /> 技能商店</h2>
+          <p class="xmc-datapage__subtitle">
+            从社区策展目录安装技能；安装后重启 daemon (<code>xmclaw restart</code>) 即可使用。
+            ${index && index.updated ? html`目录更新于 ${index.updated}。` : null}
+          </p>
+        </div>
         <span style="display:flex;gap:.4rem">
           <button type="button" onClick=${() => loadAll(true)} disabled=${loading}
                   style="padding:.3rem .7rem;border-radius:4px;background:transparent;border:1px solid var(--color-border);color:var(--xmc-fg);cursor:pointer;font-size:.78rem;display:inline-flex;align-items:center;gap:.3rem">
@@ -227,10 +233,13 @@ export function MarketplacePage({ token }) {
         </span>
       </header>
 
-      <p style="margin:.4rem 0 .6rem 0;color:var(--xmc-fg-muted);font-size:.85rem">
-        从社区策展目录安装技能；安装后重启 daemon (<code>xmclaw restart</code>) 即可使用。
-        ${index && index.updated ? html`目录更新于 ${index.updated}。` : null}
-      </p>
+      <${Vitals}>
+        <${VitalsCell} icon=${html`<${Sparkbar} live=${totalSkills > 0} />`}>
+          <${Readout} label="可装技能" value=${totalSkills} unit="skills" />
+        </${VitalsCell}>
+        <${VitalsCell}><${Readout} label="已安装" value=${installedCount} unit="installed" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="当前筛选" value=${filtered.length} unit="shown" /></${VitalsCell}>
+      </${Vitals}>
 
       <div style="margin:.6rem 0;display:flex;gap:.5rem;align-items:center">
         <span style="display:inline-flex;align-items:center"><${Icon} d=${I_SEARCH} /></span>

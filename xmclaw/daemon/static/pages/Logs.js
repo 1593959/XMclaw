@@ -12,6 +12,7 @@ const { useState, useEffect, useCallback, useRef } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { apiGet } from "../lib/api.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 function Icon({ d, className }) {
   return html`
@@ -143,6 +144,16 @@ export function LogsPage({ token }) {
           </button>
         </div>
       </header>
+
+      <div style="padding:0 16px">
+        <${Vitals}>
+          <${VitalsCell} icon=${html`<${Sparkbar} live=${autoRefresh} />`}>
+            <${Readout} label="当前行数" value=${lines.length} unit="lines" />
+          </${VitalsCell}>
+          <${VitalsCell}><${Readout} label="ERROR" value=${lines.filter((l) => /ERROR|CRITICAL|FATAL/.test(String(l).toUpperCase())).length} unit="errors" /></${VitalsCell}>
+          <${VitalsCell}><${Readout} label="WARNING" value=${lines.filter((l) => /WARN/.test(String(l).toUpperCase())).length} unit="warns" /></${VitalsCell}>
+        </${Vitals}>
+      </div>
 
       <div class="xmc-h-page__body xmc-h-logs__body">
         <div class="xmc-h-logs__toolbar" role="toolbar" aria-label="过滤">

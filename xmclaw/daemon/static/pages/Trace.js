@@ -20,6 +20,7 @@ const html = window.__xmc.htm.bind(h);
 
 import { Badge } from "../components/atoms/badge.js";
 import { apiGet } from "../lib/api.js";
+import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
 
 // Tone per event type — keeps the eye trained.
 const TONE = {
@@ -288,6 +289,15 @@ export function TracePage({ token }) {
           每 2 秒自动刷新，点击任意行展开 payload。状态不再黑盒。
         </p>
       </header>
+
+      <${Vitals}>
+        <${VitalsCell} icon=${html`<${Sparkbar} live=${!paused} />`}>
+          <${Readout} label="事件总数" value=${ordered.length} unit="events" />
+        </${VitalsCell}>
+        <${VitalsCell}><${Readout} label="工具调用" value=${Object.keys(counts).filter((k) => k.startsWith("TOOL_")).reduce((s, k) => s + counts[k], 0)} unit="tool" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="LLM 响应" value=${counts["LLM_RESPONSE"] || 0} unit="llm" /></${VitalsCell}>
+        <${VitalsCell}><${Readout} label="事件类型" value=${Object.keys(counts).length} unit="types" /></${VitalsCell}>
+      </${Vitals}>
 
       <div class="xmc-datapage__row" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem">
         <button
