@@ -69,13 +69,17 @@ export function ToolCard({ call }) {
   // Hermes ToolCall.tsx pattern: status-tinted card with bullet ●
   // (running/done/error tones), auto-expand on error, user can override.
   // Nebula v2: flat .nb-toolcard with shimmer on running state.
+  const _st = call.status || "running";
   const tone =
-    call.status === "ok" ? "success" : call.status === "error" ? "error" : "muted";
+    _st === "ok" ? "success" : _st === "error" ? "error" : "muted";
+  // 2026-06-06: running 之外的非 ok/error 终态(done — 漏了 finish 事件被
+  // 收尾的工具)渲染成中性「已结束」，不再误显示成永久 running。
   const label =
-    call.status === "ok" ? "ok" : call.status === "error" ? "error" : "running";
-  const statusIcon = call.status === "ok" ? "✓"
-    : call.status === "error" ? "✗"
-    : null;
+    _st === "ok" ? "ok" : _st === "error" ? "error" : _st === "running" ? "running" : "已结束";
+  const statusIcon = _st === "ok" ? "✓"
+    : _st === "error" ? "✗"
+    : _st === "running" ? null
+    : "·";
   const argsPreview = (() => {
     try {
       // B-Canvas: if content is a JSON string (canvas_create/update),

@@ -97,6 +97,22 @@ function _finalizeAbandoned(messages, newAssistantId) {
   return touched ? next : messages;
 }
 
+// 2026-06-06: 收尾「卡死的 running 工具卡」。漏了 tool_invocation_finished
+// 事件的工具卡会永远停在 running（用户报「running ▸ 写死不变」）。新一轮
+// 开始（llm_request / user_message）时，把不属于当前 turn（correlationId
+// 不等于 keepCorr）的 running 工具卡收尾成终态：有结果→ok，无结果→done
+// （ToolCard 把 done 渲染成中性「已结束」，不再转圈）。
+function _finalizeStaleTools(messages, keepCorr) {
+  let touched = false;
+  const next = messages.map((m) => {
+    if (m.kind !== "tool_use" || m.status !== "running") return m;
+    if (keepCorr && m.correlationId === keepCorr) return m; // 当前 turn 在飞，保留
+    touched = true;
+    return { ...m, status: m.result != null ? "ok" : "done" };
+  });
+  return touched ? next : messages;
+}
+
 // B-MULTIMODAL-UI: append the pairing token to /api/v2/media/* URLs so
 // the <img src> request passes the daemon's auth middleware. Without
 // this, screenshots from tool results render as broken thumbnails
@@ -174,11 +190,13 @@ export function applyEvent(chat, envelope) {
       const serverImages = Array.isArray(payload.images)
         ? payload.images.map(_resolveMediaUrl)
         : [];
-      const exists = chat.messages.some((m) => m.id === id);
+      // 新用户消息 = 上一轮彻底结束 → 收尾所有残留 running 工具卡。
+      const sweptMsgs = _finalizeStaleTools(chat.messages, null);
+      const exists = sweptMsgs.some((m) => m.id === id);
       if (exists) {
         return {
           ...chat,
-          messages: upsertById(chat.messages, id, (m) => ({
+          messages: upsertById(sweptMsgs, id, (m) => ({
             ...m,
             content: typeof payload.content === "string" ? payload.content : m.content,
             status: "complete",
@@ -192,7 +210,7 @@ export function applyEvent(chat, envelope) {
       }
       return {
         ...chat,
-        messages: chat.messages.concat({
+        messages: sweptMsgs.concat({
           id,
           role: "user",
           content: typeof payload.content === "string" ? payload.content : "",
@@ -213,7 +231,7 @@ export function applyEvent(chat, envelope) {
       // B-89: a new turn starting → any abandoned earlier bubble must
       // stop spinning. Same call-site exists in llm_chunk + tool_call
       // below for the cases where llm_request didn't fire first.
-      const cleaned = _finalizeAbandoned(chat.messages, id);
+      const cleaned = _finalizeStaleTools(_finalizeAbandoned(chat.messages, id), id);
       // B-90: snapshot the request metadata onto the bubble so PhaseCard
       // can show useful detail when the user expands it (model name,
       // tool-loop hop, history depth, available tool count). Append to
