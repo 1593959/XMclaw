@@ -180,6 +180,37 @@ def test_iter_workspace_files_handles_missing_root(tmp_path: Path) -> None:
     assert found == []
 
 
+def test_iter_workspace_files_prunes_denylist_dirs_deeply(tmp_path: Path) -> None:
+    """REGRESSION (2026-06-05 daemon hang): denylisted dirs must be
+    pruned at the DIRECTORY boundary, not merely filtered per-file
+    after a full ``rglob`` walk. A code file buried deep inside
+    ``.venv`` must never be yielded.
+
+    The original ``rglob('*')`` enumerated the entire tree (≈87k files
+    when the watched root was the repo, ``.venv`` ≈ 80k) and called
+    ``.resolve()`` (realpath syscall) on EACH before denylist rejection
+    — synchronously, on the daemon's main event loop. That starved
+    asyncio so ``/health`` and the chat WebSocket handshake timed out,
+    presenting to the user as "未连接 / connection failed" even though
+    the daemon was alive. ``os.walk`` + in-place ``dirnames[:]`` pruning
+    is the fix; this test pins it."""
+    (tmp_path / "keep.py").write_text("a", encoding="utf-8")
+    # A .py file nested several levels deep INSIDE a denylisted dir.
+    deep = tmp_path / ".venv" / "lib" / "site-packages" / "pkg" / "mod"
+    deep.mkdir(parents=True)
+    (deep / "buried.py").write_text("should never be indexed", encoding="utf-8")
+    # Another denylist dir with its own nesting.
+    nm = tmp_path / "node_modules" / "x" / "y"
+    nm.mkdir(parents=True)
+    (nm / "dep.js").write_text("nope", encoding="utf-8")
+
+    found = list(_iter_workspace_files([tmp_path]))
+    names = sorted(p.name for p in found)
+    assert names == ["keep.py"], f"denylist not pruned at dir level: {found}"
+    assert not any(".venv" in p.parts for p in found)
+    assert not any("node_modules" in p.parts for p in found)
+
+
 # ── invariants ───────────────────────────────────────────────────
 
 

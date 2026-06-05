@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,6 +81,23 @@ class FileWatcher:
                 return True
         return False
 
+    def _name_matches_ignore(self, name: str) -> bool:
+        """单个路径段（目录名 / 文件名）是否匹配任一 ignore pattern。
+
+        用于 ``os.walk`` 的**目录层剪枝**：在进入子目录前判断,命中即
+        从 ``dirnames`` 删除,使遍历**根本不下钻**到 ``.venv`` /
+        ``.git`` / ``node_modules`` 这类巨型噪音目录。
+
+        2026-06-05 性能修复：旧版 ``_take_snapshot`` 用 ``rglob('*')``
+        枚举整棵树（实测 8.7 万文件,其中 ``.venv`` 占 9 成）再逐个
+        ``_should_ignore`` 丢弃 —— 同步运行在 daemon 主事件循环里,每轮
+        快照 >5s,把 asyncio loop 饿死,/health 与 WS 握手全部超时,
+        表现为「连不上」。剪枝把每轮枚举量从 ~8.7 万降到几千。
+        """
+        return any(
+            fnmatch.fnmatch(name, pattern) for pattern in self.ignore_patterns
+        )
+
     async def start(self) -> None:
         """启动监控。"""
         self._running = True
@@ -99,15 +117,17 @@ class FileWatcher:
 
     async def _poll_loop(self) -> None:
         """轮询循环。"""
-        # 初始化快照
-        self._last_snapshot = self._take_snapshot()
+        # 初始化快照（卸到线程池,绝不在事件循环里同步遍历文件树 —
+        # 2026-06-05：同步 rglob 整个仓库会把 asyncio loop 饿死,导致
+        # /health 与 WS 握手超时,客户端表现为「连不上」）。
+        self._last_snapshot = await asyncio.to_thread(self._take_snapshot)
 
         while self._running:
             await asyncio.sleep(5.0)  # 5 秒轮询间隔
             if not self._running:
                 break
 
-            new_snapshot = self._take_snapshot()
+            new_snapshot = await asyncio.to_thread(self._take_snapshot)
             events = self._diff_snapshots(self._last_snapshot, new_snapshot)
             self._last_snapshot = new_snapshot
 
@@ -157,20 +177,34 @@ class FileWatcher:
                         log.warning("file_watcher.callback_failed", exc_info=True)
 
     def _take_snapshot(self) -> dict[str, tuple[float, int, int]]:
-        """拍摄文件系统快照。返回 {path: (mtime, size, inode)}。"""
+        """拍摄文件系统快照。返回 {path: (mtime, size, inode)}。
+
+        用 ``os.walk`` + **目录层剪枝**：命中 ignore pattern 的目录直接
+        从 ``dirnames`` 删除,遍历不再下钻。相比旧版 ``rglob('*')`` 枚举
+        整棵树再逐个 ``_should_ignore`` 丢弃,把 ``.venv`` / ``.git`` /
+        ``node_modules`` 这类巨型噪音目录从源头排除（实测 8.7 万文件 →
+        几千）。这是个**同步**函数,调用方必须用 ``asyncio.to_thread``
+        卸到线程池,否则会饿死 daemon 主事件循环（2026-06-05 修复）。
+        """
         snapshot: dict[str, tuple[float, int, int]] = {}
         for watch_path in self.watch_paths:
             if not watch_path.exists():
                 continue
             try:
-                for item in watch_path.rglob("*"):
-                    if self._should_ignore(str(item)):
-                        continue
-                    try:
-                        stat = item.stat()
-                        snapshot[str(item)] = (stat.st_mtime, stat.st_size, stat.st_ino)
-                    except (OSError, PermissionError):
-                        continue
+                for dirpath, dirnames, filenames in os.walk(str(watch_path)):
+                    # In-place prune: don't descend into ignored dirs at all.
+                    dirnames[:] = [
+                        d for d in dirnames if not self._name_matches_ignore(d)
+                    ]
+                    for fname in filenames:
+                        if self._name_matches_ignore(fname):
+                            continue
+                        full = os.path.join(dirpath, fname)
+                        try:
+                            st = os.stat(full)
+                            snapshot[full] = (st.st_mtime, st.st_size, st.st_ino)
+                        except (OSError, PermissionError):
+                            continue
             except (OSError, PermissionError):
                 continue
         return snapshot

@@ -118,24 +118,38 @@ def _is_code_path_allowed(path: Path) -> bool:
 
 
 def _iter_workspace_files(roots: list[Path]):
-    """B-210: yield code files under the configured workspace roots."""
+    """B-210: yield code files under the configured workspace roots.
+
+    2026-06-05 性能修复：旧版用 ``root.rglob('*')`` 枚举整棵树,对**每个**
+    文件 ``.is_file()`` + ``.resolve()``（realpath 系统调用,比 stat 更贵）
+    再用 ``_CODE_DIR_DENYLIST`` 逐个丢弃。实测 watch 仓库根时 ~8.7 万文件
+    （``.venv`` 占 9 成）—— 这是个**同步生成器**,被 ``tick()`` 在 daemon
+    主事件循环里逐个 drain,把 asyncio loop 饿死,/health 与 WS 握手周期性
+    超时（与 file_watcher 同病同源）。
+
+    改用 ``os.walk`` + **目录层剪枝**：denylist 命中的目录在进入前就从
+    ``dirnames`` 删除,根本不下钻。枚举量从 ~8.7 万降到几千。调用方
+    （``tick``）必须把整次 drain 卸到 ``asyncio.to_thread``。
+    """
     seen: set[Path] = set()
     for root in roots:
         if not root or not root.is_dir():
             continue
-        for entry in root.rglob("*"):
-            if not entry.is_file():
-                continue
-            try:
-                resolved = entry.resolve()
-            except OSError:
-                continue
-            if resolved in seen:
-                continue
-            if not _is_code_path_allowed(resolved):
-                continue
-            seen.add(resolved)
-            yield resolved
+        for dirpath, dirnames, filenames in os.walk(str(root)):
+            # In-place prune: never descend into denylisted dirs.
+            dirnames[:] = [d for d in dirnames if d not in _CODE_DIR_DENYLIST]
+            for fname in filenames:
+                entry = Path(dirpath) / fname
+                try:
+                    resolved = entry.resolve()
+                except OSError:
+                    continue
+                if resolved in seen:
+                    continue
+                if not _is_code_path_allowed(resolved):
+                    continue
+                seen.add(resolved)
+                yield resolved
 
 if TYPE_CHECKING:
     from xmclaw.providers.memory.embedding import EmbeddingProvider
@@ -338,16 +352,25 @@ class MemoryFileIndexer:
             "chunks_unchanged": 0,
             "files_removed": 0,
         }
-        watched = list(self._watched_paths())
+        # 2026-06-05：``_watched_paths`` 内部对 workspace roots 做同步
+        # 文件树遍历（os.walk + 每文件 resolve/stat）。在 daemon 主事件
+        # 循环里同步 drain 会饿死 asyncio loop（/health、WS 握手周期性
+        # 超时）。卸到线程池：一次性收集 (path, mtime) 快照,事件循环
+        # 期间保持响应。
+        def _collect_watched() -> list[tuple[Path, float]]:
+            out: list[tuple[Path, float]] = []
+            for p in self._watched_paths():
+                try:
+                    out.append((p, p.stat().st_mtime))
+                except OSError:
+                    continue
+            return out
+
+        watched_snapshot = await asyncio.to_thread(_collect_watched)
         live_paths: set[str] = set()
-        for path in watched:
+        for path, mtime in watched_snapshot:
             counters["files_scanned"] += 1
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
             live_paths.add(str(path))
-            mtime = stat.st_mtime
             cached = self._mtime_cache.get(str(path))
             if cached is not None and abs(cached - mtime) < 1e-6:
                 continue  # file hasn't changed since last index
