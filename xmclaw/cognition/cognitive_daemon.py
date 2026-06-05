@@ -646,8 +646,9 @@ class CognitiveDaemon:
             return
 
         _t0 = time.perf_counter()
+        exec_result = None
         try:
-            await self._dispatcher.execute_plan(plan)
+            exec_result = await self._dispatcher.execute_plan(plan)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "CognitiveDaemon: dispatcher.execute_plan raised; "

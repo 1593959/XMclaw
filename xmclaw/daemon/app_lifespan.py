@@ -2784,7 +2784,7 @@ def make_lifespan(
                     from xmclaw.daemon.aux_llm import resolve_aux_llm
                     from xmclaw.daemon.session_store import (
                         SessionStore,
-                        is_internal_session,
+                        is_internal_session_id,
                     )
                     from xmclaw.skills.inductor import (
                         SkillInductor,
@@ -2825,7 +2825,7 @@ def make_lifespan(
                         if made >= _ind_max:
                             break
                         sid = row.get("session_id", "") if isinstance(row, dict) else ""
-                        if not sid or is_internal_session(sid):
+                        if not sid or is_internal_session_id(sid):
                             continue
                         msgs = await asyncio.to_thread(store.load, sid)
                         traj = trajectory_from_messages(sid, msgs or [])
