@@ -299,6 +299,26 @@ function BackgroundTasksPanel({ token, onResumeSession }) {
     (t) => t.status === "pending" || t.status === "running",
   ).length;
 
+  // 2026-06-06：把内容近乎相同的后台任务折叠成一条 + ×N。反思/诚实自检
+  // 每轮都跑、跑完保留 10 分钟，会堆出一排几乎一样的条目（"reflection —
+  // the user just…" / "honesty check"）。按 agent+preview 归并，保留最新。
+  const shownTasks = (() => {
+    const list = tasks || [];
+    const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 60);
+    const map = new Map();
+    for (const t of list) {
+      const key = (t.agent_id || "") + "|" + norm(t.preview);
+      const ex = map.get(key);
+      if (!ex) { map.set(key, { ...t, _count: 1 }); continue; }
+      ex._count += 1;
+      if ((t.created_at || 0) >= (ex.created_at || 0)) {
+        const c = ex._count;
+        Object.assign(ex, t, { _count: c });
+      }
+    }
+    return [...map.values()].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  })();
+
   return html`
     <section class="xmc-h-chatside__section xmc-bgtasks">
       <header class="xmc-h-chatside__head"
@@ -313,9 +333,9 @@ function BackgroundTasksPanel({ token, onResumeSession }) {
         <ul class="xmc-h-chatside__list">
           ${tasks === null
             ? html`<li class="xmc-h-loading">载入中…</li>`
-            : tasks.length === 0
+            : shownTasks.length === 0
             ? html`<li class="xmc-h-empty">无后台任务</li>`
-            : tasks.slice(0, 12).map((t) => {
+            : shownTasks.slice(0, 12).map((t) => {
               const canOpen = !!(t.session_id && typeof onResumeSession === "function");
               const reply = t.reply_preview;
               return html`
@@ -337,6 +357,9 @@ function BackgroundTasksPanel({ token, onResumeSession }) {
                   <span style="color:var(--color-fg-muted)">${t.agent_id || "main"}</span>
                   ${typeof t.hops === "number" && t.hops > 0
                     ? html`<span style="color:var(--color-fg-muted);font-size:.65rem">·${t.hops}hop</span>`
+                    : null}
+                  ${t._count > 1
+                    ? html`<span title=${`折叠了 ${t._count} 条相同任务`} style="font-size:.6rem;padding:0 5px;border-radius:8px;background:rgba(139,92,246,.22);color:var(--nb-accent-light,#A78BFA)">×${t._count}</span>`
                     : null}
                   <span style="margin-left:auto;color:var(--color-fg-muted);font-size:.65rem">
                     ${t.elapsed_s ? Math.round(t.elapsed_s) + "s" : "—"}
