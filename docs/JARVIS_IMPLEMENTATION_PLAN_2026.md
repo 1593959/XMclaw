@@ -432,6 +432,23 @@ fact 是少量原子知识单元（句子级）。
 - 每 turn 渲染为 markdown snapshot（默认 max_facts=5）
 - 注入 system prompt（frozen base 和 autobio 之间，cache-friendly）
 
+#### 1.4.4 Phase M — 记忆 UI/可观测重构
+
+> **状态**: 🟡 进行中 (2026-06-05 起)。围绕成熟的 v2 核心重构，不推倒重写。
+> 计划见 plan 文件 buzzing-twirling-blossom。
+
+- [x] **M1** 前端记忆页结构重构：7 标签→3 段式分组（我的记忆/Agent 记忆/调试）；
+      L1 事实维护按钮收进 `⚙ 维护` 抽屉；事实按 bucket 分组折叠 + 矛盾/失效置顶
+      高亮（`groupFacts`）。文件：`pages/Memory.js`、`pages/_panels/memory_facts_v2.js`、
+      `styles/instrument.css`。
+- [ ] **M1.2** FactRow 仪表化（kind/scope/layer chip、conf 迷你条、改正改行内编辑）
+- [ ] **M2** 后端 `/api/v2/memory/v2/overview` 聚合接口 + 前端单请求渲染
+- [ ] **M3** `MEMORY_RECALLED` 事件 + 对话流「💭 想起 N 条」召回卡（写/读对称）
+- [ ] **M4**（stretch）召回管线收敛为 `MemoryRecallPipeline`（只重组不改语义）
+
+**进度日志**
+2026-06-05: M1 落地 — 标签分组 + 维护抽屉 + bucket 分组置顶 (commit 待填)
+
 ---
 
 ### 1.5 ToolProvider 链 — 工具调用全流程

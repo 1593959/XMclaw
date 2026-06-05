@@ -593,3 +593,93 @@
   border: 1px solid color-mix(in srgb, var(--nb-accent, #8B5CF6) 28%, transparent);
   box-shadow: 0 0 16px color-mix(in srgb, var(--nb-accent, #8B5CF6) 16%, transparent);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   12. 记忆页 3 段式分组导航（Phase M1）
+   ═══════════════════════════════════════════════════════════════════════ */
+.xmc-mem-groupnav {
+  display: flex; flex-wrap: wrap; gap: 18px;
+  align-items: flex-end;
+  padding-bottom: 10px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--xi-panel-border);
+}
+.xmc-mem-group { display: flex; flex-direction: column; gap: 5px; }
+.xmc-mem-group__label {
+  font-family: var(--xi-mono); text-transform: uppercase;
+  letter-spacing: .14em; font-size: 9.5px;
+  color: var(--nb-fg-muted, #64748B); padding-left: 2px;
+}
+.xmc-mem-group__seg {
+  display: inline-flex; gap: 2px; padding: 3px;
+  border: 1px solid var(--xi-panel-border); border-radius: 8px;
+  background: color-mix(in srgb, var(--xi-panel-bg) 60%, transparent);
+}
+.xmc-mem-seg {
+  appearance: none; border: 0; cursor: pointer;
+  padding: 5px 12px; border-radius: 6px;
+  font-family: var(--xi-mono); font-size: 12px; font-weight: 500;
+  color: var(--nb-fg-secondary, #94A3B8); background: transparent;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.xmc-mem-seg:hover { color: var(--nb-fg-primary, #F1F5F9); background: rgba(148,163,184,.06); }
+.xmc-mem-seg.is-active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--nb-accent, #8B5CF6), var(--nb-cyan, #06B6D4));
+  box-shadow: 0 0 12px var(--nb-accent-glow, rgba(139,92,246,.4));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   13. 记忆 L1 事实工作台（Phase M1）：维护抽屉 + bucket 分组
+   ═══════════════════════════════════════════════════════════════════════ */
+/* 维护抽屉 */
+.xmc-mem-maint { margin: 8px 0; }
+.xmc-mem-maint__summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--xi-mono); font-size: 12px;
+  color: var(--nb-fg-secondary, #94A3B8);
+  padding: 5px 11px; border: 1px solid var(--xi-panel-border); border-radius: 7px;
+  background: color-mix(in srgb, var(--xi-panel-bg) 60%, transparent);
+}
+.xmc-mem-maint__summary::-webkit-details-marker { display: none; }
+.xmc-mem-maint__hint { font-size: 10px; opacity: .55; }
+.xmc-mem-maint__body {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 9px 2px 4px;
+}
+.xmc-mem-maint__body .xmc-h-btn { font-size: 12px; padding: 4px 10px; }
+.xmc-mem-maint__sep { width: 1px; height: 18px; background: var(--xi-panel-border); margin: 0 4px; }
+
+/* bucket 分组 */
+.xmc-mem-bucket { margin: 6px 0; border-radius: 8px; overflow: hidden; }
+.xmc-mem-bucket__head {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 12px;
+  font-family: var(--xi-mono);
+  background: color-mix(in srgb, var(--nb-accent, #8B5CF6) 7%, var(--xi-panel-bg));
+  border: 1px solid var(--xi-panel-border);
+  border-left: 2.5px solid var(--nb-accent, #8B5CF6);
+  border-radius: 7px;
+}
+.xmc-mem-bucket__head::-webkit-details-marker { display: none; }
+.xmc-mem-bucket__name { font-weight: 600; color: var(--nb-fg-primary, #F1F5F9); letter-spacing: .02em; }
+.xmc-mem-bucket__count {
+  font-size: 11px; color: var(--nb-accent-light, #A78BFA);
+  background: color-mix(in srgb, var(--nb-accent, #8B5CF6) 16%, transparent);
+  padding: 1px 8px; border-radius: 999px; font-variant-numeric: tabular-nums;
+}
+.xmc-mem-bucket__chev { margin-left: auto; color: var(--nb-fg-muted, #64748B); transition: transform .18s; font-size: 11px; }
+.xmc-mem-bucket[open] .xmc-mem-bucket__chev { transform: rotate(90deg); }
+.xmc-mem-bucket__body { padding: 8px 2px 4px; }
+/* 需关注组：红橙警示色 */
+.xmc-mem-bucket.is-attn > .xmc-mem-bucket__head {
+  border-left-color: var(--nb-error, #F87171);
+  background: color-mix(in srgb, var(--nb-error, #F87171) 8%, var(--xi-panel-bg));
+}
+.xmc-mem-bucket.is-attn .xmc-mem-bucket__name { color: var(--nb-error, #F87171); }
+.xmc-mem-bucket.is-attn .xmc-mem-bucket__count {
+  color: var(--nb-error, #F87171);
+  background: color-mix(in srgb, var(--nb-error, #F87171) 16%, transparent);
+}

@@ -189,6 +189,37 @@ function FilterBar({ kind, scope, q, onChange }) {
 // ── Sub-component: fact row ───────────────────────────────────────
 
 
+// Phase M1：把平铺事实列表按 bucket 分组，并把「需关注」（矛盾 / 已失效 /
+// 已 forget / 已 supersede）的事实抽出来置顶成一个高亮组。
+function _factNeedsAttention(f) {
+  return (f.contradicts && f.contradicts.length > 0)
+    || f.forgotten
+    || Boolean(f.superseded_by)
+    || (f.invalid_at != null && f.invalid_at * 1000 < Date.now());
+}
+function groupFacts(facts) {
+  const attention = [];
+  const byBucket = new Map();
+  for (const f of facts) {
+    if (_factNeedsAttention(f)) { attention.push(f); continue; }
+    const b = f.bucket || "（未分桶）";
+    if (!byBucket.has(b)) byBucket.set(b, []);
+    byBucket.get(b).push(f);
+  }
+  const groups = [];
+  if (attention.length) {
+    groups.push({ key: "__attn", label: "⚠ 需关注", facts: attention, attn: true });
+  }
+  // bucket 组按条数降序，未分桶垫底
+  const buckets = [...byBucket.entries()].sort((a, b) => {
+    if (a[0] === "（未分桶）") return 1;
+    if (b[0] === "（未分桶）") return -1;
+    return b[1].length - a[1].length;
+  });
+  for (const [b, fs] of buckets) groups.push({ key: b, label: b, facts: fs });
+  return groups;
+}
+
 function FactRow({
   fact, onForget, onHardDelete, onCorrect, onRestore, onSelect,
 }) {
@@ -671,40 +702,22 @@ export function FactsV2Tab({ token }) {
             ${view === "list"
               ? html`
                   <${AddFactForm} token=${token} onCreated=${() => { refresh(); refreshStatus(); }} />
-                  <div style="display:flex;gap:.4rem;margin:.4rem 0;flex-wrap:wrap;align-items:center">
-                    <span style="font-size:.78rem;color:var(--xmc-fg-muted)">整理:</span>
-                    <button
-                      type="button"
-                      class="xmc-h-btn"
-                      onClick=${() => runDedup(true)}
-                      style="font-size:.78rem;padding:.25rem .6rem"
-                      title="预览 — 看一下有多少近似事实会被合并，不实际写入"
-                    >🔍 dry-run</button>
-                    <button
-                      type="button"
-                      class="xmc-h-btn"
-                      onClick=${() => {
-                        if (window.confirm("执行去重合并？近似事实将合并到 evidence_count 最高的那条，被合并方标 superseded_by。")) runDedup(false);
-                      }}
-                      style="font-size:.78rem;padding:.25rem .6rem"
-                      title="扫描所有事实，把 cosine 距离 < 0.15 的近似项合并到同一行"
-                    >🧹 一键去重</button>
-                    <span style="margin:0 .3rem;color:var(--xmc-fg-muted);font-size:.78rem">|</span>
-                    <button
-                      type="button"
-                      class="xmc-h-btn"
-                      onClick=${() => runBucketDedup(true)}
-                      style="font-size:.78rem;padding:.25rem .6rem"
-                      title="只对一个 bucket 去重 — 比'一键去重'范围更窄，适合清理 USER.md 等单一文件"
-                    >🎯 bucket 预览</button>
-                    <button
-                      type="button"
-                      class="xmc-h-btn"
-                      onClick=${() => runBucketDedup(false)}
-                      style="font-size:.78rem;padding:.25rem .6rem"
-                      title="按指定 bucket 执行去重（会写入）"
-                    >🎯 bucket 执行</button>
-                  </div>
+                  <details class="xmc-mem-maint">
+                    <summary class="xmc-mem-maint__summary">⚙ 维护工具<span class="xmc-mem-maint__hint">去重 / bucket 合并（低频管理操作）</span></summary>
+                    <div class="xmc-mem-maint__body">
+                      <button type="button" class="xmc-h-btn" onClick=${() => runDedup(true)}
+                        title="预览 — 看一下有多少近似事实会被合并，不实际写入">🔍 dry-run</button>
+                      <button type="button" class="xmc-h-btn" onClick=${() => {
+                          if (window.confirm("执行去重合并？近似事实将合并到 evidence_count 最高的那条，被合并方标 superseded_by。")) runDedup(false);
+                        }}
+                        title="扫描所有事实，把 cosine 距离 < 0.15 的近似项合并到同一行">🧹 一键去重</button>
+                      <span class="xmc-mem-maint__sep"></span>
+                      <button type="button" class="xmc-h-btn" onClick=${() => runBucketDedup(true)}
+                        title="只对一个 bucket 去重 — 范围更窄，适合清理 USER.md 等单一文件">🎯 bucket 预览</button>
+                      <button type="button" class="xmc-h-btn" onClick=${() => runBucketDedup(false)}
+                        title="按指定 bucket 执行去重（会写入）">🎯 bucket 执行</button>
+                    </div>
+                  </details>
                   <${FilterBar} ...${filters} onChange=${setFilters} />
                   <label
                     style="display:inline-flex;align-items:center;gap:.3rem;margin:.3rem 0 .6rem;font-size:.78rem;color:var(--xmc-fg-muted);cursor:pointer"
@@ -723,18 +736,29 @@ export function FactsV2Tab({ token }) {
                       ? html`<div style="opacity:.7;padding:1rem 0">暂无事实（过滤条件不匹配，或库为空）。</div>`
                       : html`
                           <div style="margin:.6rem 0;font-size:.78rem;color:var(--xmc-fg-muted)">
-                            显示 ${facts.length} 条
+                            显示 ${facts.length} 条 · ${groupFacts(facts).length} 组
                           </div>
-                          ${facts.map((f) => html`
-                            <${FactRow}
-                              key=${f.id}
-                              fact=${f}
-                              onForget=${handleForget}
-                              onHardDelete=${handleHardDelete}
-                              onCorrect=${handleCorrect}
-                              onRestore=${handleRestore}
-                              onSelect=${(fid) => { setSelectedFactId(fid); setView("graph"); }}
-                            />
+                          ${groupFacts(facts).map((g) => html`
+                            <details class=${"xmc-mem-bucket" + (g.attn ? " is-attn" : "")} open=${true} key=${g.key}>
+                              <summary class="xmc-mem-bucket__head">
+                                <span class="xmc-mem-bucket__name">${g.label}</span>
+                                <span class="xmc-mem-bucket__count">${g.facts.length}</span>
+                                <span class="xmc-mem-bucket__chev">▸</span>
+                              </summary>
+                              <div class="xmc-mem-bucket__body">
+                                ${g.facts.map((f) => html`
+                                  <${FactRow}
+                                    key=${f.id}
+                                    fact=${f}
+                                    onForget=${handleForget}
+                                    onHardDelete=${handleHardDelete}
+                                    onCorrect=${handleCorrect}
+                                    onRestore=${handleRestore}
+                                    onSelect=${(fid) => { setSelectedFactId(fid); setView("graph"); }}
+                                  />
+                                `)}
+                              </div>
+                            </details>
                           `)}
                         `
                   }

@@ -60,6 +60,14 @@ const TAB_LABELS = [
   { id: "providers", label: "Providers", hint: "已挂载的记忆 provider（B-26 Hermes-style 抽象）" },
 ];
 
+// Phase M1：把 7 个扁平标签收成 3 段式分组 —— 人写的记忆 / agent 自己的记忆 /
+// 调试。每组渲染成带组标题的分段选择器，结构一眼分明。
+const TAB_GROUPS = [
+  { label: "我的记忆", ids: ["identity", "notes", "journal"] },
+  { label: "Agent 记忆", ids: ["facts_v2", "activity"] },
+  { label: "调试", ids: ["unified", "providers"] },
+];
+
 
 // IdentityTab + NotesTab + JournalTab live in ./_panels/ subtree —
 // renamed from Memory-Identity.js / Memory-NotesJournal.js (B-308) to
@@ -146,22 +154,27 @@ export function MemoryPage({ token }) {
           ${mounting ? html`<span style="margin-left:.5rem;font-size:.72rem;opacity:.6">· 加载中…</span>` : null}
         </p>
       </header>
-      <nav class="xmc-mem-tabs" role="tablist" aria-label="记忆类别" style="display:flex;gap:.4rem;border-bottom:1px solid var(--color-border);margin-bottom:.8rem;flex-wrap:wrap">
-        ${TAB_LABELS.map((t) => {
-          const isActive = t.id === tab;
-          return html`
-            <button
-              type="button"
-              role="tab"
-              aria-selected=${isActive}
-              onClick=${() => setTab(t.id)}
-              key=${t.id}
-              style=${`appearance:none;background:none;border:none;padding:.5rem .9rem;font:inherit;cursor:pointer;color:${isActive ? "var(--color-primary)" : "var(--xmc-fg-muted)"};border-bottom:2px solid ${isActive ? "var(--color-primary)" : "transparent"};font-weight:${isActive ? "600" : "500"}`}
-            >
-              ${t.label}
-            </button>
-          `;
-        })}
+      <nav class="xmc-mem-groupnav" role="tablist" aria-label="记忆类别">
+        ${TAB_GROUPS.map((g) => html`
+          <div class="xmc-mem-group" key=${g.label}>
+            <span class="xmc-mem-group__label">${g.label}</span>
+            <div class="xmc-mem-group__seg">
+              ${g.ids.map((id) => {
+                const t = TAB_LABELS.find((x) => x.id === id);
+                if (!t) return null;
+                const isActive = t.id === tab;
+                return html`
+                  <button
+                    type="button" role="tab" key=${t.id}
+                    aria-selected=${isActive}
+                    class=${"xmc-mem-seg" + (isActive ? " is-active" : "")}
+                    onClick=${() => setTab(t.id)}
+                  >${t.label}</button>
+                `;
+              })}
+            </div>
+          </div>
+        `)}
       </nav>
       <${TabErrorBoundary} resetKey=${tab}>
         ${tab === "facts_v2" ? html`<${FactsV2Tab} token=${token} />` : null}
