@@ -1,61 +1,171 @@
-/* XMclaw — Canvas Artifact styles
+/* XMclaw — Canvas Artifact styles  (redesigned 2026-06-06)
  *
  * Inline visual artifacts: mermaid diagrams, charts, tables, HTML, SVG.
  * Dark-theme first; light theme inherits via CSS variables.
+ *
+ * Design goals of this pass:
+ *   • a real header bar with kind-tinted accent, crisp SVG glyph,
+ *     and an action toolbar (copy source / download)
+ *   • generous, consistent padding; rounded, elevated card
+ *   • diagrams/charts get a framed "stage" with a subtle inner surface
+ *     so a small SVG doesn't float in a void and a big one can scroll
+ *   • polished loading / error states
  */
+
+/* ── kind accent palette ─────────────────────────────────────────── */
+.xmc-canvas-artifact[data-kind="mermaid"] { --xmc-canvas-accent: #7c9cff; }
+.xmc-canvas-artifact[data-kind="chart"]   { --xmc-canvas-accent: #4ecdc4; }
+.xmc-canvas-artifact[data-kind="table"]   { --xmc-canvas-accent: #ffd166; }
+.xmc-canvas-artifact[data-kind="html"]    { --xmc-canvas-accent: #a29bfe; }
+.xmc-canvas-artifact[data-kind="svg"]     { --xmc-canvas-accent: #fd79a8; }
 
 /* ── artifact chrome (collapsible <details>) ─────────────────────── */
 .xmc-canvas-artifact {
-  margin: 0.6rem 0;
-  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.08));
-  border-radius: 10px;
-  background: var(--xmc-surface-elevated, #1e2430);
+  --xmc-canvas-accent: #7c9cff;
+  margin: 0.75rem 0;
+  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.09));
+  border-radius: 14px;
+  background: var(--xmc-surface-elevated, #1c2230);
   overflow: hidden;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.25),
+    0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.xmc-canvas-artifact:hover {
+  border-color: color-mix(in srgb, var(--xmc-canvas-accent) 40%, transparent);
 }
 
+/* ── header / summary bar ────────────────────────────────────────── */
 .xmc-canvas-artifact__summary {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.5rem 0.7rem;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
   cursor: pointer;
   user-select: none;
   list-style: none;
   font-size: 0.88rem;
+  /* accent-tinted header strip */
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--xmc-canvas-accent) 14%, transparent),
+    transparent 60%
+  );
+  border-bottom: 1px solid transparent;
+  transition: background 0.15s ease;
+}
+.xmc-canvas-artifact[open] .xmc-canvas-artifact__summary {
+  border-bottom-color: var(--xmc-border-subtle, rgba(255, 255, 255, 0.07));
+}
+.xmc-canvas-artifact__summary::-webkit-details-marker { display: none; }
+.xmc-canvas-artifact__summary:hover {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--xmc-canvas-accent) 22%, transparent),
+    transparent 65%
+  );
+}
+
+/* disclosure chevron */
+.xmc-canvas-artifact__chev {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
   color: var(--xmc-fg-muted, #8b92a8);
+  transition: transform 0.18s ease;
+}
+.xmc-canvas-artifact[open] .xmc-canvas-artifact__chev {
+  transform: rotate(90deg);
 }
 
-.xmc-canvas-artifact__summary::-webkit-details-marker {
-  display: none;
-}
-
+/* kind glyph chip */
 .xmc-canvas-artifact__icon {
-  font-size: 1rem;
-  line-height: 1;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--xmc-canvas-accent) 18%, transparent);
+  color: var(--xmc-canvas-accent);
 }
+.xmc-canvas-artifact__glyph { display: block; }
 
 .xmc-canvas-artifact__title {
-  font-weight: 600;
-  color: var(--xmc-fg-primary, #e0e4ea);
+  font-weight: 650;
+  color: var(--xmc-fg-primary, #e6e9f0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .xmc-canvas-artifact__kind {
-  margin-left: auto;
-  font-size: 0.72rem;
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 0.15rem 0.4rem;
-  border-radius: 4px;
-  background: var(--xmc-surface-base, #161b26);
-  color: var(--xmc-fg-muted, #8b92a8);
+  letter-spacing: 0.06em;
+  padding: 0.16rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--xmc-canvas-accent) 16%, transparent);
+  color: var(--xmc-canvas-accent);
+  border: 1px solid color-mix(in srgb, var(--xmc-canvas-accent) 32%, transparent);
 }
 
+/* action toolbar (pushed to the right) */
+.xmc-canvas-artifact__tools {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 0.3rem;
+  flex: 0 0 auto;
+}
+.xmc-canvas-artifact__act {
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
+  border-radius: 7px;
+  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.1));
+  background: var(--xmc-surface-base, #141925);
+  color: var(--xmc-fg-secondary, #c4c8d4);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.xmc-canvas-artifact__act:hover {
+  background: color-mix(in srgb, var(--xmc-canvas-accent) 18%, var(--xmc-surface-base, #141925));
+  color: var(--xmc-fg-primary, #e6e9f0);
+  border-color: color-mix(in srgb, var(--xmc-canvas-accent) 45%, transparent);
+}
+
+/* ── body / stage ────────────────────────────────────────────────── */
 .xmc-canvas-artifact__body {
-  padding: 0.6rem 0.7rem 0.8rem;
-  border-top: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.06));
+  padding: 0.85rem;
+}
+
+/* a framed stage for visual kinds (mermaid / svg / chart) */
+.xmc-canvas-mermaid,
+.xmc-canvas-svg,
+.xmc-canvas-chart {
+  background:
+    radial-gradient(
+      circle at 1px 1px,
+      rgba(255, 255, 255, 0.04) 1px,
+      transparent 0
+    );
+  background-size: 18px 18px;
+  background-color: var(--xmc-surface-base, #11151f);
+  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
+  padding: 1rem;
+  overflow: auto;
 }
 
 /* ── mermaid ────────────────────────────────────────────────────── */
+.xmc-canvas-mermaid {
+  display: flex;
+  justify-content: center;
+}
 .xmc-canvas-mermaid svg {
   max-width: 100%;
   height: auto;
@@ -68,12 +178,16 @@
   width: 100%;
   min-height: 180px;
   max-height: 520px;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
   background: #1a1f2a;
 }
 
 /* ── svg ─────────────────────────────────────────────────────────── */
+.xmc-canvas-svg {
+  display: flex;
+  justify-content: center;
+}
 .xmc-canvas-svg svg {
   max-width: 100%;
   height: auto;
@@ -82,8 +196,10 @@
 
 /* ── chart ───────────────────────────────────────────────────────── */
 .xmc-canvas-chart {
+  max-height: 380px;
+}
+.xmc-canvas-chart canvas {
   max-width: 100%;
-  max-height: 360px;
 }
 
 /* ── table ───────────────────────────────────────────────────────── */
@@ -92,37 +208,48 @@
   border-collapse: collapse;
   font-size: 0.82rem;
   line-height: 1.45;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.08));
 }
-
 .xmc-canvas-table th,
 .xmc-canvas-table td {
-  padding: 0.4rem 0.55rem;
-  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.08));
+  padding: 0.5rem 0.7rem;
   text-align: left;
+  border-bottom: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.06));
 }
-
 .xmc-canvas-table th {
-  background: var(--xmc-surface-base, #161b26);
-  font-weight: 600;
-  color: var(--xmc-fg-primary, #e0e4ea);
+  background: color-mix(in srgb, var(--xmc-canvas-accent) 12%, var(--xmc-surface-base, #161b26));
+  font-weight: 650;
+  color: var(--xmc-fg-primary, #e6e9f0);
+  border-bottom: 1px solid color-mix(in srgb, var(--xmc-canvas-accent) 30%, transparent);
+  position: sticky;
+  top: 0;
 }
-
 .xmc-canvas-table td {
   color: var(--xmc-fg-secondary, #c4c8d4);
 }
-
-.xmc-canvas-table tr:nth-child(even) td {
-  background: rgba(255, 255, 255, 0.02);
+.xmc-canvas-table tr:last-child td { border-bottom: none; }
+.xmc-canvas-table tbody tr {
+  transition: background 0.1s ease;
+}
+.xmc-canvas-table tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.018);
+}
+.xmc-canvas-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--xmc-canvas-accent) 8%, transparent);
 }
 
-/* ── raw fallback / error ────────────────────────────────────────── */
+/* ── raw fallback / error / loading ──────────────────────────────── */
 .xmc-canvas-raw {
   margin: 0;
-  padding: 0.5rem 0.6rem;
-  background: var(--xmc-surface-base, #161b26);
-  border-radius: 6px;
+  padding: 0.65rem 0.75rem;
+  background: var(--xmc-surface-base, #11151f);
+  border: 1px solid var(--xmc-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
+  font-family: var(--xmc-font-mono, ui-monospace, "Cascadia Code", Consolas, monospace);
   font-size: 0.78rem;
-  line-height: 1.5;
+  line-height: 1.55;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -130,13 +257,50 @@
 }
 
 .xmc-canvas-error {
-  color: var(--xmc-error, #e74c3c);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: color-mix(in srgb, #e74c3c 8%, var(--xmc-surface-base, #11151f));
+  border: 1px solid color-mix(in srgb, #e74c3c 35%, transparent);
+  border-radius: 10px;
   font-size: 0.82rem;
+  color: var(--xmc-error, #ff8a80);
+}
+.xmc-canvas-error small {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.xmc-canvas-error small::before {
+  content: "⚠";
+  font-size: 0.95rem;
+}
+.xmc-canvas-error .xmc-canvas-raw {
+  color: var(--xmc-fg-muted, #9aa0b0);
+  background: rgba(0, 0, 0, 0.2);
+  border-color: transparent;
 }
 
 .xmc-canvas-loading {
-  padding: 0.5rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 1.5rem 1rem;
+  justify-content: center;
   font-size: 0.85rem;
   color: var(--xmc-fg-muted, #8b92a8);
-  font-style: italic;
+}
+.xmc-canvas-loading::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--xmc-canvas-accent) 30%, transparent);
+  border-top-color: var(--xmc-canvas-accent);
+  animation: xmc-canvas-spin 0.7s linear infinite;
+}
+@keyframes xmc-canvas-spin {
+  to { transform: rotate(360deg); }
 }

@@ -214,6 +214,12 @@ class BuiltinToolsCanvasMixin:
                         "title": title,
                         "content": content,
                         "turn_id": call.id or "",
+                        # 2026-06-06: carry the real session so the daemon's
+                        # per-socket forwarder routes this to the originating
+                        # chat. Pre-fix the listener stamped "_system" and
+                        # _is_relevant() filtered it out → diagram never
+                        # reached the UI (only the tool-result text showed).
+                        "session_id": sid,
                     },
                 )
             except Exception:  # noqa: BLE001
@@ -259,6 +265,7 @@ class BuiltinToolsCanvasMixin:
                     {
                         "artifact_id": artifact_id,
                         "content": content,
+                        "session_id": sid,
                     },
                 )
             except Exception:  # noqa: BLE001
@@ -288,7 +295,7 @@ class BuiltinToolsCanvasMixin:
             try:
                 self._canvas_listener(
                     EventType.CANVAS_ARTIFACT_CLOSED,
-                    {"artifact_id": artifact_id},
+                    {"artifact_id": artifact_id, "session_id": sid},
                 )
             except Exception:  # noqa: BLE001
                 pass

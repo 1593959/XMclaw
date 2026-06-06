@@ -30,6 +30,45 @@ async def test_canvas_create_emits_event() -> None:
     assert seen[0][1]["kind"] == "mermaid"
     assert seen[0][1]["title"] == "Flow"
     assert seen[0][1]["content"] == "graph TD;A-->B"
+    # 2026-06-06 regression: the event MUST carry the originating
+    # session_id so the daemon's per-socket forwarder routes it to the
+    # right chat. Without this the diagram never reached the browser.
+    assert seen[0][1]["session_id"] == "sess-x"
+
+
+@pytest.mark.asyncio
+async def test_canvas_events_carry_session_id() -> None:
+    """All three canvas mutations must stamp the real session_id in the
+    payload — the daemon listener reads it to route the bus event to the
+    originating WebSocket (see factory._canvas_listener)."""
+    seen: list[tuple[str, dict]] = []
+
+    def _listener(event_type: str, payload: dict) -> None:
+        seen.append((event_type, payload))
+
+    tools = BuiltinTools(canvas_listener=_listener)
+    create = await tools.invoke(
+        _call(
+            "canvas_create",
+            {"kind": "mermaid", "title": "F", "content": "graph TD;A-->B"},
+            session_id="room-7",
+        )
+    )
+    art_id = seen[0][1]["artifact_id"]
+    await tools.invoke(
+        _call("canvas_update", {"artifact_id": art_id, "content": "graph TD;A-->C"}, session_id="room-7")
+    )
+    await tools.invoke(
+        _call("canvas_close", {"artifact_id": art_id}, session_id="room-7")
+    )
+    assert [e[0] for e in seen] == [
+        EventType.CANVAS_ARTIFACT_CREATED,
+        EventType.CANVAS_ARTIFACT_UPDATED,
+        EventType.CANVAS_ARTIFACT_CLOSED,
+    ]
+    for _etype, payload in seen:
+        assert payload["session_id"] == "room-7", payload
+    assert create.ok is True
 
 
 @pytest.mark.asyncio

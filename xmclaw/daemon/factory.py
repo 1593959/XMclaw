@@ -21,6 +21,7 @@ import functools
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from xmclaw.core.journal.strategy_distiller import StrategyDistiller
 
 from xmclaw.core.bus import InProcessEventBus
+from xmclaw.core.error_aggregator import ErrorSeverity, get_aggregator
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.daemon.llm_registry import LLMProfile, LLMRegistry
 from xmclaw.daemon.session_store import SessionStore
@@ -289,7 +291,8 @@ def _load_tier_mappings() -> dict[str, tuple[str, ...]]:
     """
     try:
         raw = json.loads(_TIER_JSON_PATH.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_load_tier_mappings", _exc)
         # Fallback — keep the daemon bootable even if the JSON is missing.
         raw = {
             "fast": [
@@ -691,7 +694,8 @@ def _workspace_root_provider() -> Any:
             mgr = WorkspaceManager()
             primary = mgr.get().primary
             return primary.path if primary is not None else None
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_provider", _exc)
             return None
     return _provider
 
@@ -708,7 +712,8 @@ def _workspace_manager_provider() -> Any:
         try:
             from xmclaw.core.workspace import WorkspaceManager
             return WorkspaceManager()
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_provider", _exc)
             return None
     return _provider
 
@@ -758,7 +763,8 @@ def _persona_writeback(app_state_holder: Any) -> Any:
             if tools is not None:
                 try:
                     tool_specs = tools.list_tools() or []
-                except Exception:  # noqa: BLE001
+                except Exception as _exc:  # noqa: BLE001
+                    get_aggregator().record(ErrorSeverity.WARNING, __name__, "_writeback", _exc)
                     tool_specs = []
             ws_root = None
             try:
@@ -766,7 +772,8 @@ def _persona_writeback(app_state_holder: Any) -> Any:
                 ws = WorkspaceManager().get()
                 if ws.primary is not None:
                     ws_root = Path(ws.primary.path)
-            except Exception:  # noqa: BLE001
+            except Exception as _exc:  # noqa: BLE001
+                get_aggregator().record(ErrorSeverity.WARNING, __name__, "_writeback", _exc)
                 ws_root = None
             new_prompt = build_system_prompt(
                 profile_dir=profile_dir,
@@ -783,9 +790,11 @@ def _persona_writeback(app_state_holder: Any) -> Any:
             try:
                 from xmclaw.daemon.prompt_builder import bump_prompt_freeze_generation
                 bump_prompt_freeze_generation()
-            except Exception:  # noqa: BLE001
+            except Exception as _exc:  # noqa: BLE001
+                get_aggregator().record(ErrorSeverity.WARNING, __name__, "_writeback", _exc)
                 pass
-        except Exception:  # noqa: BLE001 — never let writeback failures
+        except Exception as _exc:  # noqa: BLE001 — never let writeback failures
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_writeback", _exc)
             # break the tool call. Worst case the agent doesn't see its
             # own write until the daemon restarts.
             pass
@@ -878,7 +887,8 @@ def build_tools_from_config(
         try:
             from xmclaw.daemon import app as _app_mod
             return getattr(_app_mod, "_LAST_APP_STATE", None)
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_app_state_holder", _exc)
             return None
 
     # B-198 Phase 3: tools also route through PersonaStore when
@@ -925,7 +935,8 @@ def build_tools_from_config(
                 compute_type=str(stt_section.get("compute_type") or "int8"),
                 language=stt_section.get("language"),
             )
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_persona_store_provider", _exc)
             # Provider construction itself shouldn't fail (real model
             # load is deferred to first transcribe). If it does, leave
             # provider None — voice_transcribe just won't list.
@@ -939,7 +950,8 @@ def build_tools_from_config(
                 rate=str(tts_section.get("rate") or "+0%"),
                 volume=str(tts_section.get("volume") or "+0%"),
             )
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_persona_store_provider", _exc)
             _tts_provider = None
 
     # Sprint 0 Track B: undo cabinet for destructive file ops.
@@ -957,7 +969,8 @@ def build_tools_from_config(
                 if isinstance(_undo_cfg, dict) else 1800.0
             )
             _undo_cab = UndoCabinet(window_s=_window)
-        except Exception:  # noqa: BLE001 — undo is nice-to-have, not load-bearing
+        except Exception as _exc:  # noqa: BLE001 — undo is nice-to-have, not load-bearing
+            get_aggregator().record(ErrorSeverity.INFO, __name__, "_persona_store_provider", _exc)
             _undo_cab = None
 
     # Wave-27 fix-LAT8: search backend config lookup. Closure pins
@@ -968,7 +981,8 @@ def build_tools_from_config(
             evo = (cfg or {}).get("evolution") or {}
             sec = evo.get("search") or {}
             return sec if isinstance(sec, dict) else {}
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_search_cfg_getter", _exc)
             return {}
 
     # Live Canvas / A2UI: callback that fires CANVAS_ARTIFACT_* events
@@ -978,8 +992,15 @@ def build_tools_from_config(
             return
         from xmclaw.core.bus import make_event
         try:
+            # 2026-06-06: route to the originating chat. The canvas tools
+            # pass the real session_id in the payload; fall back to
+            # "_system" only if absent. Pre-fix this was hard-coded to
+            # "_system", which the per-socket forwarder's _is_relevant()
+            # filtered out → the diagram never reached the browser and the
+            # user saw only the tool-result text.
+            _sid = payload.pop("session_id", None) or "_system"
             event = make_event(
-                session_id="_system",
+                session_id=_sid,
                 agent_id="canvas",
                 type=event_type,
                 payload=payload,
@@ -987,7 +1008,8 @@ def build_tools_from_config(
             # Fire-and-forget; don't block the tool call over bus back-pressure.
             import asyncio
             asyncio.create_task(bus.publish(event))
-        except Exception:
+        except Exception as _exc:
+            get_aggregator().record(ErrorSeverity.INFO, __name__, "_canvas_listener", _exc)
             pass
 
     builtins = BuiltinTools(
@@ -1057,7 +1079,8 @@ def build_tools_from_config(
                     cu_cfg.get("base64_size_cap", 512 * 1024),
                 ),
             ))
-        except Exception:  # noqa: BLE001 — never block boot over an optional tool
+        except Exception as _exc:  # noqa: BLE001 — never block boot over an optional tool
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
             pass
 
     # 2026-05-12: media tools (microphone / camera / live audio
@@ -1084,7 +1107,8 @@ def build_tools_from_config(
                     media_cfg.get("base64_size_cap", 512 * 1024),
                 ),
             ))
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
             pass
 
     # B-389 Sprint 2: optionally bridge Composio's 7000+ pre-integrated
@@ -1151,7 +1175,8 @@ def build_tools_from_config(
                 store=codebase_store,
                 embedder=embedder,
             ))
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
             # Lazy-fail: if codebase tools can't load (missing deps,
             # bad config), daemon still boots — the tools just don't list.
             pass
@@ -1189,7 +1214,8 @@ def build_tools_from_config(
                 ),
                 enabled=True,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
             pass
 
     # 2026-05-12 Batch C.1: SubagentToolProvider — ephemeral parallel
@@ -1223,7 +1249,8 @@ def build_tools_from_config(
                 enabled=True,
             )
             provider = CompositeToolProvider(provider, subagent_provider)
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
             pass
 
     # Epic #3: optionally wrap with security guardians
@@ -1564,6 +1591,21 @@ def _resolve_backend_label(cfg: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _warn_on_lint_errors(cfg: dict[str, Any]) -> None:
+    """Best-effort extended config lint — logs warnings but never raises."""
+    try:
+        from xmclaw.daemon.config_schema import lint_config
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.INFO, __name__, "_warn_on_lint_errors", _exc)
+        return
+    lint_errors = lint_config(cfg)
+    if lint_errors:
+        import logging
+        logger = logging.getLogger(__name__)
+        for err in lint_errors:
+            logger.warning("config.lint: %s", err)
+
+
 def build_agent_from_config(
     cfg: dict[str, Any],
     bus: InProcessEventBus,
@@ -1591,6 +1633,10 @@ def build_agent_from_config(
     crashed with empty text. Explicit ``max_hops`` kwarg still wins
     over the config (used by tests).
     """
+    _warn_on_lint_errors(cfg)
+    # Health-check: track per-component build outcome so the daemon can
+    # report which subsystems booted successfully vs. degraded.
+    _build_status: dict[str, str] = {}
     if max_hops is None:
         agent_cfg = cfg.get("agent")
         if isinstance(agent_cfg, Mapping):
@@ -1607,17 +1653,21 @@ def build_agent_from_config(
     session_store: SessionStore | None
     try:
         session_store = SessionStore(default_sessions_db_path())
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
         session_store = None
+    _build_status["session_store"] = "ok" if session_store is not None else "failed"
     registry = build_llm_registry_from_config(cfg)
     default_profile = registry.default()
     llm = default_profile.llm if default_profile is not None else None
+    _build_status["llm"] = "ok" if llm is not None else "skipped"
     if llm is None:
         return None
     tools = build_tools_from_config(
         cfg, bus=bus, approval_service=approval_service, auditor=auditor,
         session_store=session_store,
     )
+    _build_status["tools"] = "ok"
     # 2026-05-12 Batch B.2: plumb the LLM into the ErrorAwareRetryProvider
     # wrapper. The retry wrapper was constructed in build_tools_from_config
     # before the LLM existed; now it does — wire it.
@@ -1629,7 +1679,10 @@ def build_agent_from_config(
                 cur.set_llm(llm)
                 break
             cur = getattr(cur, "_inner", None)
-    except Exception:  # noqa: BLE001
+        _build_status["retry_provider"] = "ok"
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+        _build_status["retry_provider"] = "failed"
         pass
 
     # 2026-05-12 Batch C.1: plumb the LLM + inner tools into the
@@ -1660,7 +1713,10 @@ def build_agent_from_config(
                     _stack.extend(v)
                 else:
                     _stack.append(v)
-    except Exception:  # noqa: BLE001
+        _build_status["subagent_provider"] = "ok"
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+        _build_status["subagent_provider"] = "failed"
         pass
     security = cfg.get("security")
     policy_raw = None
@@ -1703,7 +1759,8 @@ def build_agent_from_config(
             _lg.getLogger(__name__).info(
                 "persona.bootstrap_marker_written path=%s", bs_path,
             )
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
         pass
     workspace_root: Path | None = None
     ws_section = cfg.get("workspace") if isinstance(cfg, Mapping) else None
@@ -1728,8 +1785,13 @@ def build_agent_from_config(
         try:
             from xmclaw.cognition.memory_graph import MemoryGraph
             _graph = MemoryGraph(bus=bus)
-        except Exception:  # noqa: BLE001
+            _build_status["memory_graph"] = "ok"
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+            _build_status["memory_graph"] = "failed"
             pass
+    else:
+        _build_status["memory_graph"] = "skipped"
 
     memory_manager = MemoryManager(bus=bus, graph=_graph)
     # Builtin file provider — backed by the persona profile dir.
@@ -1739,7 +1801,10 @@ def build_agent_from_config(
                 persona_dir_provider=lambda pd=profile_dir: pd,
             )
         )
-    except Exception:  # noqa: BLE001
+        _build_status["builtin_memory"] = "ok"
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+        _build_status["builtin_memory"] = "failed"
         pass
     # External provider — selected by ``evolution.memory.provider``
     # (sqlite_vec | hindsight | none). Default sqlite_vec for back-
@@ -1756,13 +1821,17 @@ def build_agent_from_config(
     # Other provider choices (hindsight / supermemory / mem0 / none)
     # leave ``vec_memory`` as None and the strategy bank stays disabled.
     vec_memory: SqliteVecMemory | None = None
+    _external_memory_status = "skipped"
     if provider_choice == "sqlite_vec":
         try:
             external = build_memory_from_config(cfg, bus=bus)
             if external is not None:
                 memory_manager.add_provider(external)
                 vec_memory = external
-        except Exception:  # noqa: BLE001
+                _external_memory_status = "ok"
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+            _external_memory_status = "failed"
             pass
     elif provider_choice == "hindsight":
         try:
@@ -1774,13 +1843,17 @@ def build_agent_from_config(
             )
             if hs.is_available():
                 memory_manager.add_provider(hs)
+                _external_memory_status = "ok"
             else:
                 from xmclaw.utils.log import get_logger
                 get_logger(__name__).warning(
                     "memory.hindsight_unavailable — needs api_key + SDK; "
                     "falling back to no external provider",
                 )
-        except Exception:  # noqa: BLE001
+                _external_memory_status = "failed"
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+            _external_memory_status = "failed"
             pass
     elif provider_choice == "supermemory":
         try:
@@ -1793,13 +1866,17 @@ def build_agent_from_config(
             )
             if sm.is_available():
                 memory_manager.add_provider(sm)
+                _external_memory_status = "ok"
             else:
                 from xmclaw.utils.log import get_logger
                 get_logger(__name__).warning(
                     "memory.supermemory_unavailable — needs api_key; "
                     "falling back to no external provider",
                 )
-        except Exception:  # noqa: BLE001
+                _external_memory_status = "failed"
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+            _external_memory_status = "failed"
             pass
     elif provider_choice == "mem0":
         try:
@@ -1812,15 +1889,20 @@ def build_agent_from_config(
             )
             if m0.is_available():
                 memory_manager.add_provider(m0)
+                _external_memory_status = "ok"
             else:
                 from xmclaw.utils.log import get_logger
                 get_logger(__name__).warning(
                     "memory.mem0_unavailable — needs api_key; "
                     "falling back to no external provider",
                 )
-        except Exception:  # noqa: BLE001
+                _external_memory_status = "failed"
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+            _external_memory_status = "failed"
             pass
     # provider_choice == "none" → no external provider registered.
+    _build_status["external_memory"] = _external_memory_status
 
     # Keep an opt-out: tests / minimal configs that explicitly set
     # memory.enabled=false get None instead of an empty-but-noisy
@@ -1844,9 +1926,14 @@ def build_agent_from_config(
             bridge = MemoryToolBridge(memory_arg)
             if bridge.list_tools():
                 tools = CompositeToolProvider(tools, bridge)
-        except Exception:  # noqa: BLE001 — bridge failure should not
+            _build_status["memory_bridge"] = "ok"
+        except Exception as _exc:  # noqa: BLE001 — bridge failure should not
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
+            _build_status["memory_bridge"] = "failed"
             # block agent boot
             pass
+    else:
+        _build_status["memory_bridge"] = "skipped"
 
     # B-40: wire the MemoryManager into BuiltinTools so the unified
     # ``memory_search`` tool surfaces. Walk the composite chain to
@@ -1877,19 +1964,25 @@ def build_agent_from_config(
         embedder = None
         try:
             embedder = build_embedding_provider(cfg)
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
             embedder = None
 
         for bt in _walk(tools):
             try:
                 bt.set_memory_manager(memory_arg)
-            except Exception:  # noqa: BLE001
+            except Exception as _exc:  # noqa: BLE001
+                get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
                 pass
             try:
                 if embedder is not None:
                     bt.set_embedder(embedder)
-            except Exception:  # noqa: BLE001
+            except Exception as _exc:  # noqa: BLE001
+                get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
                 pass
+        _build_status["memory_tools"] = "ok"
+    else:
+        _build_status["memory_tools"] = "skipped"
 
     # Re-compute tool specs + system prompt AFTER memory wiring so
     # dynamically-gated tools (e.g. memory_search) appear in the
@@ -1898,7 +1991,8 @@ def build_agent_from_config(
     tool_specs = tools.list_tools() if tools is not None else []
     try:
         render_tools_section(profile_dir, tool_specs)
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
         pass
     system_prompt = build_system_prompt(
         profile_dir=profile_dir,
@@ -1919,6 +2013,7 @@ def build_agent_from_config(
     # rather than semantically related ones. The same embedder the
     # indexer + memory_search use. Variable may be unbound if the
     # memory-bridge branch above didn't run; resolve cleanly.
+    _embedder_failed = False
     try:
         agent_embedder = embedder  # noqa: F821 — bound in B-40 branch above
     except NameError:
@@ -1927,8 +2022,11 @@ def build_agent_from_config(
         try:
             from xmclaw.providers.memory.embedding import build_embedding_provider
             agent_embedder = build_embedding_provider(cfg)
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
             agent_embedder = None
+            _embedder_failed = True
+    _build_status["agent_embedder"] = "ok" if agent_embedder is not None else ("failed" if _embedder_failed else "skipped")
 
     # B-93: opt-in LLM-pick top-K memory files. Reads
     # ``evolution.memory.relevant_picker.{enabled,k,max_chars}`` from
@@ -1949,7 +2047,8 @@ def build_agent_from_config(
     try:
         from xmclaw.daemon.post_sampling_hooks import build_default_registry
         _hook_registry = build_default_registry()
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
         _hook_registry = None
 
     # B-189 / Wave-27 fix-13: per-LLM-call wall-clock timeout.
@@ -1988,7 +2087,8 @@ def build_agent_from_config(
         _budget_usd = float(_cost_cfg.get("budget_usd", 0.0))
         if _budget_usd > 0 or _cost_cfg.get("track", False):
             _cost_tracker = CostTracker(budget_usd=_budget_usd)
-    except Exception:  # noqa: BLE001 — never block boot on cost config
+    except Exception as _exc:  # noqa: BLE001 — never block boot on cost config
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
         _cost_tracker = None
 
     # Jarvisification: use provided cognitive_state or build a fresh one
@@ -1999,7 +2099,8 @@ def build_agent_from_config(
         try:
             from xmclaw.cognition.state import CognitiveState
             _cognitive_state = CognitiveState()
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
             pass
 
     # Sprint 3 #5 follow-up: optionally build the StrategyBank against
@@ -2009,6 +2110,7 @@ def build_agent_from_config(
     strategy_bank = build_strategy_bank_from_config(
         cfg, memory=vec_memory, embedder=agent_embedder,
     )
+    _build_status["strategy_bank"] = "ok" if strategy_bank is not None else "skipped"
 
     # Phase 7.A.3 step 5/6 (2026-05-23): factory no longer constructs
     # V1 UnifiedMemorySystem or MemoryExtractor — that pipeline was the
@@ -2038,7 +2140,8 @@ def build_agent_from_config(
                 "cognition.memory_v2.recall_top_k. Old block will "
                 "stop being read in §7.A.6.",
             )
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
             pass
         # Honour the old top_k value during the deprecation window.
         if "top_k" in _legacy_unified_cfg and _v2_cfg.get("recall_top_k") is None:
@@ -2076,6 +2179,7 @@ def build_agent_from_config(
             (cfg or {}).get("agent", {}).get("strict_freeze", False)
         ),
     )
+    _build_status["agent_loop"] = "ok"
 
     # Wave-27 fix-17: apply the configured tool wall-clock onto the
     # constructed AgentLoop instance — hop_loop._invoke_single_tool
@@ -2084,7 +2188,8 @@ def build_agent_from_config(
         agent_loop._tool_invoke_timeout_s = max(
             5.0, _tool_invoke_timeout_s,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
         pass
 
     # 2026-05-12 Batch C.2: StepValidator — opt-in per-step
@@ -2102,9 +2207,30 @@ def build_agent_from_config(
                 max_result_chars=int(sv_cfg.get("max_result_chars", 800)),
                 enabled=True,
             )
-    except Exception:  # noqa: BLE001
+            _build_status["step_validator"] = "ok"
+        else:
+            _build_status["step_validator"] = "skipped"
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_walk", _exc)
+        _build_status["step_validator"] = "failed"
         pass
 
+    # Build report: emit any aggregated component-build errors so the
+    # operator can see what failed during daemon boot.
+    _report = get_aggregator().get_report(min_severity=ErrorSeverity.WARNING)
+    if _report:
+        from xmclaw.utils.log import get_logger
+        _log = get_logger(__name__)
+        for _err in _report:
+            _log.warning(
+                "factory.build_report source=%s function=%s "
+                "type=%s count=%d last_seen=%.0fs",
+                _err.source, _err.function, _err.error_type,
+                _err.count, time.time() - _err.last_seen,
+            )
+
+    # Attach component build status for the health-check endpoint.
+    agent_loop._build_status = _build_status  # type: ignore
     return agent_loop
 
 
