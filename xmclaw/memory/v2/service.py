@@ -2606,11 +2606,19 @@ class MemoryService:
                 )
 
         if relevant_hits:
-            sections.append("### 与本轮相关的事实 (top-K, 向量召回)")
             seen_ids = {h.fact.id for h in (user_facts + project_facts + decision_facts)}
-            new_hits = _rank(
-                [h for h in relevant_hits if h.fact.id not in seen_ids]
-            )
+            # 2026-06-06 上下文污染修复：top-k 向量召回原来不带相关性阈值，
+            # 对"需要"这类没有真正相关记忆的输入也会塞 8 条最近邻当"与本轮
+            # 相关"注入，污染上下文导致答非所问。加 cosine 距离阈值 0.40
+            # (与 remember() 的 relate_distance 同档，similarity≈0.6)；
+            # 过滤后没有相关项就不渲染这个小节。
+            new_hits = _rank([
+                h for h in relevant_hits
+                if h.fact.id not in seen_ids
+                and float(getattr(h, "distance", 0.0) or 0.0) <= 0.40
+            ])
+            if new_hits:
+                sections.append("### 与本轮相关的事实 (top-K, 向量召回)")
             # Phase 8 ⑪ (2026-05-30): reinforcement. These query-relevant
             # facts were actually useful this turn → bump their ts_last
             # so recall-frequency feeds back into the recency score
