@@ -449,7 +449,14 @@ fact 是少量原子知识单元（句子级）。
       前端 refreshStatus 附带拉取并入 status，读数条多显示「矛盾 / 已过期」。
       文件：`routers/memory_v2.py`、`pages/_panels/memory_facts_v2.js`、
       `tests/integration/test_v2_memory_v2_router.py`（新增 overview 测试）。
-- [ ] **M3** `MEMORY_RECALLED` 事件 + 对话流「💭 想起 N 条」召回卡（写/读对称）
+- [x] **M3** 召回卡「💭 想起 N 条」（写/读对称）。后端早已发 `MEMORY_RECALL`
+      事件（agent_loop:2147，带 hits=[{id,text,kind,scope,layer,distance}]），
+      只缺前端：reducer 新增 memory_recall case 把 hits 挂到当前 user 消息，
+      MessageList 渲染 RecallMemo（可展开）。**附带修复**：记忆写入卡 MemoryMemo
+      原在没人 import 的 MessageBubble.js（死代码），当前 nebula UI 根本没显示
+      —— 一并接回 MessageList（assistant 消息下渲染 memoryMemos）。文件：
+      `lib/chat_reducer_secondary.js`、`components/molecules/MessageList.js`、
+      `styles/instrument.css`。
 - [x] **M-fix1** 记忆污染根因：内部反思会话（goal-from-percept-/reflect:/
       autonomous:/_system: …）不再抽取 lesson/preference 写入用户记忆。反思
       每轮重跑、自言自语反复入库是「记忆越积越脏」的根因。文件：

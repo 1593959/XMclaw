@@ -21,6 +21,7 @@ const HANDLED = new Set([
   "context_compressed",
   "context_compression_pending",
   "memory_put_auto",
+  "memory_recall",
   "todo_updated",
   "grader_verdict",
   "skill_candidate_proposed",
@@ -227,6 +228,36 @@ export function applySecondaryEvent(chat, envelope, helpers) {
             reason: (payload.reason || "").slice(0, 120),
             ts,
           }),
+        };
+        return { ...chat, messages: msgs };
+      }
+      return chat;
+    }
+
+    case "memory_recall": {
+      // Phase M3：召回卡（写/读对称）。recall 发生在 turn 开始（助手气泡
+      // 还没建），所以挂到最近的 USER 消息上 —— 语义也对：「你这句话让我
+      // 想起这些」。payload.hits = [{id,text,kind,scope,layer,distance}]。
+      const hits = Array.isArray(payload.hits) ? payload.hits : [];
+      if (hits.length === 0) return chat;
+      const msgs = chat.messages.slice();
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role !== "user") continue;
+        // 同一条用户消息只挂一次（防 WS 重发叠加）。
+        if (Array.isArray(msgs[i].memoryRecalls) && msgs[i].memoryRecalls.length) {
+          return chat;
+        }
+        msgs[i] = {
+          ...msgs[i],
+          memoryRecalls: hits.slice(0, 8).map((h) => ({
+            id: h.id || "",
+            text: (h.text || "").slice(0, 200),
+            kind: h.kind || "",
+            scope: h.scope || "",
+            layer: h.layer || "",
+            distance: h.distance,
+          })),
+          memoryRecallQuery: (payload.query || "").slice(0, 120),
         };
         return { ...chat, messages: msgs };
       }

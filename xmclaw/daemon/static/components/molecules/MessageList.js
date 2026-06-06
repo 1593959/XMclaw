@@ -92,6 +92,52 @@ function friendlyDay(ts) {
   return d.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
 }
 
+// Phase M3：记忆写入卡（assistant 消息下）。当前 nebula 渲染器是
+// MessageList，原 MemoryMemo 在没人 import 的 MessageBubble.js 里=死代码，
+// 所以这里重新接上。样式 .nb-memory-memo 在 instrument.css。
+const _MEMO_META = {
+  long_term:  { label: "长期记忆", icon: "🧠" },
+  short_term: { label: "短期记忆", icon: "⏳" },
+  working:    { label: "工作记忆", icon: "✦" },
+  procedural: { label: "程序记忆", icon: "⚙" },
+};
+function MemoryMemo({ memo }) {
+  const m = _MEMO_META[memo.layer] || { label: memo.layer || "记忆", icon: "📝" };
+  return html`
+    <div class="nb-memory-memo" data-layer=${memo.layer || "other"} role="note"
+         title=${memo.reason ? `为什么记: ${memo.reason}` : "已写入记忆 — 下次还记得"}>
+      <span class="nb-memory-memo__spark" aria-hidden="true">${m.icon}</span>
+      <span class="nb-memory-memo__layer">${m.label}</span>
+      <span class="nb-memory-memo__text">${memo.text}</span>
+      <span class="nb-memory-memo__tick" aria-hidden="true">✓ 已记住</span>
+    </div>
+  `;
+}
+
+// Phase M3：召回卡（user 消息下）— 写/读对称。「💭 想起 N 条」可展开看命中。
+function RecallMemo({ hits, query }) {
+  if (!Array.isArray(hits) || hits.length === 0) return null;
+  return html`
+    <details class="nb-recall-memo">
+      <summary class="nb-recall-memo__head">
+        <span class="nb-recall-memo__spark" aria-hidden="true">💭</span>
+        <span class="nb-recall-memo__title">想起 ${hits.length} 条相关记忆</span>
+        ${query ? html`<span class="nb-recall-memo__q">「${query}」</span>` : null}
+        <span class="nb-recall-memo__chev" aria-hidden="true">▸</span>
+      </summary>
+      <div class="nb-recall-memo__body">
+        ${hits.map((h, i) => html`
+          <div class="nb-recall-memo__item" key=${h.id || i}>
+            <span class="nb-recall-memo__k">${h.kind || "fact"}</span>
+            <span class="nb-recall-memo__t">${h.text}</span>
+            ${h.distance != null ? html`<span class="nb-recall-memo__d">d=${Number(h.distance).toFixed(2)}</span>` : null}
+          </div>
+        `)}
+      </div>
+    </details>
+  `;
+}
+
 // 小巧思：复制回执 — 点一下按钮，原地变「✓ 已复制」一秒再恢复。
 function CopyButton({ text, onCopy }) {
   const [done, setDone] = useState(false);
@@ -529,6 +575,12 @@ function MessageRow({
         <div class="nb-msg__bubble">
           ${bubbleContent}
         </div>
+        ${isUser && Array.isArray(message.memoryRecalls) && message.memoryRecalls.length
+          ? html`<${RecallMemo} hits=${message.memoryRecalls} query=${message.memoryRecallQuery} />`
+          : null}
+        ${isAssistant && Array.isArray(message.memoryMemos) && message.memoryMemos.length
+          ? message.memoryMemos.map((memo) => html`<${MemoryMemo} key=${memo.id} memo=${memo} />`)
+          : null}
         ${timeStr ? html`<div class="nb-msg__time">${timeStr}</div>` : null}
         <div class="nb-msg-actions">
           ${isUser ? userActions : isAssistant && (errored || cancelled) ? errorActions : isAssistant ? assistantActions : null}

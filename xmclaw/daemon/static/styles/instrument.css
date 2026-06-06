@@ -745,3 +745,40 @@
 .xmc-fact__act:hover { border-color: var(--nb-border-accent, rgba(139,92,246,.5)); color: var(--nb-fg-primary, #F1F5F9); background: rgba(148,163,184,.06); }
 .xmc-fact__act.is-on { border-color: var(--nb-accent, #8B5CF6); color: var(--nb-accent-light, #A78BFA); }
 .xmc-fact__act--danger:hover { border-color: var(--nb-error, #F87171); color: var(--nb-error, #F87171); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   15. 召回卡（Phase M3）—— 与记忆写入卡对称，青色，可展开
+   ═══════════════════════════════════════════════════════════════════════ */
+.nb-recall-memo {
+  margin: 5px 0;
+  border-radius: 7px;
+  font-family: var(--xi-mono); font-size: 12px;
+  --rc: var(--nb-cyan, #06B6D4);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--rc) 11%, transparent), color-mix(in srgb, var(--rc) 3%, transparent));
+  border: 1px solid color-mix(in srgb, var(--rc) 30%, transparent);
+  border-left: 2.5px solid var(--rc);
+  overflow: hidden;
+}
+.nb-recall-memo__head {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px; padding: 6px 11px;
+}
+.nb-recall-memo__head::-webkit-details-marker { display: none; }
+.nb-recall-memo__spark { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--rc) 70%, transparent)); }
+.nb-recall-memo__title { color: var(--nb-cyan-light, #67E8F9); font-weight: 600; flex: 0 0 auto; }
+.nb-recall-memo__q { color: var(--nb-fg-muted, #64748B); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.nb-recall-memo__chev { margin-left: auto; color: var(--nb-fg-muted, #64748B); transition: transform .18s; font-size: 11px; flex: 0 0 auto; }
+.nb-recall-memo[open] .nb-recall-memo__chev { transform: rotate(90deg); }
+.nb-recall-memo__body { padding: 2px 11px 9px; display: flex; flex-direction: column; gap: 5px; }
+.nb-recall-memo__item { display: flex; align-items: baseline; gap: 8px; }
+.nb-recall-memo__k {
+  flex: 0 0 auto; font-size: 10px; color: var(--rc);
+  background: color-mix(in srgb, var(--rc) 13%, transparent);
+  padding: 1px 6px; border-radius: 4px;
+}
+.nb-recall-memo__t { flex: 1 1 auto; color: var(--nb-fg-secondary, #94A3B8); line-height: 1.5; }
+.nb-recall-memo__d { flex: 0 0 auto; color: var(--nb-fg-muted, #64748B); font-variant-numeric: tabular-nums; opacity: .7; }
+@media (prefers-reduced-motion: no-preference) {
+  .nb-recall-memo { animation: mm-crystallize .42s cubic-bezier(.22,.9,.3,1.1) both; --mm-c: var(--rc); }
+  .nb-recall-memo__spark { animation: mm-spark .6s ease both; }
+}
