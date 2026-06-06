@@ -518,6 +518,12 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
       }
 
       if (containerRef.current && visNodes.length > 0) {
+        // 性能（2026-06-06）：图谱"每次等很久"= vis 显示前要先跑 150 次物理
+        // 迭代稳定布局。绝大多数情况下节点已带回缓存坐标（首次稳定后 snapshot
+        // 已存全部位置），此时直接关物理 → 秒显；只有冷启动（无缓存）才跑物理，
+        // 且迭代 150→60 + 自适应步长，肉眼快很多。
+        const _posCount = visNodes.filter((n) => typeof n.x === "number" && typeof n.y === "number").length;
+        const _hasLayout = _posCount >= Math.ceil(visNodes.length * 0.6);
         const network = new vis.Network(
           containerRef.current,
           {
@@ -525,17 +531,20 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
             edges: new vis.DataSet(visEdges),
           },
           {
-            physics: {
-              enabled: true,
-              solver: "forceAtlas2Based",
-              forceAtlas2Based: {
-                gravitationalConstant: -40,
-                centralGravity: 0.005,
-                springLength: 120,
-                damping: 0.5,
-              },
-              stabilization: { iterations: 150 },
-            },
+            physics: _hasLayout
+              ? { enabled: false }
+              : {
+                  enabled: true,
+                  solver: "forceAtlas2Based",
+                  forceAtlas2Based: {
+                    gravitationalConstant: -40,
+                    centralGravity: 0.005,
+                    springLength: 120,
+                    damping: 0.5,
+                  },
+                  stabilization: { iterations: 60, updateInterval: 25, fit: true },
+                  adaptiveTimestep: true,
+                },
             interaction: {
               hover: true,
               tooltipDelay: 200,
@@ -544,6 +553,11 @@ export function FactsGraphView({ token, focusFactId, onFocusFact }) {
             edges: { smooth: false },
           },
         );
+        // 关物理时不会触发 stabilizationIterationsDone，但坐标本就来自缓存，
+        // 无需再 snapshot；冷启动路径仍会在稳定后 snapshot（见下）。
+        if (_hasLayout) {
+          try { network.fit(); } catch (_) { /* noop */ }
+        }
         // Click on a node → propagate fact_id up so parent loads detail.
         network.on("click", (params) => {
           if (params.nodes.length === 0) return;
