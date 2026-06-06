@@ -247,6 +247,12 @@ export function applySecondaryEvent(chat, envelope, helpers) {
         if (Array.isArray(msgs[i].memoryRecalls) && msgs[i].memoryRecalls.length) {
           return chat;
         }
+        // 2026-06-06：口水短消息（"需要"/"好"/"嗯"/"继续"…）去召回一堆记忆
+        // 是噪音，召回卡纯添乱 → 用户消息太短就不挂卡。
+        const _utext = (typeof msgs[i].content === "string" ? msgs[i].content : "").trim();
+        if (_utext.length > 0 && _utext.length <= 3) {
+          return chat;
+        }
         msgs[i] = {
           ...msgs[i],
           memoryRecalls: hits.slice(0, 8).map((h) => ({
