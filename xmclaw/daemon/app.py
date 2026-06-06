@@ -16,6 +16,7 @@ Phase 4.x replaces the default accept-all with ed25519 pairing.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -653,6 +654,9 @@ def create_app(
     # Epic #17 Phase 3: REST surface for the multi-agent registry.
     from xmclaw.daemon.routers import agents as _agents_router
     app.include_router(_agents_router.router)
+    # Group G2: 多 agent 群聊/工作流房间。
+    from xmclaw.daemon.routers import rooms as _rooms_router
+    app.include_router(_rooms_router.router)
 
     # Epic #3: REST surface for security approvals.
     from xmclaw.daemon.routers import approvals as _approvals_router
@@ -856,6 +860,23 @@ def create_app(
             "version": __version__,
             "bus": type(bus).__name__,
         })
+
+    @app.get("/api/v2/health")
+    async def health_check() -> dict[str, Any]:
+        """Return component health status."""
+        _status = {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "components": {},
+        }
+        # Pull build status from the wired agent (set by factory).
+        _agent = getattr(app.state, "agent", None)
+        if _agent is not None:
+            _build_status = getattr(_agent, "_build_status", {})
+            _status["components"] = _build_status
+            if any(v == "failed" for v in _build_status.values()):
+                _status["status"] = "degraded"
+        return _status
 
     # B-215: silence favicon.ico 404 noise. We don't ship one (the
     # branding work is in /ui/ds-assets/) and every browser tab pollutes
@@ -1233,12 +1254,56 @@ def create_app(
                 active_workspace = str(ws_state.primary.path)
         except Exception:  # noqa: BLE001
             pass
+        # ClawHUD telemetry (2026-06-05): the signature "生命体征" status
+        # bar reads these. Each computed defensively — a missing/erroring
+        # subsystem just leaves its default, never breaks /status (polled
+        # every 30s, so each must stay cheap).
+        _mem_facts = 0
+        try:
+            _msvc = getattr(agent, "_memory_service", None) if agent else None
+            if _msvc is not None:
+                _mem_facts = int(await _msvc.count())
+        except Exception:  # noqa: BLE001
+            pass
+        _skill_count = 0
+        _skill_pending = 0
+        try:
+            _sreg = getattr(agent, "_skill_registry", None) if agent else None
+            if _sreg is not None:
+                _skill_count = len(list(_sreg.list_skill_ids()))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from xmclaw.utils.paths import user_skills_dir
+            _usk = user_skills_dir()
+            if _usk.is_dir():
+                _skill_pending = sum(
+                    1 for d in _usk.iterdir()
+                    if d.is_dir() and (d / ".proposed.json").is_file()
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        _autonomy = 50
+        try:
+            _autonomy = int(
+                ((config or {}).get("cognition", {})
+                 .get("continuous_loop", {})
+                 .get("autonomy_level", 50))
+            )
+        except Exception:  # noqa: BLE001
+            pass
         return JSONResponse({
             "version": __version__,
             "agent_wired": agent is not None,
             "auth_required": auth_check is not None,
             "model": model_name,
             "tools": tool_names,
+            "telemetry": {
+                "memory_facts": _mem_facts,
+                "skill_count": _skill_count,
+                "skill_pending": _skill_pending,
+                "autonomy": _autonomy,
+            },
             "mcp_servers": mcp_servers,
             "mcp_status": mcp_status,  # B-142
             "sandbox_allowed_dirs": (
@@ -2459,3 +2524,17 @@ def create_app(
 # If a future deployment really does want ``uvicorn module:app``
 # style, expose a lazy factory: ``app = create_app(load_config())``
 # in a separate module so the import-time cost is opt-in.
+
+if __name__ == "__main__":
+    import argparse
+    import uvicorn
+    from xmclaw.utils.log import setup_logging
+
+    parser = argparse.ArgumentParser(prog="python -m xmclaw.daemon.app")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind address.")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind.")
+    args = parser.parse_args()
+
+    setup_logging()
+    _app = create_app()
+    uvicorn.run(_app, host=args.host, port=args.port, log_level="info")
