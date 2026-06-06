@@ -68,9 +68,11 @@ def test_tool_availability_alone_never_lowers_budget() -> None:
 
 
 def test_short_greeting_is_trimmed() -> None:
-    """A bare greeting shouldn't reserve the full 300s budget."""
-    assert _timeout(message="你好", tool_count=50) == 60.0
-    assert _timeout(message="hi there", tool_count=0) == 60.0
+    """A bare greeting shouldn't reserve the full 300s budget — but the trim
+    floor is 150s (2026-06-06), not 60s: 60s false-aborted reasoning models'
+    slow first token on short messages."""
+    assert _timeout(message="你好", tool_count=50) == 150.0
+    assert _timeout(message="hi there", tool_count=0) == 150.0
 
 
 def test_short_but_worky_message_is_not_trimmed() -> None:
@@ -112,5 +114,5 @@ def test_configured_upper_bound_is_hard_ceiling() -> None:
         upper_bound=45.0,
         tool_count=20,
     ) == 45.0
-    # Greeting with a 45s ceiling → min(60, 45) = 45.
+    # Greeting with a 45s ceiling → min(150, 45) = 45.
     assert _timeout(message="hi", upper_bound=45.0) == 45.0

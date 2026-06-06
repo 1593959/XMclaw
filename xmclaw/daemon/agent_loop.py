@@ -925,7 +925,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
         Tiers (each capped at the configured upper bound):
           * Vision-heavy (any image attachment): 120s
-          * Trivially short message (< 50 chars, no work verbs): 60s
+          * Trivially short message (< 50 chars, no work verbs): 150s
+            (was 60s — too tight for reasoning models' slow first token)
           * Everything else: full configured bound (default 300s)
         """
         msg = (user_message or "").strip()
@@ -947,10 +948,17 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         )
         _looks_like_work = any(m in msg.lower() for m in _work_markers)
 
-        # Trivially short and not obviously a task: trim so a bare
-        # greeting doesn't reserve the full budget.
+        # Trivially short and not obviously a task: trim somewhat so a
+        # bare greeting doesn't reserve the full budget — but NOT down to
+        # 60s. 2026-06-06: a 60s floor false-aborted reasoning models
+        # (deepseek-v4-pro / K2.6) at hop 0 on short messages: those models
+        # "think" before the first token, and with a non-trivial context
+        # even "继续" can exceed 60s. The timeout is only an upper bound
+        # (a fast reply still finishes fast), so trimming this aggressively
+        # only kills legitimate slow first-tokens. 150s keeps a runaway
+        # guard while giving reasoning models room.
         if msg_len < 50 and not _looks_like_work:
-            return min(60.0, self._llm_timeout_s)
+            return min(150.0, self._llm_timeout_s)
 
         # Everything else — anything that looks like real work, or any
         # non-trivial prompt — gets the full configured wall-clock.
