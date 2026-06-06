@@ -94,6 +94,13 @@ from xmclaw.daemon.hop_loop import HopLoopMixin
 #   * ``…:to:…``              — agent-to-agent delegation sessions
 _INTERNAL_SESSION_PREFIXES = ("autonomous:", "goal-from-percept-", "reflect:", "_system:")
 
+# 2026-06-06 上下文污染修复：统一召回(recall top-k)原来无脑取最近 k 条邻居，
+# 哪怕全部不相关也渲染进 <memory-recall> 注入用户消息 → 污染上下文、把真实
+# 意图淹没，LLM 对着噪音答非所问（用户报："需要" → "候着呢"）。加 cosine
+# 距离阈值：只保留足够相关的(距离 ≤ 此值，similarity≈1-distance≥0.6)；无相关
+# 时不注入、不发召回卡。
+_UNIFIED_RECALL_MAX_DIST = 0.40
+
 
 def _is_internal_session(session_id: str) -> bool:
     """True for sessions that represent the agent's OWN work, not real
@@ -173,6 +180,44 @@ def _steps_warrant_subagents(steps: list[str]) -> bool:
     return independent_complex >= max(2, len(steps) * 2 // 3)
 
 
+def _plan_query_hash(query: str) -> str:
+    """Fast fingerprint for plan-cache lookup.
+
+    Uses first 10 whitespace-normalised words + total length.
+    Collisions are acceptable — they just reuse a plan for a
+    semantically-similar query, which is harmless.
+    """
+    words = query.strip().lower().split()
+    head = " ".join(words[:10])
+    return f"{head}:{len(query)}"
+
+
+def _looks_like_single_step(query: str) -> bool:
+    """Heuristic: does this query obviously need only one action?
+
+    Short imperative sentences with no conjunctions / sequencing
+    markers are almost always single-step.
+    """
+    q = query.strip().lower()
+    if len(q) > 60:
+        return False
+    # If it contains sequencing words, it may be multi-step.
+    if any(m in q for m in _STEP_DEPENDENCY_MARKERS):
+        return False
+    # Single-line imperative starting with a common action verb.
+    _SINGLE_ACTION_PREFIXES = (
+        "read ", "write ", "show ", "get ", "check ", "run ", "open ",
+        "close ", "delete ", "create ", "find ", "search ", "look ",
+        "cat ", "ls ", "dir ", "tell me ", "what is ", "what's ",
+        "what are ", "how many ", "who ", "where ", "when ", "why ",
+        "can you ", "please ", "compute ", "calculate ", "convert ",
+        "translate ", "summarize ", "explain ", "define ", "list ",
+        "print ", "echo ", "mkdir ", "touch ", "rm ", "cp ", "mv ",
+        "git ", "pip ", "npm ", "yarn ", "pytest ", "python ",
+    )
+    return any(q.startswith(p) for p in _SINGLE_ACTION_PREFIXES)
+
+
 @dataclass
 class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
     """Explicit state machine — one method, ``run_turn``, orchestrates
@@ -229,6 +274,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         #   ``agent.llm_timeout_s`` (top-level "agent" block in
         # config.json) — set lower for fast local Ollama, higher
         # for slow vision-heavy remote providers.
+        #
+        # 2026-06-04: this value now acts as the HARD UPPER BOUND.
+        # ``run_turn`` computes a dynamic per-turn timeout (30s / 60s /
+        # 120s) capped at this value, so simple greetings don't wait
+        # 300s while vision-heavy turns still get headroom.
         llm_timeout_s: float = 300.0,
         # Sprint 3 #6: optional ReasoningBank-style strategy bank.
         # When wired, ``run_turn`` calls ``bank.retrieve(user_message,
@@ -469,6 +519,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # query, auto-enter plan mode so the agent explores before
         # mutating. Configurable — set False to disable.
         self._auto_plan_mode_enabled = True
+        # 2026-06-04: transparent plan cache — avoids repeated LLM
+        # round-trips for semantically-similar queries.
+        self._plan_cache: dict[str, tuple[list[str], float]] = {}
+        self._plan_cache_ttl_s = 300.0  # 5 minutes
         # Jarvis Phase 1-2: cache metrics aggregator. Subscribes to
         # COST_TICK events and maintains per-session running totals.
         # Lightweight — no I/O, pure in-memory counters.
@@ -483,6 +537,13 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         self._narration_strict = bool(
             (cfg or {}).get("agent", {}).get("narration_strict", False)
         )
+        # 2026-06-04: optional PerformanceMonitor for turn-level metrics.
+        # When None, track_operation calls become no-ops (zero overhead).
+        self._perf_monitor = None
+
+    def set_performance_monitor(self, monitor: Any) -> None:
+        """Wire a PerformanceMonitor instance post-construction."""
+        self._perf_monitor = monitor
 
     async def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -834,6 +895,41 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         self._frozen_prompts.pop(session_id, None)
         return existed
 
+    def _compute_llm_timeout(
+        self,
+        user_message: str,
+        has_image: bool = False,
+        tool_count: int = 0,
+    ) -> float:
+        """Compute dynamic LLM timeout based on turn complexity.
+
+        Capped at ``self._llm_timeout_s`` (default 300s) so explicit
+        user config always wins as the hard upper bound.
+
+        Tiers:
+          * Simple conversation (no tools, no images, msg < 50 chars): 30s
+          * Standard tool chain (tools available, no images): 60s
+          * Vision-heavy (any image / screenshot attachment): 120s
+          * Extreme / complex multi-step: fallback to the configured upper bound
+        """
+        msg = (user_message or "").strip()
+        msg_len = len(msg)
+
+        # Vision-heavy: any image attachment gets 120s
+        if has_image:
+            return min(120.0, self._llm_timeout_s)
+
+        # Simple conversation: no tools, short message
+        if tool_count == 0 and msg_len < 50:
+            return min(30.0, self._llm_timeout_s)
+
+        # Standard tool chain: tools available, no images
+        if tool_count > 0 and not has_image:
+            return min(60.0, self._llm_timeout_s)
+
+        # Extreme / complex cases: fall back to the configured upper bound
+        return self._llm_timeout_s
+
     async def run_turn(
         self, session_id: str, user_message: str,
         *, user_correlation_id: str | None = None,
@@ -855,6 +951,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         from xmclaw.core.agent_context import use_current_session_id
         import time as _time
         _started_at = _time.time()
+        # 2026-06-04: turn-level performance metrics.
+        _turn_metrics: dict[str, Any] = {
+            "prep_time_ms": 0.0,
+            "llm_time_ms": 0.0,
+            "tool_time_ms": 0.0,
+            "recall_time_ms": 0.0,
+            "compression_time_ms": 0.0,
+            "total_time_ms": 0.0,
+            "hop_count": 0,
+            "tool_call_count": 0,
+            "timestamp": _started_at,
+        }
+        _recall_t0 = _time.perf_counter()
         _result: "AgentTurnResult | None" = None
         try:
             with use_current_session_id(session_id):
@@ -867,9 +976,24 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     tools_allowlist=tools_allowlist,
                     user_images=user_images,
                     channel_name=channel_name,
+                    _turn_metrics=_turn_metrics,
                 )
                 return _result
         finally:
+            # 2026-06-04: record turn metrics.
+            _turn_total_ms = (_time.time() - _started_at) * 1000.0
+            _turn_metrics["total_time_ms"] = _turn_total_ms
+            _turn_metrics["recall_time_ms"] = (
+                _time.perf_counter() - _recall_t0
+            ) * 1000.0
+            if self._perf_monitor is not None:
+                try:
+                    from xmclaw.core.performance_monitor import TurnMetrics
+                    self._perf_monitor.record_turn_metrics(
+                        TurnMetrics(**_turn_metrics)
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             self._cancel_events.pop(session_id, None)
             # B-1 fix: persist session history after every turn so that
             # ``xmclaw chat --resume <id>`` and fresh AgentLoop instances
@@ -963,6 +1087,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         tools_allowlist: "set[str] | frozenset[str] | None" = None,
         user_images: "tuple[str, ...] | None" = None,
         channel_name: str | None = None,
+        _turn_metrics: "dict[str, Any] | None" = None,
     ) -> AgentTurnResult:
         # B-332: per-call tool-name allowlist. When set, the rest of
         # this method routes all ``list_tools()`` / ``invoke()``
@@ -980,6 +1105,26 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             effective_tools = self._tools
         events: list[BehavioralEvent] = []
         tool_calls_made: list[dict[str, Any]] = []
+        # PERF-RECALL-2026-06-04: unified recall budget + shared embed.
+        # All recall paths share a single 3 s wall-clock budget so prep-
+        # stage latency doesn't accumulate from multiple independent
+        # timeouts. The user query is embedded once and reused by every
+        # downstream path.
+        _recall_budget_start = time.monotonic()
+        _recall_budget_remaining = 3.0
+        _shared_query_emb: list[float] | None = None
+        if self._embedder is not None and user_message:
+            try:
+                _emb_vecs = await asyncio.wait_for(
+                    self._embedder.embed([user_message]),
+                    timeout=1.5,
+                )
+                if _emb_vecs and _emb_vecs[0]:
+                    _shared_query_emb = list(_emb_vecs[0])
+            except asyncio.TimeoutError:
+                pass  # degrade to keyword-only / recency-only
+            except Exception:  # noqa: BLE001
+                pass
         # Sprint 0 multi-model routing: pass the user message + image
         # presence to _resolve_llm so the tier classifier can pick the
         # cheapest model that can serve the turn.
@@ -1107,6 +1252,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     timeout_s=float(
                         ar_cfg.get("timeout_s", _AR_DEFAULT_TIMEOUT),
                     ),
+                    query_embedding=_shared_query_emb,
                 )
                 if hits:
                     user_message = _prepend_recalled(user_message, hits)
@@ -1121,6 +1267,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 "auto_recall.failed err=%s (turn continues without recall)",
                 _exc,
             )
+            # 2026-06-04: aggregate error for observability.
+            try:
+                from xmclaw.core.error_aggregator import ErrorSeverity, get_aggregator
+                get_aggregator().record(
+                    ErrorSeverity.WARNING, __name__, "run_turn.auto_recall",
+                    _exc, message="auto_recall failed",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Deduct auto_recall cost from the unified recall budget.
+        _recall_budget_spent = time.monotonic() - _recall_budget_start
+        _recall_budget_remaining = max(0.0, 3.0 - _recall_budget_spent)
 
         # B-6: CognitiveDaemon integration. Query pending proposals for
         # this session and prepend them as a system note so the agent
@@ -1134,8 +1293,16 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         f"[系统提示：你有 {len(_pending)} 个待处理事项]\n"
                         f"{_proposal_note}\n\n{user_message}"
                     )
-            except Exception:  # noqa: BLE001 — never block a turn
-                pass
+            except Exception as _exc:  # noqa: BLE001 — never block a turn
+                # 2026-06-04: aggregate cognitive daemon errors.
+                try:
+                    from xmclaw.core.error_aggregator import ErrorSeverity, get_aggregator
+                    get_aggregator().record(
+                        ErrorSeverity.WARNING, __name__, "run_turn.cognitive_daemon",
+                        _exc, message="cognitive_daemon pop_proposals failed",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
         # 1. Announce the user message. We propagate the client-supplied
         # correlation_id so the optimistic local-echo bubble in the web
@@ -1587,7 +1754,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             .get("legacy_recall_enabled", False)
             if isinstance(self._cfg, dict) else False
         )
-        if self._memory_manager is not None and _legacy_recall_on:
+        if self._memory_manager is not None and _legacy_recall_on and _recall_budget_remaining > 0:
+            _v1_t0 = time.monotonic()
             try:
                 # B-26: try the prefetch hook first — providers that
                 # maintain a background queue (e.g. hindsight) return a
@@ -1615,36 +1783,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 # (B-50). Pull a wider window than top_k so we have
                 # room to filter out same-session + stale items below.
                 if not prefetch_block:
-                    q_embedding: list[float] | None = None
-                    if self._embedder is not None and user_message:
-                        # B-215: hard 2s wall-clock cap on embedding the
-                        # user query. Without this, a busy embedder
-                        # (e.g. local Ollama swamped by the workspace
-                        # indexer's batch backfill after B-210 ingest)
-                        # blocks the turn for 4-30s per real-data trace
-                        # (chat-4fbd1d07: 4027ms gap user_message →
-                        # llm_request, all of it embed wait). 2s is way
-                        # more than a healthy embed call needs (~80-200
-                        # ms for qwen3-0.6b on local Ollama); past that
-                        # we degrade gracefully to keyword-only recall
-                        # instead of stalling the user-visible turn.
-                        try:
-                            vecs = await asyncio.wait_for(
-                                self._embedder.embed([user_message]),
-                                timeout=2.0,
-                            )
-                            if vecs and vecs[0]:
-                                q_embedding = list(vecs[0])
-                        except asyncio.TimeoutError:
-                            _log_memory_failure(
-                                Exception(
-                                    "embed timeout (>2s) — falling back "
-                                    "to keyword-only recall this turn"
-                                )
-                            )
-                            q_embedding = None
-                        except Exception:  # noqa: BLE001
-                            q_embedding = None
+                    q_embedding = _shared_query_emb
                     # 2026-05-30: hard 2.5s wall-clock cap on V1 long-layer
                     # hybrid recall. Without it, a fat events.db (200MB+)
                     # makes RRF over vec+keyword take 60–160s on the hot
@@ -1665,7 +1804,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                                     k=max(self._memory_top_k * 4, 12),
                                     hybrid=True,
                                 ),
-                                timeout=2.5,
+                                timeout=min(2.5, _recall_budget_remaining),
                             )
                         except TypeError:
                             # Older MemoryManager without hybrid kwarg.
@@ -1676,13 +1815,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                                     embedding=q_embedding,
                                     k=max(self._memory_top_k * 4, 12),
                                 ),
-                                timeout=2.5,
+                                timeout=min(2.5, _recall_budget_remaining),
                             )
                     except asyncio.TimeoutError:
                         from xmclaw.utils.log import get_logger
                         get_logger(__name__).info(
-                            "memory_v1.long_recall timed out after 2.5s "
-                            "(turn proceeds without V1 memory-context block)"
+                            "memory_v1.long_recall timed out after %.1fs "
+                            "(turn proceeds without V1 memory-context block)",
+                            min(2.5, _recall_budget_remaining),
                         )
                         hits = []
                     # B-85: when no embedder is wired, the query above
@@ -1704,7 +1844,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                                     embedding=None,
                                     k=max(self._memory_top_k * 4, 12),
                                 ),
-                                timeout=1.5,
+                                timeout=min(1.5, _recall_budget_remaining),
                             )
                         except (asyncio.TimeoutError, Exception):  # noqa: BLE001
                             hits = []
@@ -1810,6 +1950,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         )
             except Exception as exc:  # noqa: BLE001 — memory is best-effort
                 _log_memory_failure(exc)
+            # Update recall budget after V1 leg.
+            _recall_budget_remaining = max(
+                0.0, _recall_budget_remaining - (time.monotonic() - _v1_t0)
+            )
 
             # Jarvisification: proactive recall from MemoryGraph.
             # When a graph is wired, ask it for related historical
@@ -1818,31 +1962,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             # alongside vector-recalled chunks.
             _mgr = getattr(self, "_memory_manager", None)
             _graph = getattr(_mgr, "_graph", None) if _mgr is not None else None
-            if _graph is not None and user_message:
+            if _graph is not None and user_message and _recall_budget_remaining > 0:
+                _graph_t0 = time.monotonic()
                 try:
-                    # Phase B: compute intent embedding when embedder is
-                    # available so proactive recall does true semantic
-                    # search instead of falling back to recency-only.
-                    _intent_emb: list[float] | None = None
-                    if self._embedder is not None:
-                        try:
-                            # 2026-05-29 perf fix: embed call on hot path
-                            # must have a hard timeout. Ollama connect
-                            # hangs can block the event loop for 30s+.
-                            _intent_emb = await asyncio.wait_for(
-                                self._embedder.embed([user_message]),
-                                timeout=2.0,
-                            )
-                            if _intent_emb:
-                                _intent_emb = _intent_emb[0]
-                        except asyncio.TimeoutError:
-                            from xmclaw.utils.log import get_logger
-                            get_logger(__name__).debug(
-                                "memory_graph.embed_timeout"
-                            )
-                            _intent_emb = None
-                        except Exception:  # noqa: BLE001
-                            _intent_emb = None
+                    # Phase B: reuse the shared query embedding when available
+                    # so proactive recall does true semantic search instead of
+                    # falling back to recency-only, without paying embed latency
+                    # again.
+                    _intent_emb = _shared_query_emb
                     try:
                         _graph_recall = await asyncio.wait_for(
                             _graph.proactive_recall(
@@ -1850,7 +1977,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                                 intent_embedding=_intent_emb,
                                 limit=3,
                             ),
-                            timeout=3.0,
+                            timeout=min(3.0, _recall_budget_remaining),
                         )
                     except asyncio.TimeoutError:
                         from xmclaw.utils.log import get_logger
@@ -1874,6 +2001,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                             )
                 except Exception:  # noqa: BLE001
                     pass
+                # Update recall budget after MemoryGraph leg.
+                _recall_budget_remaining = max(
+                    0.0, _recall_budget_remaining - (time.monotonic() - _graph_t0)
+                )
 
         # Wave 27 Phase 4a: append v2 facts (L1) — USER 档案 +
         # PROJECT 档案 + DECISIONS + top-K vec-recall hits with
@@ -1899,75 +2030,142 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 "memory_v2.recall_disabled XMC_DISABLE_V2_RECALL=1 set",
             )
             memory_v2_service = None
-        if memory_v2_service is not None:
-            # 2026-05-29 (chat-b09a3ad4): time-box this. It runs 4
-            # concurrent recalls (user/project/decision/relevant) +
-            # 1-hop graph fan-out per turn — already ~3s typical
-            # in the published optimisation comment, but cold caches
-            # / slow embedders push it to minutes. Without the
-            # wait_for the entire turn waits, and that wait is THE
-            # reason the daemon felt unresponsive even after the
-            # auto_recall timeout shipped.
-            import asyncio as _ar_asyncio
-            # Jarvis Phase 1-2: embed user query once and pass the
-            # vector to render_for_prompt so always-on sections
-            # (user/project/decision) can be re-sorted by query
-            # similarity instead of recency-only.
-            _query_emb: list[float] | None = None
-            if self._embedder is not None and user_message:
-                try:
-                    _vecs = await _ar_asyncio.wait_for(
-                        self._embedder.embed([user_message]),
-                        timeout=1.5,
+        unified_recall_block = ""
+        if memory_v2_service is not None and _recall_budget_remaining > 0:
+            # PERF-RECALL-2026-06-04: run render_for_prompt and
+            # unified_recall in parallel under the shared recall budget.
+            # A timeout in one leg no longer kills the other.
+            _v2_t0 = time.monotonic()
+            _recall_tasks = []
+            # Task A: render_for_prompt (injects into memory_ctx_block)
+            _render_fn = getattr(memory_v2_service, "render_for_prompt", None)
+            if _render_fn is not None:
+                _recall_tasks.append(
+                    asyncio.wait_for(
+                        _render_fn(
+                            user_message or "", k=8,
+                            query_embedding=_shared_query_emb,
+                        ),
+                        timeout=min(2.0, _recall_budget_remaining),
                     )
-                    if _vecs and _vecs[0]:
-                        _query_emb = list(_vecs[0])
-                except _ar_asyncio.TimeoutError:
-                    pass  # degrade to recency-only; don't block turn
-            try:
-                v2_block = await _ar_asyncio.wait_for(
-                    memory_v2_service.render_for_prompt(
-                        user_message or "", k=8,
-                        query_embedding=_query_emb,
+                )
+            else:
+                async def _no_render() -> None:
+                    raise AttributeError(
+                        f"'{type(memory_v2_service).__name__}' object has "
+                        "no attribute 'render_for_prompt'"
+                    )
+                _recall_tasks.append(_no_render())
+            # Task B: unified_recall (builds unified_recall_block)
+            _recall_tasks.append(
+                asyncio.wait_for(
+                    memory_v2_service.recall(
+                        query=_shared_query_emb if _shared_query_emb is not None else user_message,
+                        k=self._memory_recall_top_k,
                     ),
-                    timeout=2.0,
+                    timeout=min(1.5, _recall_budget_remaining),
                 )
-                if v2_block:
-                    memory_ctx_block = (
-                        memory_ctx_block.rstrip() + v2_block
-                        if memory_ctx_block
-                        else v2_block
+            )
+            _results = await asyncio.gather(*_recall_tasks, return_exceptions=True)
+            _v2_elapsed = time.monotonic() - _v2_t0
+            _recall_budget_remaining = max(0.0, _recall_budget_remaining - _v2_elapsed)
+
+            # Handle render_for_prompt result
+            _v2_block_result = _results[0]
+            if isinstance(_v2_block_result, Exception):
+                if isinstance(_v2_block_result, asyncio.TimeoutError):
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).info(
+                        "memory_v2.render_for_prompt timed out "
+                        "after %.1fs (turn proceeds without v2 block)",
+                        min(2.0, _recall_budget_remaining + _v2_elapsed),
                     )
-            except _ar_asyncio.TimeoutError:
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).info(
-                    "memory_v2.render_for_prompt timed out "
-                    "after 2s (turn proceeds without v2 block)",
-                )
-                # 2026-05-29 perf fix: if V2 recall times out once,
-                # assume the backend is unhealthy and disable it for
-                # the rest of this turn to avoid cascading stalls.
-                memory_v2_service = None
-            except RuntimeError as exc:
-                if "lance error" in str(exc).lower():
+                elif isinstance(_v2_block_result, RuntimeError) and "lance error" in str(_v2_block_result).lower():
                     from xmclaw.utils.log import get_logger
                     get_logger(__name__).error(
                         "memory_v2.lance_corrupted err=%s — "
-                        "disabling V2 recall for this session", exc,
+                        "disabling V2 recall for this session", _v2_block_result,
                     )
                     memory_v2_service = None
                 else:
                     from xmclaw.utils.log import get_logger
                     get_logger(__name__).warning(
                         "memory_v2.render_failed session=%s err=%s",
-                        session_id, exc,
+                        session_id, _v2_block_result,
                     )
-            except Exception as exc:  # noqa: BLE001
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).warning(
-                    "memory_v2.render_failed session=%s err=%s",
-                    session_id, exc,
+            elif _v2_block_result:
+                memory_ctx_block = (
+                    memory_ctx_block.rstrip() + _v2_block_result
+                    if memory_ctx_block
+                    else _v2_block_result
                 )
+
+            # Handle unified_recall result (only if V2 wasn't lance-killed)
+            if memory_v2_service is not None:
+                _v2_hits_result = _results[1]
+                if isinstance(_v2_hits_result, Exception):
+                    if isinstance(_v2_hits_result, asyncio.TimeoutError):
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).info(
+                            "memory_v2.unified_recall timed out "
+                            "after %.1fs (turn proceeds without recall block)",
+                            min(1.5, _recall_budget_remaining + _v2_elapsed),
+                        )
+                    else:
+                        _log_memory_failure(_v2_hits_result)
+                else:
+                    _ur_t0 = time.perf_counter()
+                    rendered: list[str] = []
+                    event_hits: list[dict[str, Any]] = []
+                    _ur_skipped = 0
+                    for h in _v2_hits_result:
+                        fact = h.fact
+                        kind = getattr(fact, "kind", "?")
+                        scope = getattr(fact, "scope", "?")
+                        layer = getattr(fact, "layer", "?")
+                        text = getattr(fact, "text", "")
+                        fid = getattr(fact, "id", "")
+                        dist = float(getattr(h, "distance", 0.0) or 0.0)
+                        # 相关性阈值：距离过大 = 不相关 → 不注入、不上卡，
+                        # 避免污染上下文导致答非所问。
+                        if dist > _UNIFIED_RECALL_MAX_DIST:
+                            _ur_skipped += 1
+                            continue
+                        rendered.append(
+                            f"[{kind}/{scope} | d={dist:.2f}] {text}"
+                        )
+                        event_hits.append({
+                            "id": fid,
+                            "text": text[:300],
+                            "distance": round(dist, 3),
+                            "kind": kind,
+                            "scope": scope,
+                            "layer": layer,
+                        })
+                    if rendered:
+                        unified_recall_block = (
+                            "\n\n<memory-recall>\n"
+                            "[System note: the following are recalled "
+                            "L1 facts matching your current query "
+                            "(NOT new user input). Each entry shows "
+                            "its kind/scope so you can judge "
+                            "relevance.]\n\n"
+                            + "\n".join(rendered)
+                            + "\n</memory-recall>"
+                        )
+                    _ur_elapsed_ms = (time.perf_counter() - _ur_t0) * 1000.0
+                    await self._bus.publish(make_event(
+                        session_id=session_id,
+                        agent_id=self._agent_id,
+                        type=EventType.MEMORY_RECALL,
+                        payload={
+                            "session_id": session_id,
+                            "query": user_message[:500],
+                            "hits": event_hits,
+                            "elapsed_ms": round(_ur_elapsed_ms, 2),
+                            "limit": self._memory_recall_top_k,
+                        },
+                    ))
 
         # B-93: LLM-picked relevant memory files (free-code memdir
         # parity). Disabled by default because it adds one extra LLM
@@ -2039,98 +2237,6 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             except Exception as exc:  # noqa: BLE001 — best-effort
                 _log_memory_failure(exc)
 
-        # Phase 7.A.6 (2026-05-23): MemoryService auto-recall, V2-only.
-        #
-        # User feedback (literal): "我的目的是给他自己用，不是光给我用."
-        # This wires the recall side so EVERY turn the agent benefits
-        # from L1 facts (Fact + Relation).
-        #
-        # Why a separate block from ``memory_ctx_block`` (above):
-        #   * memory_ctx_block uses the legacy MemoryManager — pure
-        #     vector + keyword over working/short/long layers
-        #     (V1 SqliteVecMemory, to be retired in §7.B).
-        #   * memory-recall block uses MemoryService.recall — typed
-        #     Fact hits with kind/scope + 1-hop relations (CONTRADICTS
-        #     / SUPERSEDES) so the LLM can see fact context.
-        # Both ride the user-message tail (no system-prompt cache
-        # invalidation). When the service isn't wired this is a
-        # silent no-op.
-        unified_recall_block = ""
-        svc = self._memory_service
-        # 2026-05-29: respect the same XMC_DISABLE_V2_RECALL kill switch.
-        if _disable_v2_recall:
-            svc = None
-        if svc is not None and user_message:
-            # 2026-05-29 (chat-b09a3ad4): time-box this too.
-            # Sibling of the render_for_prompt block above — same
-            # failure mode (slow embedder / cold LanceDB cache).
-            try:
-                import asyncio as _ur_asyncio
-                import time as _t
-                _t0 = _t.perf_counter()
-                try:
-                    v2_hits = await _ur_asyncio.wait_for(
-                        svc.recall(
-                            query=user_message,
-                            k=self._memory_recall_top_k,
-                        ),
-                        timeout=1.5,
-                    )
-                except _ur_asyncio.TimeoutError:
-                    from xmclaw.utils.log import get_logger
-                    get_logger(__name__).info(
-                        "memory_v2.unified_recall timed out "
-                        "after 1.5s (turn proceeds without recall block)",
-                    )
-                    v2_hits = []
-                elapsed_ms = (_t.perf_counter() - _t0) * 1000.0
-                rendered: list[str] = []
-                event_hits: list[dict[str, Any]] = []
-                for h in v2_hits:
-                    fact = h.fact
-                    kind = getattr(fact, "kind", "?")
-                    scope = getattr(fact, "scope", "?")
-                    layer = getattr(fact, "layer", "?")
-                    text = getattr(fact, "text", "")
-                    fid = getattr(fact, "id", "")
-                    dist = float(getattr(h, "distance", 0.0) or 0.0)
-                    rendered.append(
-                        f"[{kind}/{scope} | d={dist:.2f}] {text}"
-                    )
-                    event_hits.append({
-                        "id": fid,
-                        "text": text[:300],
-                        "distance": round(dist, 3),
-                        "kind": kind,
-                        "scope": scope,
-                        "layer": layer,
-                    })
-                if rendered:
-                    unified_recall_block = (
-                        "\n\n<memory-recall>\n"
-                        "[System note: the following are recalled "
-                        "L1 facts matching your current query "
-                        "(NOT new user input). Each entry shows "
-                        "its kind/scope so you can judge "
-                        "relevance.]\n\n"
-                        + "\n".join(rendered)
-                        + "\n</memory-recall>"
-                    )
-                await self._bus.publish(make_event(
-                    session_id=session_id,
-                    agent_id=self._agent_id,
-                    type=EventType.MEMORY_RECALL,
-                    payload={
-                        "session_id": session_id,
-                        "query": user_message[:500],
-                        "hits": event_hits,
-                        "elapsed_ms": round(elapsed_ms, 2),
-                        "limit": self._memory_recall_top_k,
-                    },
-                ))
-            except Exception as exc:  # noqa: BLE001
-                # Recall is best-effort; never kill a turn over it.
-                _log_memory_failure(exc)
         _prep_mark("memory_recall", _recall_t0)
 
         # B-202: passive trigger for ``propose_curriculum_edit``.
@@ -2804,10 +2910,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             session_id.startswith(("reflect:", "_system:"))
             if session_id else False
         )
+        # 2026-06-04: more aggressive skip heuristics to avoid burning
+        # an LLM round-trip on turns that are obviously not multi-step.
+        _um = user_message.strip()
+        _skip_plan_single_step = (
+            (len(_um) < 20 and "?" not in _um)
+            or _um.startswith("```")
+            or _looks_like_single_step(_um)
+        )
         if (
             self._active_run_mode != "instant"
             and not getattr(self, "_active_is_trivial", False)
             and not _skip_plan_session
+            and not _skip_plan_single_step
         ):
             # B-LATENCY-prep: plan-first decomposition fires a real LLM
             # call before the first hop. Cap at 15s — past that, run
@@ -2827,7 +2942,27 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     getattr(self, "_llm_registry", None), llm,
                 )
                 _gate = PlanFirstGate(llm=_plan_llm)
-                if _gate.is_complex(user_message):
+
+                # 2026-06-04: transparent plan cache — skip the LLM call
+                # when we've recently decomposed a semantically-similar
+                # query. TTL bounds stale-plan risk; size cap prevents
+                # unbounded growth.
+                _plan_hash = _plan_query_hash(user_message)
+                _cached = self._plan_cache.get(_plan_hash)
+                if _cached is not None:
+                    _cached_steps, _cached_ts = _cached
+                    if (time.monotonic() - _cached_ts) < self._plan_cache_ttl_s:
+                        _steps = _cached_steps
+                        await publish(EventType.INNER_MONOLOGUE, {
+                            "kind": "plan_first_cache_hit",
+                            "steps_count": len(_steps),
+                            "plan_hash": _plan_hash,
+                        })
+                    else:
+                        _cached = None
+                        self._plan_cache.pop(_plan_hash, None)
+
+                if _cached is None and _gate.is_complex(user_message):
                     # Cap aligned to the B-LATENCY-prep comment's intent
                     # (15s, not 25s): decomposing a goal into 2-4 bullets
                     # never legitimately needs more, and a tighter cap
@@ -2836,95 +2971,109 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         _gate.plan(user_message), timeout=8.0,
                     )
                     if _steps:
-                        self._active_plan_steps = _steps
-                        await publish(EventType.INNER_MONOLOGUE, {
-                            "kind": "plan_first_decomposed",
-                            "steps_count": len(_steps),
-                            "user_msg_len": len(user_message),
-                        })
-                        # 2026-05-30: autonomous subagent trigger.
-                        # Not every multi-step plan needs subagents — tool
-                        # parallelism handles 2-step tasks fine. We upgrade
-                        # to swarm ONLY when the plan looks like genuinely
-                        # independent complex subtasks (≥3 steps, no obvious
-                        # dependency chains, each step is non-trivial).
-                        if self._active_run_mode != "swarm":
-                            try:
-                                if _steps_warrant_subagents(_steps):
-                                    self._active_run_mode = "swarm"
-                                    await publish(
-                                        EventType.INNER_MONOLOGUE,
-                                        {
-                                            "kind": "auto_swarm_upgraded",
-                                            "reason": (
-                                                "PlanFirst steps look like "
-                                                "independent complex subtasks"
-                                            ),
-                                            "steps_count": len(_steps),
-                                        },
-                                    )
-                            except Exception:  # noqa: BLE001
-                                pass
-                        # Jarvis Phase 6.4: complex query → auto plan mode.
-                        # When the query is complex enough to warrant
-                        # decomposition, it's complex enough to warrant
-                        # "explore before mutate".
-                        if (
-                            getattr(self, "_auto_plan_mode_enabled", True)
-                            and session_id
-                        ):
-                            try:
-                                from xmclaw.providers.tool.builtin_planmode import (
-                                    set_plan_mode,
+                        # Store in cache with simple size-bound eviction.
+                        self._plan_cache[_plan_hash] = (_steps, time.monotonic())
+                        if len(self._plan_cache) > 100:
+                            # Evict oldest entry (cheapest LRU approximation).
+                            _oldest_key = min(
+                                self._plan_cache,
+                                key=lambda k: self._plan_cache[k][1],
+                            )
+                            self._plan_cache.pop(_oldest_key, None)
+                else:
+                    _steps = None
+
+                if _steps:
+                    self._active_plan_steps = _steps
+                    await publish(EventType.INNER_MONOLOGUE, {
+                        "kind": "plan_first_decomposed",
+                        "steps_count": len(_steps),
+                        "user_msg_len": len(user_message),
+                        "cached": _cached is not None,
+                    })
+                    # 2026-05-30: autonomous subagent trigger.
+                    # Not every multi-step plan needs subagents — tool
+                    # parallelism handles 2-step tasks fine. We upgrade
+                    # to swarm ONLY when the plan looks like genuinely
+                    # independent complex subtasks (≥3 steps, no obvious
+                    # dependency chains, each step is non-trivial).
+                    if self._active_run_mode != "swarm":
+                        try:
+                            if _steps_warrant_subagents(_steps):
+                                self._active_run_mode = "swarm"
+                                await publish(
+                                    EventType.INNER_MONOLOGUE,
+                                    {
+                                        "kind": "auto_swarm_upgraded",
+                                        "reason": (
+                                            "PlanFirst steps look like "
+                                            "independent complex subtasks"
+                                        ),
+                                        "steps_count": len(_steps),
+                                    },
                                 )
-                                set_plan_mode(session_id, True)
-                                await publish(EventType.INNER_MONOLOGUE, {
-                                    "kind": "plan_mode_auto_entered",
-                                    "reason": (
-                                        "PlanFirstGate decomposed complex query"
-                                    ),
-                                })
-                            except Exception:  # noqa: BLE001
-                                pass
-                        # Jarvis Phase 6.3: skill-match each plan step.
-                        # When a skill_registry is wired, fuzzy-match every
-                        # decomposed step against HEAD skills and inject a
-                        # lightweight hint into messages so the LLM sees
-                        # "step X → use skill Y" BEFORE the first hop.
-                        _plan_skill_hint = ""
-                        _skill_registry = getattr(
-                            self, "_skill_registry", None,
-                        )
-                        if _skill_registry is not None:
-                            try:
-                                _hints: list[str] = []
-                                for _step in _steps:
-                                    _match = _skill_registry.find(
-                                        _step, top_k=1,
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # Jarvis Phase 6.4: complex query → auto plan mode.
+                    # When the query is complex enough to warrant
+                    # decomposition, it's complex enough to warrant
+                    # "explore before mutate".
+                    if (
+                        getattr(self, "_auto_plan_mode_enabled", True)
+                        and session_id
+                    ):
+                        try:
+                            from xmclaw.providers.tool.builtin_planmode import (
+                                set_plan_mode,
+                            )
+                            set_plan_mode(session_id, True)
+                            await publish(EventType.INNER_MONOLOGUE, {
+                                "kind": "plan_mode_auto_entered",
+                                "reason": (
+                                    "PlanFirstGate decomposed complex query"
+                                ),
+                            })
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # Jarvis Phase 6.3: skill-match each plan step.
+                    # When a skill_registry is wired, fuzzy-match every
+                    # decomposed step against HEAD skills and inject a
+                    # lightweight hint into messages so the LLM sees
+                    # "step X → use skill Y" BEFORE the first hop.
+                    _plan_skill_hint = ""
+                    _skill_registry = getattr(
+                        self, "_skill_registry", None,
+                    )
+                    if _skill_registry is not None:
+                        try:
+                            _hints: list[str] = []
+                            for _step in _steps:
+                                _match = _skill_registry.find(
+                                    _step, top_k=1,
+                                )
+                                if _match is not None:
+                                    _safe = _match.id.replace(
+                                        ".", "__",
                                     )
-                                    if _match is not None:
-                                        _safe = _match.id.replace(
-                                            ".", "__",
-                                        )
-                                        _hints.append(
-                                            f"  - {_step} → 建议优先调用 "
-                                            f"skill_{_safe}"
-                                        )
-                                if _hints:
-                                    _plan_skill_hint = (
-                                        "\n\n[plan-skill-hint] "
-                                        "分解后的步骤与以下技能匹配，"
-                                        "请优先使用对应技能而非 bash / "
-                                        "file_* / web_search 手写：\n"
-                                        + "\n".join(_hints)
+                                    _hints.append(
+                                        f"  - {_step} → 建议优先调用 "
+                                        f"skill_{_safe}"
                                     )
-                            except Exception:  # noqa: BLE001
-                                pass
-                        if _plan_skill_hint:
-                            messages.append(Message(
-                                role="user",
-                                content=_plan_skill_hint,
-                            ))
+                            if _hints:
+                                _plan_skill_hint = (
+                                    "\n\n[plan-skill-hint] "
+                                    "分解后的步骤与以下技能匹配，"
+                                    "请优先使用对应技能而非 bash / "
+                                    "file_* / web_search 手写：\n"
+                                    + "\n".join(_hints)
+                                )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if _plan_skill_hint:
+                        messages.append(Message(
+                            role="user",
+                            content=_plan_skill_hint,
+                        ))
             except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
                 from xmclaw.utils.log import get_logger as _gl
                 _gl(__name__).warning("plan_first.skipped err=%s", exc)
@@ -2999,6 +3148,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     events=[],
                 )
 
+        # 2026-06-04: dynamic LLM timeout based on turn complexity.
+        # self._llm_timeout_s acts as the hard upper bound (fallback).
+        _dynamic_llm_timeout = self._compute_llm_timeout(
+            user_message=user_message,
+            has_image=bool(user_images),
+            tool_count=len(tool_specs) if tool_specs else 0,
+        )
+
         _hop_result = await self._run_hop_loop(
             session_id=session_id,
             user_message=user_message,
@@ -3012,6 +3169,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             events=events,
             tool_calls_made=tool_calls_made,
             turn_uuid=turn_uuid,
+            llm_timeout_s=_dynamic_llm_timeout,
+            _turn_metrics=_turn_metrics,
         )
         if _hop_result is not None:
             return _hop_result
