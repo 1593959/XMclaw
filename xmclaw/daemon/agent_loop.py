@@ -1511,9 +1511,15 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 _written_count = 0
                 try:
                     from xmclaw.memory.v2 import extract_and_remember
+                    # LLM 提取器可用时，regex 层让出主观/解释性类（目标/偏好/
+                    # 纠正/组织名）给 LLM 语义判断，只强写客观/显式类，减少污染。
+                    _has_llm_extractor = getattr(
+                        self, "_memory_v2_llm_extractor", None,
+                    ) is not None
                     written = await extract_and_remember(
                         user_message, memory_v2,
                         source_event_id=src_event,
+                        defer_interpretive=_has_llm_extractor,
                     )
                     _written_count = len(written) if written else 0
                     if written:

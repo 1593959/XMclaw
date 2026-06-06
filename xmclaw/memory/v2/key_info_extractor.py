@@ -683,13 +683,30 @@ def extract_keys(message: str) -> list[ExtractedKey]:
 # ── Helper: bulk write to MemoryService ───────────────────────────
 
 
+# 2026-06-07：regex 层降级——把**主观/解释性**类别交给 LLM 提取器语义判断，
+# 不再凭关键词强写。这些 pattern 是污染高发区（"希望删X"被当目标、转瞬即逝的
+# "我喜欢这个"被当长期偏好、对话中的"不对"被当纠正）。客观/显式类（URL/账号/
+# 邮箱/电话/金额/"记住X"/约束/身份…）关键词命中即写仍是对的，保留强写。
+_INTERPRETIVE_PATTERNS: frozenset[str] = frozenset({
+    "qual_goal",     # 想/希望/打算 + 一段话
+    "preference",    # 我喜欢 X（可能是一次性的）
+    "correction",    # 不要再/别（可能是对当前回答的临时纠正）
+    "org",           # 组织/产品名（低置信、易误判）
+})
+
+
 async def extract_and_remember(
     message: str,
     memory_service: Any,
     *,
     source_event_id: str | None = None,
+    defer_interpretive: bool = False,
 ) -> list[Any]:
     """Convenience wrapper: extract_keys → MemoryService.remember.
+
+    ``defer_interpretive`` (2026-06-07): 当 True（调用方探测到 LLM 提取器可用）时，
+    跳过 ``_INTERPRETIVE_PATTERNS`` 里的主观类——交给 LLM 语义判断"是不是值得长期
+    记的稳定事实"，而非靠关键词强写。False（无 LLM）则全写，保留确定性兜底，不丢召回。
 
     Returns the list of Fact objects written (one per extracted key).
     Errors during individual writes are logged but don't abort the
@@ -713,6 +730,9 @@ async def extract_and_remember(
     from xmclaw.memory.v2.models import RelationKind
     log = get_logger(__name__)
     keys = extract_keys(message)
+    if defer_interpretive and keys:
+        # 主观/解释性类交给 LLM 提取器；regex 只强写客观/显式类。
+        keys = [k for k in keys if k.pattern_name not in _INTERPRETIVE_PATTERNS]
     if not keys:
         return []
     written = []
