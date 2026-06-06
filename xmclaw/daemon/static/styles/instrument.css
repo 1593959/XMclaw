@@ -898,3 +898,65 @@
 /* 同角色连发再贴近一点 */
 .nb-msg[data-role="assistant"] + .nb-msg[data-role="assistant"],
 .nb-msg[data-role="user"] + .nb-msg[data-role="user"] { padding-top: 2px !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   19. 全站细节层（2026-06-06）：铺到所有页面的小巧思
+   ═══════════════════════════════════════════════════════════════════════ */
+/* —— 主题化细滚动条（替换默认粗灰条，全站统一）—— */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--nb-accent, #8B5CF6) 45%, transparent) transparent;
+}
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--nb-fg-muted, #64748B) 40%, transparent);
+  border-radius: 8px; border: 2px solid transparent; background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--nb-accent, #8B5CF6) 60%, transparent);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* —— 全局文本选区（紫色，呼应主题）—— */
+::selection { background: color-mix(in srgb, var(--nb-accent, #8B5CF6) 32%, transparent); color: #fff; }
+
+/* —— 平滑滚动 —— */
+@media (prefers-reduced-motion: no-preference) {
+  .nb-stream, .xi-cockpit, .xmc-h-main, .nb-codeblock-v2 { scroll-behavior: smooth; }
+}
+
+/* —— 全局聚焦光圈（键盘 tab 可见，鼠标点不打扰）—— */
+:focus-visible { outline: none; }
+button:focus-visible, a:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible {
+  box-shadow: 0 0 0 2px var(--nb-bg-base, #0B0E14), 0 0 0 4px var(--nb-accent, #8B5CF6);
+  border-radius: 6px;
+}
+
+/* —— 状态点统一呼吸（连接/在线指示）—— */
+@media (prefers-reduced-motion: no-preference) {
+  .nb-status-dot, .xmc-bgtask__status--running {
+    animation: xi-dot-breathe 1.8s ease-in-out infinite;
+  }
+  @keyframes xi-dot-breathe {
+    0%,100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+    50%     { box-shadow: 0 0 6px 1px currentColor; opacity: .7; }
+  }
+}
+
+/* —— 空状态图标统一浮动 + 发光（各页 empty）—— */
+@media (prefers-reduced-motion: no-preference) {
+  .xmc-h-empty::before { content: none; }
+  .nb-empty__icon, .xmc-h-empty__icon { animation: fx-float 3.4s ease-in-out infinite; }
+}
+
+/* —— 徽章/标签统一圆角 + 轻描边手感 —— */
+.xmc-h-badge, .nb-tag { transition: transform .12s, box-shadow .12s, filter .12s; }
+
+/* —— 链接全局下划线偏移，更精致 —— */
+a { text-underline-offset: 2px; }
+
+/* —— 代码块 hover 时右上「复制」更醒目（已存在按钮，这里加底色过渡）—— */
+.nb-codeblock-wrap:hover .nb-codeblock__copy,
+.nb-toolcard:hover .xmc-h-codeblock__copy { opacity: 1; }

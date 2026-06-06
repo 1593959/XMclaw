@@ -13,6 +13,7 @@
 //   SecLabel   — 仪表面板内的小节刻度标题
 
 const { h } = window.__xmc.preact;
+const { useState, useEffect, useRef } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 function fmtNum(n) {
@@ -21,13 +22,46 @@ function fmtNum(n) {
   return n.toLocaleString();
 }
 
+// 小巧思：读数从上一次的值「滚动」到新值（仪表开机/刷新的仪式感）。
+// 仅对纯数字生效；字符串(embedder名/$花费)原样显示。尊重 reduced-motion。
+const _reduceMotion = (() => {
+  try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+  catch (_) { return false; }
+})();
+function useCountUp(target) {
+  const isNum = typeof target === "number" && Number.isFinite(target);
+  const [val, setVal] = useState(isNum ? (_reduceMotion ? target : 0) : target);
+  const ref = useRef({ raf: 0, last: isNum ? 0 : target });
+  useEffect(() => {
+    if (!isNum || _reduceMotion) { setVal(target); ref.current.last = target; return undefined; }
+    const from = typeof ref.current.last === "number" ? ref.current.last : 0;
+    const to = target;
+    if (from === to) { setVal(to); return undefined; }
+    const dur = 600;
+    const t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const tick = (now) => {
+      const p = Math.min(1, ((now || Date.now()) - t0) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const cur = Math.round(from + (to - from) * eased);
+      setVal(cur); ref.current.last = cur;
+      if (p < 1) ref.current.raf = requestAnimationFrame(tick);
+      else { setVal(to); ref.current.last = to; }
+    };
+    cancelAnimationFrame(ref.current.raf);
+    ref.current.raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(ref.current.raf);
+  }, [target, isNum]);
+  return isNum ? val : target;
+}
+
 /** 等宽读数。props: { value, unit, label, delta, deltaDir } */
 export function Readout({ value, unit, label, delta, deltaDir }) {
+  const shown = useCountUp(value);
   return html`
     <div class="xi-readout">
       ${label ? html`<span class="xi-readout__label">${label}</span>` : null}
       <span class="xi-readout__row">
-        <span class="xi-readout__num">${fmtNum(value)}</span>
+        <span class="xi-readout__num">${fmtNum(shown)}</span>
         ${unit ? html`<span class="xi-readout__unit">${unit}</span>` : null}
         ${delta != null
           ? html`<span class=${"xi-readout__delta " + (deltaDir || (delta >= 0 ? "up" : "down"))}>
