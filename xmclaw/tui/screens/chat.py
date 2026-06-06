@@ -23,11 +23,11 @@ _log = get_logger(__name__)
 class ChatScreen(Vertical):  # type: ignore[misc]
     """Displays message history and an input bar."""
 
-    CSS = """
+    DEFAULT_CSS = """
     ChatScreen {
         layout: vertical;
         width: 100%;
-        height: 1fr;
+        height: 100%;
     }
     #message-scroll {
         height: 1fr;
@@ -39,12 +39,20 @@ class ChatScreen(Vertical):  # type: ignore[misc]
         height: auto;
     }
     #input-bar {
-        height: auto;
+        dock: bottom;
+        height: 3;
         border: solid $primary-darken-2;
-        padding: 1;
+        padding: 0 1;
     }
     #msg-input {
         width: 1fr;
+        height: 1;
+        border: none;
+    }
+    #send-btn {
+        height: 1;
+        min-width: 8;
+        border: none;
     }
     """
 
@@ -71,6 +79,20 @@ class ChatScreen(Vertical):  # type: ignore[misc]
         with Horizontal(id="input-bar"):
             yield self._input
             yield Button("发送", id="send-btn")
+
+    def on_mount(self) -> None:
+        # Pin layout via instance styles — highest specificity, immune to
+        # CSS cascade quirks. The message area flexes to fill, the input
+        # bar stays a compact 3-row strip docked to the very bottom so it
+        # never floats in the middle of an empty screen.
+        try:
+            self._message_box.styles.height = "1fr"
+            bar = self.query_one("#input-bar")
+            bar.styles.dock = "bottom"
+            bar.styles.height = 3
+            self._input.styles.height = 1
+        except Exception:  # noqa: BLE001 — never let styling crash the TUI
+            pass
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "send-btn":
