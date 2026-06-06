@@ -1,8 +1,8 @@
 """GroupRoom + GroupRoomRegistry — 多 agent 群聊房间的模型与持久化.
 
-Group G1 (2026-06-06)。一个「房间」= 若干 agent 参与者 + 用户共享的一条
-对话，加上编排策略与自定义用途。运行时由 :class:`GroupOrchestrator` 驱动
-（见 ``group_orchestrator.py``）；本模块只负责**数据模型 + 落盘注册表**，
+Group 重做 (2026-06-06)。一个「房间」= 若干 agent 参与者 + 用户共享的一条
+对话，加上编排策略(4 选 1)与自定义用途。运行时由 :class:`RoomOrchestrator`
+驱动（见 ``room_orchestrator.py``）；本模块只负责**数据模型 + 落盘注册表**，
 不持有任何运行时 handle（参与者的 Workspace 仍由 MultiAgentManager 拥有）。
 
 落盘约定：每个房间一个 ``<data>/v2/rooms/<room_id>.json``（peer of
@@ -23,6 +23,12 @@ from xmclaw.utils.paths import rooms_dir
 
 SpeakerPolicy = Literal["round_robin", "supervisor"]
 RoomMode = Literal["chat", "workflow"]
+# Group 重做(2026-06-06)：统一的 4 种编排策略（用户"都要"）。
+#   chat       — 群聊：共享历史 + LLM 选讲者（AutoGen GroupChat）
+#   sequential — 固定流水线：A→B→C 顺序接力（CrewAI sequential / MetaGPT）
+#   supervisor — 主管派活：主管 LLM 按角色动态分派（CrewAI hierarchical）
+#   autonomous — 目标驱动：任务/进度台账 + 内循环 + 重规划（Magentic-One）
+Strategy = Literal["chat", "sequential", "supervisor", "autonomous"]
 
 # 房间 session id 约定：``group:<room_id>``。前端订阅这个 session 即可收到
 # 房间内所有讲者的事件（事件顶层自带 agent_id）。
@@ -61,6 +67,9 @@ class GroupRoom:
     #   "workflow" — 目标驱动工作流：目标→拆解→按能力分派→聚合
     #                （WorkflowRoomRunner 复用 SwarmOrchestrator）
     mode: RoomMode = "chat"
+    # 统一编排策略（4 选 1，用户"都要"）。空串则由 _resolve_strategy 从
+    # mode/policy 兜底推导（向后兼容旧房间 json）。
+    strategy: str = ""
     policy: SpeakerPolicy = "round_robin"   # chat 模式的选讲者策略
     aggregation: str = "map_reduce"          # workflow 模式的聚合策略
     max_rounds: int = 6          # chat：一条用户消息后 agent 间最多连说几轮
@@ -79,6 +88,19 @@ class GroupRoom:
     @property
     def session_id(self) -> str:
         return session_id_for(self.room_id)
+
+    def resolve_strategy(self) -> str:
+        """返回生效的编排策略。显式 ``strategy`` 优先；否则从旧 mode/policy 推导：
+        workflow → autonomous（目标驱动）；chat + supervisor policy → supervisor；
+        其余 → chat。这样旧房间 json 无需迁移也能跑。"""
+        s = (self.strategy or "").strip().lower()
+        if s in ("chat", "sequential", "supervisor", "autonomous"):
+            return s
+        if self.mode == "workflow":
+            return "autonomous"
+        if self.policy == "supervisor":
+            return "supervisor"
+        return "chat"
 
 
 class GroupRoomRegistry:

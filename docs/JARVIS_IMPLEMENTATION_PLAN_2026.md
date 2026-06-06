@@ -466,20 +466,30 @@ fact 是少量原子知识单元（句子级）。
 
 #### 1.4.5 Group — 多 Agent 群聊聊天室（编排工作流）
 
-> **状态**: 🟡 进行中 (2026-06-06 起)。调研见 `docs/audit/MULTI_AGENT_GROUPCHAT_RESEARCH_2026.md`，
-> 计划见 plan 文件 buzzing-twirling-blossom。复用现有多 agent 运行时，只补"群聊房间"层。
+> **状态**: 🟡 进行中 (2026-06-06 起)。**逻辑判错 + 正确范式调研见
+> `docs/audit/MULTI_AGENT_LOGIC_AUDIT_2026.md`**（旧 G1 实现按错范式做，已重写）。
+> 用户拍板"4 种编排策略都要"：群聊 / 固定流水线 / 主管派活 / 目标驱动·自主。
 
-- [x] **G1** 房间运行时：`GroupRoom` 模型 + `GroupRoomRegistry`(落盘 `~/.xmclaw/v2/rooms/`) +
-      `GroupOrchestrator`(选讲者循环：round_robin / supervisor-LLM；无状态回合复用
-      `AgentLoop.run_turn`)。文件：`daemon/group_room.py`、`daemon/group_orchestrator.py`、
-      `utils/paths.py(rooms_dir)`、`tests/unit/test_group_orchestrator.py`。
-- [ ] **G2** WS 接入(`app.py agent_ws` 群聊分支) + 共享记忆接线 + `routers/rooms.py`
-- [ ] **G3** 前端群聊房间 UI(多讲者 transcript / @点名 / 参与者栏)
+- [x] **G1** 房间运行时：`GroupRoom` 模型 + `GroupRoomRegistry`(落盘 `~/.xmclaw/v2/rooms/`)。
+- [x] **G2** WS/路由接入 + 共享记忆接线 + `routers/rooms.py`。
+- [x] **G-重做** 统一编排内核 `RoomOrchestrator`（4 策略，按正确范式）：
+      ① `chat` AutoGen 式（共享历史 + LLM 选讲者 + 增量喂入，**不再清历史塞 blob**）；
+      ② `sequential` CrewAI 顺序接力；③ `supervisor` 主管 LLM 动态分派；
+      ④ `autonomous` Magentic-One 双台账 + 内循环 5 问 + 卡住重规划。
+      全部**限定房间参与者内**(修审计 #5)、结构化人格选择、明确终止、LLM 缺失优雅降级。
+      退役旧 `group_orchestrator.py`/`workflow_room.py`(按错范式)。
+      文件：`daemon/room_orchestrator.py`、`daemon/group_room.py(strategy 字段)`、
+      `daemon/routers/rooms.py`、`static/pages/Rooms.js(4 策略选择器)`、
+      `tests/unit/test_room_orchestrator.py(14)`、`tests/integration/test_rooms_router.py`。
+- [ ] **G3** 前端群聊房间 UI 打磨(多讲者 transcript / @点名 / 参与者栏)
 - [ ] **G4** 多 agent 控制面板(`pages/Agents.js` 升级)
-- [ ] **G5** 结构化人格(role/goal/backstory) + 终止/预算/死循环检测
+- [ ] **G5** 结构化人格(role/goal/backstory) config 落地 + 预算/死循环检测
 
 **Group 进度日志**
-2026-06-06: G1 落地 — 房间模型/注册表/编排器 + 4 项单测通过 (commit 待填)
+2026-06-06: G1 落地 — 房间模型/注册表/编排器 + 单测 (commit 待填)
+2026-06-06: G 重做 — 用户判错"逻辑跑偏"，调研 AutoGen/Magentic-One/CrewAI/LangGraph 真实
+  实现，重写为统一 `RoomOrchestrator`(4 策略)，修历史模型+参与者限定+真接 LLM 选讲/派活/
+  台账，退役旧两内核；28 测试通过 (commit 待填)
 
 ---
 

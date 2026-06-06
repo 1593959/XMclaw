@@ -28,29 +28,14 @@ class _FakeLoop:
         return _FakeResult(f"{self.agent_id}: 收到")
 
 
-class _FakeSwarmResult:
-    ok = True
-    result = "工作流完成：汇总结果"
-    assignments = {"t1": "main"}
-    completed = 1
-    failed = 0
-    timed_out = 0
-    elapsed_seconds = 0.5
-
-
-class _FakeSwarm:
-    async def dispatch(self, req):
-        return _FakeSwarmResult()
-
-
 def _build_app(tmp_path) -> FastAPI:
     app = FastAPI()
     app.include_router(rooms_router.router)
     # 隔离的房间注册表（tmp 目录）
     app.state.rooms = GroupRoomRegistry(registry_dir=tmp_path)
-    app.state.agent = _FakeLoop("main")        # chat /run 用
+    app.state.agent = _FakeLoop("main")        # 单参与者 /run 用
     app.state.agents = None
-    app.state.swarm_orchestrator = _FakeSwarm()  # workflow /run 用
+    app.state.bus = None                         # 无 bus → 编排不推元事件
     app.state.memory_v2_service = object()       # 共享记忆 sentinel
     return app
 
@@ -88,6 +73,8 @@ def test_chat_room_run(tmp_path) -> None:
 
 
 def test_workflow_room_run(tmp_path) -> None:
+    """workflow → autonomous 策略；无 LLM(fake loop)时优雅降级为顺序流水线，
+    仍**只在房间参与者内**跑（修审计 #5：不再派给全局所有 agent）。"""
     with TestClient(_build_app(tmp_path)) as c:
         c.post("/api/v2/rooms", json={
             "room_id": "wf1", "purpose": "做竞品分析", "participants": ["main"],
@@ -95,7 +82,19 @@ def test_workflow_room_run(tmp_path) -> None:
         })
         out = c.post("/api/v2/rooms/wf1/run", json={}).json()
         assert out["ok"] is True
-        assert out["result"] == "工作流完成：汇总结果"
+        assert out["strategy"] == "autonomous"
+        assert "main" in out["speakers"]  # 参与者内跑
+
+
+def test_sequential_room_run(tmp_path) -> None:
+    with TestClient(_build_app(tmp_path)) as c:
+        c.post("/api/v2/rooms", json={
+            "room_id": "seq1", "purpose": "接力任务", "participants": ["main"],
+            "strategy": "sequential",
+        })
+        out = c.post("/api/v2/rooms/seq1/run", json={}).json()
+        assert out["ok"] is True and out["strategy"] == "sequential"
+        assert out["speakers"] == ["main"]
 
 
 def test_run_unknown_room_404(tmp_path) -> None:

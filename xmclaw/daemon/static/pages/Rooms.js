@@ -28,10 +28,17 @@ function speakerColor(id) {
 function CreateRoomForm({ token, agents, onCreated }) {
   const [name, setName] = useState("");
   const [purpose, setPurpose] = useState("");
-  const [mode, setMode] = useState("workflow");
+  const [strategy, setStrategy] = useState("chat");
   const [picked, setPicked] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const toggle = (id) => setPicked((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  // 4 种编排策略（后端 RoomOrchestrator）
+  const STRATS = [
+    { id: "chat", label: "群聊", hint: "共享历史 + 主持人 LLM 选讲者（AutoGen）" },
+    { id: "sequential", label: "固定流水线", hint: "A→B→C 顺序接力（你预先排序）" },
+    { id: "supervisor", label: "主管派活", hint: "主管 LLM 按角色动态分派（CrewAI 分层）" },
+    { id: "autonomous", label: "目标驱动·自主", hint: "任务/进度台账 + 卡住重规划（Magentic-One）" },
+  ];
   const submit = async () => {
     if (!name.trim()) { toast.error("给房间起个名"); return; }
     if (picked.size === 0) { toast.error("至少选一个参与者 agent"); return; }
@@ -39,8 +46,9 @@ function CreateRoomForm({ token, agents, onCreated }) {
     try {
       const r = await apiPost("/api/v2/rooms", {
         name: name.trim(), purpose: purpose.trim(),
-        participants: [...picked], mode,
-        policy: mode === "chat" ? "supervisor" : "round_robin",
+        participants: [...picked], strategy,
+        // mode 仅用于旧前端渲染分支：chat 走对话视图，其余走结果视图。
+        mode: strategy === "chat" ? "chat" : "workflow",
       }, token);
       if (r.ok) { toast.success("房间已建"); setName(""); setPurpose(""); setPicked(new Set()); onCreated && onCreated(); }
       else toast.error(r.error || "建房失败");
@@ -52,11 +60,17 @@ function CreateRoomForm({ token, agents, onCreated }) {
       <summary class="xmc-mem-maint__summary">＋ 新建房间<span class="xmc-mem-maint__hint">多 agent 群聊 / 工作流</span></summary>
       <div style="display:flex;flex-direction:column;gap:8px;padding:10px 2px">
         <input class="xmc-h-input" placeholder="房间名（如：竞品分析组）" value=${name} onInput=${(e) => setName(e.target.value)} />
-        <textarea class="xmc-h-input" rows="2" placeholder="用途 / 目标（workflow 模式会作为编排目标拆解执行）" value=${purpose} onInput=${(e) => setPurpose(e.target.value)}></textarea>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span class="xi-readout__label">形态</span>
-          <button type="button" class=${"xmc-mem-seg" + (mode === "workflow" ? " is-active" : "")} onClick=${() => setMode("workflow")}>工作流编排</button>
-          <button type="button" class=${"xmc-mem-seg" + (mode === "chat" ? " is-active" : "")} onClick=${() => setMode("chat")}>群聊</button>
+        <textarea class="xmc-h-input" rows="2" placeholder="用途 / 目标（非群聊策略会作为编排目标拆解执行）" value=${purpose} onInput=${(e) => setPurpose(e.target.value)}></textarea>
+        <div>
+          <div class="xi-readout__label" style="margin-bottom:5px">编排策略</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${STRATS.map((s) => html`
+              <button type="button" key=${s.id} title=${s.hint}
+                class=${"xmc-mem-seg" + (strategy === s.id ? " is-active" : "")}
+                onClick=${() => setStrategy(s.id)}>${s.label}</button>
+            `)}
+          </div>
+          <div style="opacity:.6;font-size:.72rem;margin-top:4px">${(STRATS.find((s) => s.id === strategy) || {}).hint}</div>
         </div>
         <div>
           <div class="xi-readout__label" style="margin-bottom:5px">参与者（点选）</div>
