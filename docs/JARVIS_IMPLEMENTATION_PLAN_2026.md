@@ -441,7 +441,9 @@ fact 是少量原子知识单元（句子级）。
       L1 事实维护按钮收进 `⚙ 维护` 抽屉；事实按 bucket 分组折叠 + 矛盾/失效置顶
       高亮（`groupFacts`）。文件：`pages/Memory.js`、`pages/_panels/memory_facts_v2.js`、
       `styles/instrument.css`。
-- [ ] **M1.2** FactRow 仪表化（kind/scope/layer chip、conf 迷你条、改正改行内编辑）
+- [x] **M1.2** FactRow 仪表化：kind/scope/layer 做成 chip、conf 迷你条、证据
+      ×N、过期/矛盾高亮；**改正改为行内编辑**（textarea + Ctrl/⌘+Enter 保存，
+      替掉 window.prompt）。文件：`pages/_panels/memory_facts_v2.js` + `instrument.css`。
 - [ ] **M2** 后端 `/api/v2/memory/v2/overview` 聚合接口 + 前端单请求渲染
 - [ ] **M3** `MEMORY_RECALLED` 事件 + 对话流「💭 想起 N 条」召回卡（写/读对称）
 - [x] **M-fix1** 记忆污染根因：内部反思会话（goal-from-percept-/reflect:/

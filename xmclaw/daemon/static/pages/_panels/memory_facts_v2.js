@@ -231,101 +231,63 @@ function FactRow({
   // supersede chain.
   const isForgotten = fact.forgotten || fact.superseded_by === "__forgotten__";
   const isSuperseded = !isForgotten && Boolean(fact.superseded_by);
+  const isStale = fact.invalid_at != null && fact.invalid_at * 1000 < Date.now();
+  const dim = isForgotten || isSuperseded;
+  const conf = typeof fact.confidence === "number" ? fact.confidence : 0;
+  // M1.2 行内改正
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(fact.text);
+  const saveEdit = () => {
+    const t = (draft || "").trim();
+    setEditing(false);
+    if (t && t !== fact.text) onCorrect(fact, t);
+  };
   return html`
-    <article
-      class="xmc-mem-fact"
-      style=${
-        `display:flex;gap:.6rem;align-items:flex-start;padding:.6rem .8rem;`
-        + `border:1px solid var(--color-border);border-radius:6px;`
-        + `margin-bottom:.4rem;background:var(--xmc-bg-elev);`
-        + (isForgotten || isSuperseded ? "opacity:.55;" : "")
-      }
-    >
-      <span
-        class="xmc-mem-fact__kind-dot"
-        style=${`width:.5rem;height:.5rem;border-radius:50%;background:${color};flex-shrink:0;margin-top:.4rem`}
-        title=${fact.kind}
-      ></span>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:.92rem;line-height:1.5;word-break:break-word">
-          ${isForgotten || isSuperseded
-            ? html`<s>${fact.text}</s>`
-            : fact.text}
-        </div>
-        <div style="margin-top:.3rem;display:flex;gap:.8rem;font-size:.72rem;color:var(--xmc-fg-muted);flex-wrap:wrap">
-          <span><code>${fact.kind}</code> · <code>${fact.scope}</code></span>
-          ${fact.bucket
-            ? html`<span title="renders into persona MD bucket">→ <code>${fact.bucket}</code></span>`
-            : null}
-          <span>conf <strong>${fact.confidence.toFixed(2)}</strong></span>
-          <span>evidence <strong>${fact.evidence_count}</strong></span>
-          <span>layer ${fact.layer}</span>
-          <span>${tsStr}</span>
-          ${fact.source_event_id
-            ? html`<span title=${fact.source_event_id}>📍 来源 ${fact.source_event_id.slice(0, 18)}…</span>`
-            : null}
+    <article class=${"xmc-fact" + (dim ? " is-dim" : "") + (isStale ? " is-stale" : "")} data-kind=${fact.kind}>
+      <span class="xmc-fact__dot" style=${`--k:${color}`} title=${fact.kind}></span>
+      <div class="xmc-fact__main">
+        ${editing
+          ? html`
+              <textarea class="xmc-fact__edit" value=${draft}
+                onInput=${(e) => setDraft(e.target.value)}
+                onKeyDown=${(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) saveEdit(); if (e.key === "Escape") { setEditing(false); setDraft(fact.text); } }}
+                rows="2" autofocus />
+              <div class="xmc-fact__editbar">
+                <button type="button" class="xmc-h-btn xmc-h-btn--primary" onClick=${saveEdit}>保存改正</button>
+                <button type="button" class="xmc-h-btn" onClick=${() => { setEditing(false); setDraft(fact.text); }}>取消</button>
+                <span class="xmc-fact__edithint">Ctrl/⌘+Enter 保存 · Esc 取消 · 旧事实会被 superseded</span>
+              </div>
+            `
+          : html`<div class="xmc-fact__text">${dim ? html`<s>${fact.text}</s>` : fact.text}</div>`}
+        <div class="xmc-fact__meta">
+          <span class="xmc-fact__chip" data-c="kind">${fact.kind}</span>
+          <span class="xmc-fact__chip" data-c="scope">${fact.scope}</span>
+          <span class="xmc-fact__chip" data-c="layer">${fact.layer}</span>
+          ${fact.bucket ? html`<span class="xmc-fact__chip" data-c="bucket" title="渲染进 persona MD bucket">→ ${fact.bucket}</span>` : null}
+          <span class="xmc-fact__conf" title=${"置信度 " + conf.toFixed(2)}>
+            <span class="xmc-fact__confbar"><span style=${`width:${Math.round(conf * 100)}%`}></span></span>
+            ${conf.toFixed(2)}
+          </span>
+          <span class="xmc-fact__ev" title="证据次数">×${fact.evidence_count}</span>
+          <span class="xmc-fact__ts">${tsStr}</span>
+          ${fact.source_event_id ? html`<span class="xmc-fact__src" title=${fact.source_event_id}>📍 ${fact.source_event_id.slice(0, 16)}…</span>` : null}
         </div>
         ${fact.contradicts && fact.contradicts.length > 0
-          ? html`
-              <div style="margin-top:.25rem;font-size:.72rem;color:var(--color-destructive)">
-                ⚠ 与 ${fact.contradicts.length} 条事实矛盾
-              </div>
-            `
-          : null}
-        ${isForgotten
-          ? html`
-              <div style="margin-top:.25rem;font-size:.72rem;color:var(--color-warning,#c98a3a)">
-                🗑 已 forget — recall / persona render 跳过
-              </div>
-            `
-          : isSuperseded
-          ? html`
-              <div style="margin-top:.25rem;font-size:.72rem;color:var(--xmc-fg-muted)">
-                ↻ 已被 <code>${fact.superseded_by.slice(0, 18)}…</code> 替代
-              </div>
-            `
-          : null}
+          ? html`<div class="xmc-fact__warn">⚠ 与 ${fact.contradicts.length} 条事实矛盾</div>` : null}
+        ${isStale && !dim ? html`<div class="xmc-fact__warn xmc-fact__warn--stale">⏳ 已过期（invalid_at 已过）</div>` : null}
+        ${isForgotten ? html`<div class="xmc-fact__note">🗑 已 forget — recall / persona 跳过</div>`
+          : isSuperseded ? html`<div class="xmc-fact__note">↻ 已被 <code>${fact.superseded_by.slice(0, 16)}…</code> 替代</div>` : null}
       </div>
-      <div style="display:flex;gap:.3rem;flex-shrink:0;flex-wrap:wrap;max-width:160px;justify-content:flex-end">
-        <button
-          type="button"
-          class="xmc-h-btn"
-          onClick=${() => onSelect(fact.id)}
-          style="font-size:.72rem;padding:.25rem .55rem"
-          title="查看关系图"
-        >🔗</button>
-        ${(isForgotten || isSuperseded)
+      <div class="xmc-fact__actions">
+        <button type="button" class="xmc-fact__act" onClick=${() => onSelect(fact.id)} title="查看关系图">🔗</button>
+        ${dim
           ? html`
-              <button
-                type="button"
-                class="xmc-h-btn"
-                onClick=${() => onRestore(fact)}
-                style="font-size:.72rem;padding:.25rem .55rem"
-                title="撤销 forget/supersede，让 fact 重新生效"
-              >↺ 恢复</button>
-              <button
-                type="button"
-                class="xmc-h-btn"
-                onClick=${() => onHardDelete(fact)}
-                style="font-size:.72rem;padding:.25rem .55rem"
-                title="彻底删除（不可恢复）"
-              >🗑×</button>
+              <button type="button" class="xmc-fact__act" onClick=${() => onRestore(fact)} title="撤销 forget/supersede">↺</button>
+              <button type="button" class="xmc-fact__act xmc-fact__act--danger" onClick=${() => onHardDelete(fact)} title="彻底删除（不可恢复）">🗑×</button>
             `
           : html`
-              <button
-                type="button"
-                class="xmc-h-btn"
-                onClick=${() => onCorrect(fact)}
-                style="font-size:.72rem;padding:.25rem .55rem"
-                title="改正这条事实（旧的标 superseded，新的写入）"
-              >✎ 改正</button>
-              <button
-                type="button"
-                class="xmc-h-btn"
-                onClick=${() => onForget(fact)}
-                style="font-size:.72rem;padding:.25rem .55rem"
-                title="软删除（可恢复）"
-              >🗑</button>
+              <button type="button" class=${"xmc-fact__act" + (editing ? " is-on" : "")} onClick=${() => setEditing((v) => !v)} title="行内改正（旧的标 superseded）">✎</button>
+              <button type="button" class="xmc-fact__act" onClick=${() => onForget(fact)} title="软删除（可恢复）">🗑</button>
             `}
       </div>
     </article>
@@ -553,13 +515,16 @@ export function FactsV2Tab({ token }) {
     }
   };
 
-  const handleCorrect = async (fact) => {
-    const newText = window.prompt(
-      `改正 "${fact.text.slice(0, 80)}"\n\n` +
-      `输入正确的事实文本（新事实会标 high-confidence, ` +
-      `旧事实会被 superseded）：`,
-      fact.text,
-    );
+  const handleCorrect = async (fact, providedText) => {
+    // M1.2：优先用行内编辑传入的文本；未传则退回 window.prompt（兼容）。
+    const newText = providedText !== undefined && providedText !== null
+      ? providedText
+      : window.prompt(
+          `改正 "${fact.text.slice(0, 80)}"\n\n` +
+          `输入正确的事实文本（新事实会标 high-confidence, ` +
+          `旧事实会被 superseded）：`,
+          fact.text,
+        );
     if (!newText || newText.trim() === "" || newText.trim() === fact.text) return;
     try {
       const r = await apiPost(

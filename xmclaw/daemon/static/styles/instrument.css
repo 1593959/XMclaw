@@ -683,3 +683,65 @@
   color: var(--nb-error, #F87171);
   background: color-mix(in srgb, var(--nb-error, #F87171) 16%, transparent);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   14. FactRow 仪表化（Phase M1.2）：chip + conf 迷你条 + 行内改正
+   ═══════════════════════════════════════════════════════════════════════ */
+.xmc-fact {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 9px 12px; margin-bottom: 6px;
+  border: 1px solid var(--xi-panel-border); border-radius: 7px;
+  background: var(--xi-panel-bg);
+  border-left: 2px solid color-mix(in srgb, var(--xi-tick) 30%, transparent);
+  transition: border-color .15s, transform .1s;
+}
+.xmc-fact:hover { border-color: var(--nb-border-accent, rgba(139,92,246,.4)); }
+.xmc-fact.is-dim { opacity: .5; }
+.xmc-fact.is-stale { border-left-color: #F59E0B; }
+.xmc-fact__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--k, #888); flex: 0 0 auto; margin-top: 6px; box-shadow: 0 0 6px var(--k, #888); }
+.xmc-fact__main { flex: 1; min-width: 0; }
+.xmc-fact__text { font-size: .92rem; line-height: 1.55; word-break: break-word; color: var(--nb-fg-primary, #F1F5F9); }
+
+/* meta 行 */
+.xmc-fact__meta { margin-top: 5px; display: flex; gap: 7px; align-items: center; flex-wrap: wrap; font-family: var(--xi-mono); font-size: .68rem; color: var(--nb-fg-muted, #64748B); }
+.xmc-fact__chip {
+  padding: 1px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--nb-fg-muted, #64748B) 14%, transparent);
+  color: var(--nb-fg-secondary, #94A3B8);
+}
+.xmc-fact__chip[data-c="kind"]  { color: var(--nb-cyan-light, #67E8F9); background: color-mix(in srgb, var(--nb-cyan,#06B6D4) 13%, transparent); }
+.xmc-fact__chip[data-c="layer"] { color: var(--nb-accent-light, #A78BFA); background: color-mix(in srgb, var(--nb-accent,#8B5CF6) 13%, transparent); }
+.xmc-fact__chip[data-c="bucket"]{ color: #FBBF24; background: rgba(245,158,11,.12); }
+.xmc-fact__conf { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+.xmc-fact__confbar { width: 38px; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--nb-fg-muted,#64748B) 18%, transparent); overflow: hidden; }
+.xmc-fact__confbar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--nb-accent,#8B5CF6), var(--nb-cyan,#06B6D4)); }
+.xmc-fact__ev { font-variant-numeric: tabular-nums; }
+.xmc-fact__ts { opacity: .65; }
+.xmc-fact__src { opacity: .65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.xmc-fact__warn { margin-top: 4px; font-size: .7rem; color: var(--nb-error, #F87171); font-family: var(--xi-mono); }
+.xmc-fact__warn--stale { color: #F59E0B; }
+.xmc-fact__note { margin-top: 4px; font-size: .7rem; color: var(--nb-fg-muted, #64748B); font-family: var(--xi-mono); }
+
+/* 行内编辑 */
+.xmc-fact__edit {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  background: var(--nb-bg-input, #0E1420); color: var(--nb-fg-primary, #F1F5F9);
+  border: 1px solid var(--nb-accent, #8B5CF6); border-radius: 6px;
+  padding: 7px 9px; font-family: inherit; font-size: .9rem; line-height: 1.5; outline: none;
+  box-shadow: 0 0 0 3px var(--nb-accent-glow, rgba(139,92,246,.25));
+}
+.xmc-fact__editbar { display: flex; align-items: center; gap: 7px; margin-top: 6px; flex-wrap: wrap; }
+.xmc-fact__editbar .xmc-h-btn { font-size: .72rem; padding: 4px 10px; }
+.xmc-fact__edithint { font-size: .62rem; color: var(--nb-fg-muted, #64748B); font-family: var(--xi-mono); }
+
+/* 操作按钮 */
+.xmc-fact__actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.xmc-fact__act {
+  width: 28px; height: 28px; display: grid; place-items: center;
+  border: 1px solid var(--xi-panel-border); border-radius: 6px;
+  background: transparent; color: var(--nb-fg-secondary, #94A3B8);
+  cursor: pointer; font-size: 13px; transition: all .15s;
+}
+.xmc-fact__act:hover { border-color: var(--nb-border-accent, rgba(139,92,246,.5)); color: var(--nb-fg-primary, #F1F5F9); background: rgba(148,163,184,.06); }
+.xmc-fact__act.is-on { border-color: var(--nb-accent, #8B5CF6); color: var(--nb-accent-light, #A78BFA); }
+.xmc-fact__act--danger:hover { border-color: var(--nb-error, #F87171); color: var(--nb-error, #F87171); }
