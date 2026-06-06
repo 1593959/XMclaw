@@ -82,6 +82,8 @@ class FactKind(str, Enum):
     # naming pass; auto-cleaned when its member facts are all
     # superseded or deleted.
     TOPIC = "topic"
+    # Wave-2 fix (2026-06-06): cross-session task continuity.
+    TASK_CONTEXT = "task_context"
 
 
 class FactScope(str, Enum):
@@ -193,6 +195,10 @@ class Fact:
     # those through here too). Empty string = unbucketed, doesn't
     # render to any persona file.
     bucket: str = ""
+    # Wave-1 fix (2026-06-06): provenance field for audit / defense.
+    # Values: "user_confirmed" | "auto_extract_regex" | "auto_extract_llm"
+    # | "tool_invoked" | "manual_ui" | "persona_file" | "unknown"
+    provenance: str = "unknown"
     ts_first: float = field(default_factory=time.time)
     ts_last: float = field(default_factory=time.time)
     # Phase 8 ⑩ (2026-05-30): bi-temporal validity, Zep/Graphiti
@@ -256,6 +262,7 @@ class Fact:
             # (orphaned, invisible to the next system prompt). Now
             # explicitly serialized.
             "bucket": self.bucket,
+            "provenance": self.provenance,
             "ts_first": self.ts_first,
             "ts_last": self.ts_last,
             "valid_at": self.valid_at,
@@ -278,6 +285,7 @@ class Fact:
             superseded_by=d.get("superseded_by"),
             layer=d.get("layer", "working"),
             bucket=str(d.get("bucket") or ""),
+            provenance=str(d.get("provenance") or "unknown"),
             ts_first=float(d.get("ts_first") or time.time()),
             ts_last=float(d.get("ts_last") or time.time()),
             valid_at=(

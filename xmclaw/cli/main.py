@@ -1034,6 +1034,135 @@ def memory_stats(
         )
 
 
+@memory_app.command("export")
+def memory_export(
+    output: str = typer.Option(
+        "", "--output", "-o",
+        help="Output JSONL file path. Default: memory_backup_YYYY-MM-DD.jsonl",
+    ),
+    db: str = typer.Option(
+        "",
+        help="Path to the memory DB. Empty = daemon default.",
+    ),
+) -> None:
+    """Export all facts + relations to a JSONL backup file.
+
+    Wave-4 (M-6): cross-instance sync primitive. The output is a
+    JSONL file where each line is a fact or relation with a ``_type``
+    discriminator. Import via ``xmclaw memory import``.
+    """
+    import asyncio as _asyncio
+    from pathlib import Path as _Path
+
+    from xmclaw.memory.v2.backend_lancedb import (
+        LanceDBGraphBackend,
+        LanceDBVectorBackend,
+    )
+    from xmclaw.memory.v2.models import Fact, Relation
+    from xmclaw.memory.v2.sync import FileExportSync
+
+    db_path = _Path(db) if db else _default_memory_db_path().parent
+    out_path = output or f"memory_backup_{__import__('datetime').date.today().isoformat()}.jsonl"
+
+    vec = LanceDBVectorBackend(str(db_path))
+    graph = LanceDBGraphBackend(str(db_path))
+    sync = FileExportSync(out_path)
+
+    async def _do_export() -> None:
+        await vec._ensure_ready()
+        await graph._ensure_ready()
+        all_facts = await vec.search(None, where=None, limit=100_000)
+        # Relations: pull all via graph backend
+        all_rels: list[Relation] = []
+        for fact in all_facts:
+            pairs = await graph.neighbors(fact.id, max_hops=1)
+            for rel, _ in pairs:
+                if rel.id not in {r.id for r in all_rels}:
+                    all_rels.append(rel)
+        ok = await sync.push(all_facts, all_rels)
+        if ok:
+            typer.echo(f"Exported {len(all_facts)} facts, {len(all_rels)} relations → {out_path}")
+        else:
+            typer.echo(f"Export failed — see logs", err=True)
+            raise typer.Exit(code=1)
+
+    try:
+        _asyncio.run(_do_export())
+    finally:
+        _asyncio.run(vec.close())
+        _asyncio.run(graph.close())
+
+
+@memory_app.command("import")
+def memory_import(
+    input_path: str = typer.Argument(
+        ..., help="JSONL file to import (from xmclaw memory export).",
+    ),
+    db: str = typer.Option(
+        "",
+        help="Path to the memory DB. Empty = daemon default.",
+    ),
+    merge_strategy: str = typer.Option(
+        "upsert", "--merge",
+        help="Merge strategy: upsert (default) or skip-existing.",
+    ),
+) -> None:
+    """Import facts + relations from a JSONL backup file.
+
+    Wave-4 (M-6): cross-instance sync primitive. Reads the JSONL
+    produced by ``xmclaw memory export`` and upserts into the local
+    LanceDB store. Duplicate facts (same id) are overwritten.
+    """
+    import asyncio as _asyncio
+    from pathlib import Path as _Path
+
+    from xmclaw.memory.v2.backend_lancedb import (
+        LanceDBGraphBackend,
+        LanceDBVectorBackend,
+    )
+    from xmclaw.memory.v2.models import Fact, Relation
+    from xmclaw.memory.v2.sync import FileExportSync
+
+    db_path = _Path(db) if db else _default_memory_db_path().parent
+    in_path = _Path(input_path)
+    if not in_path.exists():
+        typer.echo(f"File not found: {in_path}", err=True)
+        raise typer.Exit(code=1)
+
+    vec = LanceDBVectorBackend(str(db_path))
+    graph = LanceDBGraphBackend(str(db_path))
+    sync = FileExportSync(str(in_path))
+
+    async def _do_import() -> None:
+        await vec._ensure_ready()
+        await graph._ensure_ready()
+        fact_dicts, rel_dicts = await sync.pull(since=0.0)
+        facts = [Fact.from_dict(d) for d in fact_dicts]
+        rels = [Relation.from_dict(d) for d in rel_dicts]
+        if merge_strategy == "skip-existing":
+            existing_ids = {f.id for f in facts}
+            # Check which already exist
+            skip_count = 0
+            filtered_facts = []
+            for f in facts:
+                existing = await vec.get(f.id)
+                if existing is not None:
+                    skip_count += 1
+                    continue
+                filtered_facts.append(f)
+            facts = filtered_facts
+            typer.echo(f"Skipped {skip_count} existing facts")
+        await vec.upsert(facts)
+        await graph.add_relations(rels)
+        typer.echo(f"Imported {len(facts)} facts, {len(rels)} relations from {in_path}")
+
+    try:
+        _asyncio.run(_do_import())
+    finally:
+        _asyncio.run(vec.close())
+        _asyncio.run(graph.close())
+
+
 # B-31: list of provider IDs the wizard accepts. Kept in sync with the
 # router's _AVAILABLE_PROVIDERS catalogue + factory.py wiring. Adding a
 # new provider here without wiring its factory branch is a no-op until

@@ -145,6 +145,34 @@ class MemoryCurator:
         # LLM is optional; the dedup/prune passes are pure-Python.
         # Contradiction + crystallization passes (next commit) use it.
         self._llm = llm or getattr(service, "_llm", None)
+        # Wave-2 fix (2026-06-06): incremental watermark (ts_last of
+        # newest fact processed). Survives daemon restarts.
+        self._last_curate_ts: float = 0.0
+        self._load_watermark()
+
+    def _load_watermark(self) -> None:
+        """Load last_curate_ts from disk."""
+        import json, os
+        from xmclaw.utils.paths import get_data_dir
+        path = os.path.join(get_data_dir(), "memory_curator_watermark.json")
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                    self._last_curate_ts = float(data.get("last_curate_ts", 0.0))
+            except Exception:
+                self._last_curate_ts = 0.0
+
+    def _save_watermark(self, ts: float) -> None:
+        """Persist watermark to disk."""
+        import json, os
+        from xmclaw.utils.paths import get_data_dir
+        path = os.path.join(get_data_dir(), "memory_curator_watermark.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"last_curate_ts": ts}, f)
+        except Exception as exc:
+            _log.warning("curator.watermark_save_failed err=%s", exc)
 
     async def curate(
         self,
@@ -157,6 +185,7 @@ class MemoryCurator:
         do_contradict: bool = True,
         do_crystallize: bool = True,
         max_facts_per_scope: int = 2000,
+        min_changes_for_llm: int = 10,
     ) -> CurationReport:
         """Run the maintenance passes within ``time_budget_s``.
 
@@ -216,8 +245,22 @@ class MemoryCurator:
         elif not do_prune:
             report.passes_skipped.append("prune")
 
+        # Wave-2 fix (2026-06-06): incremental curation. Count facts
+        # changed since last watermark; skip expensive LLM passes when
+        # the change volume is below threshold.
+        changed_facts = await self._count_changed_since(self._last_curate_ts)
+        _log.info(
+            "curator.incremental changed_facts=%d watermark=%.0f",
+            changed_facts, self._last_curate_ts,
+        )
+
         # ── Pass 3: contradiction detection (LLM) ─────────────────
-        if do_contradict and self._llm is not None and not _over_budget():
+        if (
+            do_contradict
+            and self._llm is not None
+            and not _over_budget()
+            and changed_facts >= min_changes_for_llm
+        ):
             report.passes_run.append("contradict")
             for sc in target_scopes:
                 if _over_budget():
@@ -233,11 +276,21 @@ class MemoryCurator:
                     _log.warning(
                         "curator.contradict_failed scope=%s err=%s", sc, exc,
                     )
-        elif not do_contradict or self._llm is None:
+        else:
             report.passes_skipped.append("contradict")
+            if changed_facts < min_changes_for_llm:
+                _log.info(
+                    "curator.skip_contradict insufficient_changes=%d (< %d)",
+                    changed_facts, min_changes_for_llm,
+                )
 
         # ── Pass 4: semantic crystallization (LLM) ────────────────
-        if do_crystallize and self._llm is not None and not _over_budget():
+        if (
+            do_crystallize
+            and self._llm is not None
+            and not _over_budget()
+            and changed_facts >= min_changes_for_llm
+        ):
             report.passes_run.append("crystallize")
             for sc in target_scopes:
                 if _over_budget():
@@ -253,8 +306,13 @@ class MemoryCurator:
                     _log.warning(
                         "curator.crystallize_failed scope=%s err=%s", sc, exc,
                     )
-        elif not do_crystallize or self._llm is None:
+        else:
             report.passes_skipped.append("crystallize")
+            if changed_facts < min_changes_for_llm:
+                _log.info(
+                    "curator.skip_crystallize insufficient_changes=%d (< %d)",
+                    changed_facts, min_changes_for_llm,
+                )
 
         report.elapsed_s = time.perf_counter() - t0
         _log.info(
@@ -266,11 +324,24 @@ class MemoryCurator:
             report.crystallized, report.elapsed_s,
             report.budget_exhausted, dry_run,
         )
+        # Wave-2 fix: bump watermark after successful live run.
+        if not dry_run:
+            self._save_watermark(time.time())
         return report
 
-    # ── Pass implementations ──────────────────────────────────────
+    async def _count_changed_since(self, watermark: float) -> int:
+        """Count facts with ts_last > watermark."""
+        try:
+            all_recent = await self._svc.recall(
+                None, k=5000,
+                min_confidence=0.0, include_relations=False,
+                include_superseded=False,
+            )
+            return sum(1 for h in all_recent if h.fact.ts_last > watermark)
+        except Exception:
+            return 5000  # conservative: assume many changes
 
-    async def _dedup_scope_budgeted(
+    # ── Pass implementations ──────────────────────────────────────
         self,
         *,
         scope: str,

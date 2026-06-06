@@ -77,10 +77,10 @@ _DEFAULT_MIN_USER_MESSAGE_CHARS = 4   # 1-3 char turns ("ok", "?") → skip
 #
 # We don't have either of those yet. Until Phase 5 lands a proper
 # background prefetch / native FTS, the timeout is what protects
-# the turn. 1s is short enough that even a stalled embedding call
-# fails fast; the agent just sees no ``<recalled>`` block and
-# proceeds normally.
-_DEFAULT_TIMEOUT_S = 1.0
+# the turn. 1s was short enough that even a stalled embedding call
+# fails fast; raised to 3s in Wave-1 (2026-06-06) after real-world
+# observation that 1s kills legitimate large-store recalls.
+_DEFAULT_TIMEOUT_S = 3.0
 
 
 # ─── Recall ─────────────────────────────────────────────────────────
@@ -110,8 +110,10 @@ async def recall_for_message(
     min_similarity: float = _DEFAULT_MIN_SIMILARITY,
     exclude_buckets: Sequence[str] | None = None,
     min_user_message_chars: int = _DEFAULT_MIN_USER_MESSAGE_CHARS,
-    use_hybrid: bool = False,
+    use_hybrid: bool = True,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
+    query_embedding: list[float] | None = None,
+    valid_at: float | None = None,   # Wave-4: point-in-time query
 ) -> list[RecalledFact]:
     """Run a similarity recall against the LanceDB store.
 
@@ -121,13 +123,13 @@ async def recall_for_message(
       - the underlying ``recall`` call fails or times out
       - no candidate clears ``min_similarity``
 
-    ``use_hybrid`` (default False): when True AND the service exposes
-    ``recall_hybrid``, fuse vector + BM25. Default False because
-    today's hybrid path is **Python-side** (per-query BM25 rebuild
-    over a corpus scan) — it can stall on large stores. Wait for
-    Phase 5 / LanceDB native FTS before flipping this on by default.
+    ``use_hybrid`` (default True): when True AND the service exposes
+    ``recall_hybrid``, fuse vector + BM25. Default True since Wave-2
+    (2026-06-06); the BM25 path is guarded by ``rank_bm25`` availability
+    and a 500ms per-call deadline so large stores fall back to pure
+    vector automatically.
 
-    ``timeout_s`` (default 1.0s): hard wall-clock cap. This runs on
+    ``timeout_s`` (default 3.0s): hard wall-clock cap. This runs on
     the user-turn critical path BEFORE the LLM call — every
     millisecond delays the agent's reply. A timeout returns ``[]``
     just like any other failure; the turn proceeds without a
@@ -151,8 +153,6 @@ async def recall_for_message(
         if exclude_buckets is not None
         else _DEFAULT_EXCLUDE_BUCKETS
     )
-    # We over-fetch the recall a little (2× k) so post-filter on
-    # bucket exclusion still gives us a decent top-K candidate pool.
     # Hybrid path is opt-in via ``use_hybrid`` — default sticks with
     # plain vector recall because the current hybrid implementation
     # rebuilds a Python BM25 index per query (the chat-b09a3ad4
@@ -163,15 +163,27 @@ async def recall_for_message(
             k=max(k * 2, 16),
             min_confidence=0.0,
             include_superseded=False,
+            valid_at=valid_at,   # Wave-4: point-in-time
         )
     else:
-        recall_coro = memory_service.recall(
-            text,
-            k=max(k * 2, 16),
-            min_confidence=0.0,
-            include_relations=False,
-            include_superseded=False,
-        )
+        if query_embedding is not None:
+            recall_coro = memory_service.recall(
+                query_embedding,
+                k=max(k * 2, 16),
+                min_confidence=0.0,
+                include_relations=False,
+                include_superseded=False,
+                valid_at=valid_at,   # Wave-4: point-in-time
+            )
+        else:
+            recall_coro = memory_service.recall(
+                text,
+                k=max(k * 2, 16),
+                min_confidence=0.0,
+                include_relations=False,
+                include_superseded=False,
+                valid_at=valid_at,   # Wave-4: point-in-time
+            )
 
     try:
         hits = await _asyncio.wait_for(recall_coro, timeout=timeout_s)
@@ -182,6 +194,16 @@ async def recall_for_message(
                 "auto_recall.timeout after=%.1fs (turn proceeds without recall)",
                 timeout_s,
             )
+            # Wave-1 fix: emit metric for monitoring dashboard
+            try:
+                from xmclaw.core.bus.events import emit_event
+                emit_event("metric", {
+                    "name": "recall_timeout_count",
+                    "value": 1,
+                    "tags": {"timeout_s": str(timeout_s)},
+                })
+            except Exception:
+                pass
         except Exception:  # noqa: BLE001
             pass
         return []

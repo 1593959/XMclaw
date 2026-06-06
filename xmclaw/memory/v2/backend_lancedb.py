@@ -79,6 +79,8 @@ def _build_fact_schema(dim: int):
         # > 0). See models.py:Fact.valid_at / invalid_at.
         valid_at: float
         invalid_at: float
+        # Wave-1 fix (2026-06-06): provenance for audit / defense.
+        provenance: str
 
     return FactRecord
 
@@ -122,6 +124,7 @@ def _fact_to_record(fact: Fact, dim: int) -> dict[str, Any]:
         "ts_last": fact.ts_last,
         "valid_at": fact.valid_at or 0.0,
         "invalid_at": fact.invalid_at or 0.0,
+        "provenance": fact.provenance or "unknown",
     }
 
 
@@ -154,6 +157,8 @@ def _record_to_fact(row: dict[str, Any]) -> Fact:
             float(row["invalid_at"])
             if row.get("invalid_at") not in (None, 0, 0.0) else None
         ),
+        # Wave-1 fix: provenance field. Absent on legacy rows → "unknown".
+        provenance=str(row.get("provenance") or "unknown"),
     )
 
 
@@ -226,7 +231,64 @@ class LanceDBVectorBackend:
         # (Rust I/O never yields back to Python asyncio).  Once we see
         # a lance error we permanently short-circuit this backend so the
         # daemon stays responsive and falls back to V1 memory.
+        # Wave-4 fix (2026-06-06): transient error retry before marking
+        # permanently corrupted.
         self._corrupted: bool = False
+        self._transient_failures: int = 0
+        self._MAX_TRANSIENT_RETRIES: int = 3
+
+    def _is_transient_lance_error(self, exc: RuntimeError) -> bool:
+        """Distinguish recoverable errors from permanent corruption."""
+        msg = str(exc).lower()
+        transient_signatures = [
+            "resource temporarily unavailable",
+            "file is locked",
+            "no space left",
+            "permission denied",
+            "device or resource busy",
+        ]
+        return any(sig in msg for sig in transient_signatures)
+
+    async def attempt_repair(self) -> bool:
+        """Try lance.dataset.cleanup() or table recovery."""
+        if not self._corrupted:
+            return True
+        try:
+            import lancedb
+            db = await lancedb.connect_async(self._db_path)
+            for name in await db.table_names():
+                tbl = await db.open_table(name)
+                await tbl.cleanup_old_versions()
+            self._corrupted = False
+            self._transient_failures = 0
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).info("lancedb.repair_success")
+            return True
+        except Exception as exc:
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error("lancedb.repair_failed err=%s", exc)
+            return False
+
+    def _handle_lance_error(self, exc: RuntimeError, context: str) -> None:
+        """Wave-4: transient retry before permanent corruption."""
+        if "lance error" not in str(exc).lower():
+            raise
+        if self._is_transient_lance_error(exc):
+            self._transient_failures += 1
+            if self._transient_failures < self._MAX_TRANSIENT_RETRIES:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "lancedb.transient_retry attempt=%d/%d context=%s err=%s",
+                    self._transient_failures, self._MAX_TRANSIENT_RETRIES,
+                    context, exc,
+                )
+                return  # caller may retry
+        # Permanent corruption or exhausted retries
+        self._corrupted = True
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).error(
+            "lancedb.permanent_corruption context=%s err=%s", context, exc,
+        )
 
     async def _ensure_ready(self) -> None:
         if self._corrupted:
@@ -262,16 +324,16 @@ class LanceDBVectorBackend:
                         self._table_name, schema=self._schema_cls,
                     )
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.corrupted path=%s err=%s — "
-                    "backend short-circuited, V2 memory disabled",
-                    self._db_path, exc,
-                )
-                return
-            raise
+            self._handle_lance_error(exc, "ensure_ready")
+            if not self._corrupted:
+                return  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.corrupted path=%s err=%s — "
+                "backend short-circuited, V2 memory disabled",
+                self._db_path, exc,
+            )
+            return
 
     async def _maybe_add_missing_columns(self) -> None:
         """Add columns that the code-side schema declares but the
@@ -378,15 +440,15 @@ class LanceDBVectorBackend:
             )
             return len(rows)
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.corrupted_upsert err=%s — disabling V2 backend",
-                    exc,
-                )
-                return 0
-            raise
+            self._handle_lance_error(exc, "upsert")
+            if not self._corrupted:
+                return 0  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.corrupted_upsert err=%s — disabling V2 backend",
+                exc,
+            )
+            return 0
 
     async def search(
         self,
@@ -435,15 +497,15 @@ class LanceDBVectorBackend:
             rows = await builder.limit(limit).to_list()
             return [_record_to_fact(r) for r in rows[:limit]]
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.corrupted_search err=%s — disabling V2 backend",
-                    exc,
-                )
-                return []
-            raise
+            self._handle_lance_error(exc, "search")
+            if not self._corrupted:
+                return []  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.corrupted_search err=%s — disabling V2 backend",
+                exc,
+            )
+            return []
 
     async def delete(self, where: str) -> int:
         if self._corrupted:
@@ -458,15 +520,15 @@ class LanceDBVectorBackend:
             after = await self._table.count_rows()
             return max(0, before - after)
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.corrupted_delete err=%s — disabling V2 backend",
-                    exc,
-                )
-                return 0
-            raise
+            self._handle_lance_error(exc, "delete")
+            if not self._corrupted:
+                return 0  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.corrupted_delete err=%s — disabling V2 backend",
+                exc,
+            )
+            return 0
 
     async def count(self, where: str | None = None) -> int:
         if self._corrupted:
@@ -481,15 +543,15 @@ class LanceDBVectorBackend:
                 return len(rows)
             return await self._table.count_rows()
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.corrupted_count err=%s — disabling V2 backend",
-                    exc,
-                )
-                return 0
-            raise
+            self._handle_lance_error(exc, "count")
+            if not self._corrupted:
+                return 0  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.corrupted_count err=%s — disabling V2 backend",
+                exc,
+            )
+            return 0
 
     async def get(self, fact_id: str) -> Fact | None:
         if self._corrupted:
@@ -505,15 +567,15 @@ class LanceDBVectorBackend:
                 return None
             return _record_to_fact(rows[0])
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.corrupted_get err=%s — disabling V2 backend",
-                    exc,
-                )
-                return None
-            raise
+            self._handle_lance_error(exc, "get")
+            if not self._corrupted:
+                return None  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.corrupted_get err=%s — disabling V2 backend",
+                exc,
+            )
+            return None
 
     async def close(self) -> None:
         # LanceDB async connection has no explicit close API yet;
@@ -570,16 +632,16 @@ class LanceDBGraphBackend:
                         self._table_name, schema=self._schema_cls,
                     )
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.graph_corrupted path=%s err=%s — "
-                    "backend short-circuited",
-                    self._db_path, exc,
-                )
-                return
-            raise
+            self._handle_lance_error(exc, "graph_ensure_ready")
+            if not self._corrupted:
+                return  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted path=%s err=%s — "
+                "backend short-circuited",
+                self._db_path, exc,
+            )
+            return
 
     # ── Protocol surface ────────────────────────────────────────
 
@@ -604,15 +666,15 @@ class LanceDBGraphBackend:
             )
             return len(rels)
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.graph_corrupted_add err=%s — disabling",
-                    exc,
-                )
-                return 0
-            raise
+            self._handle_lance_error(exc, "graph_add")
+            if not self._corrupted:
+                return 0  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted_add err=%s — disabling",
+                exc,
+            )
+            return 0
 
     async def remove_relation(self, rel_id: str) -> None:
         if self._corrupted:
@@ -625,15 +687,15 @@ class LanceDBGraphBackend:
         try:
             await self._table.delete(f"id = '{safe}'")
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.graph_corrupted_remove err=%s — disabling",
-                    exc,
-                )
-                return
-            raise
+            self._handle_lance_error(exc, "graph_remove")
+            if not self._corrupted:
+                return  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted_remove err=%s — disabling",
+                exc,
+            )
+            return
 
     async def neighbors(
         self,
@@ -674,15 +736,15 @@ class LanceDBGraphBackend:
                 frontier = next_frontier
             return out
         except RuntimeError as exc:
-            if "lance error" in str(exc).lower():
-                self._corrupted = True
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).error(
-                    "lancedb.graph_corrupted_neighbors err=%s — disabling",
-                    exc,
-                )
-                return []
-            raise
+            self._handle_lance_error(exc, "graph_neighbors")
+            if not self._corrupted:
+                return []  # transient — caller may retry
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted_neighbors err=%s — disabling",
+                exc,
+            )
+            return []
 
     async def find_related(
         self,
