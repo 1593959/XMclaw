@@ -153,7 +153,7 @@ class MemoryCurator:
     def _load_watermark(self) -> None:
         """Load last_curate_ts from disk."""
         import json, os
-        from xmclaw.utils.paths import get_data_dir
+        from xmclaw.utils.paths import data_dir as get_data_dir
         path = os.path.join(get_data_dir(), "memory_curator_watermark.json")
         if os.path.exists(path):
             try:
@@ -166,7 +166,7 @@ class MemoryCurator:
     def _save_watermark(self, ts: float) -> None:
         """Persist watermark to disk."""
         import json, os
-        from xmclaw.utils.paths import get_data_dir
+        from xmclaw.utils.paths import data_dir as get_data_dir
         path = os.path.join(get_data_dir(), "memory_curator_watermark.json")
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -249,9 +249,14 @@ class MemoryCurator:
         # changed since last watermark; skip expensive LLM passes when
         # the change volume is below threshold.
         changed_facts = await self._count_changed_since(self._last_curate_ts)
+        # 首次整理（watermark 还没建立，如全新库 / 首跑）：增量门槛不适用，
+        # 该把整库过一遍。否则一个从没整理过的库会因"变更数 < 阈值"被永远跳过
+        # LLM 矛盾/结晶两道（Wave-2 门槛的边缘 bug）。
+        _first_run = self._last_curate_ts <= 0.0
+        _llm_gate_open = _first_run or changed_facts >= min_changes_for_llm
         _log.info(
-            "curator.incremental changed_facts=%d watermark=%.0f",
-            changed_facts, self._last_curate_ts,
+            "curator.incremental changed_facts=%d watermark=%.0f first_run=%s",
+            changed_facts, self._last_curate_ts, _first_run,
         )
 
         # ── Pass 3: contradiction detection (LLM) ─────────────────
@@ -259,7 +264,7 @@ class MemoryCurator:
             do_contradict
             and self._llm is not None
             and not _over_budget()
-            and changed_facts >= min_changes_for_llm
+            and _llm_gate_open
         ):
             report.passes_run.append("contradict")
             for sc in target_scopes:
@@ -289,7 +294,7 @@ class MemoryCurator:
             do_crystallize
             and self._llm is not None
             and not _over_budget()
-            and changed_facts >= min_changes_for_llm
+            and _llm_gate_open
         ):
             report.passes_run.append("crystallize")
             for sc in target_scopes:
@@ -342,6 +347,7 @@ class MemoryCurator:
             return 5000  # conservative: assume many changes
 
     # ── Pass implementations ──────────────────────────────────────
+    async def _dedup_scope_budgeted(
         self,
         *,
         scope: str,

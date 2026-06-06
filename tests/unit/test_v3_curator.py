@@ -21,6 +21,19 @@ from xmclaw.memory.v2 import (
 from xmclaw.memory.v2.curator import CurationReport, MemoryCurator
 
 
+@pytest.fixture(autouse=True)
+def _isolate_curator_watermark(tmp_path, monkeypatch):
+    """每个 curator 测试用独立 data dir。
+
+    2026-06-07：curator 的增量 watermark 落盘在 ``data_dir()`` 下。没有隔离时：
+    ① 读到用户真机 ``~/.xmclaw`` 的 watermark → first_run=False；② 同一进程里
+    先跑的 non-dry-run 测试写了 watermark，污染后跑的测试。两者都会让"变更数 < 10"
+    门槛误跳过 LLM 矛盾/结晶两道。每测一个 tmp data dir 即可根治。
+    """
+    monkeypatch.setenv("XMC_DATA_DIR", str(tmp_path))
+    yield
+
+
 class _FakeLLM:
     """Returns a pre-baked JSON response for every complete() call."""
 
