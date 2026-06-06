@@ -728,6 +728,12 @@ async def list_facts(
         # every other fact that happens to be vec-close.
         keyword_only=bool(q),
         include_superseded=include_superseded,
+        # supersede() 同时盖 invalid_at（Phase 8 ⑩）；recall 的时间有效性
+        # 过滤独立于 include_superseded。若只放开 superseded 而不放开
+        # invalidated，被 supersede 的行会被时间过滤再次丢掉 → include_
+        # superseded=true 仍只返回 survivor。显示 superseded 即应连带显示
+        # 这些被时间标记失效的行，故一并放开。
+        include_invalidated=include_superseded,
     )
 
     return {
