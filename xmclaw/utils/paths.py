@@ -131,6 +131,16 @@ def agents_registry_dir() -> Path:
     return v2_workspace_dir() / "agents"
 
 
+def rooms_dir() -> Path:
+    """Group-chat room registry — ``<data>/v2/rooms/*.json``.
+
+    多 agent 群聊房间的持久化目录（peer of :func:`agents_registry_dir`）。
+    每个房间一个 ``<room_id>.json``，存 participants / purpose / policy 等。
+    GroupRoomRegistry 在这里建/删/列房间，daemon 启动时 rehydrate。
+    """
+    return v2_workspace_dir() / "rooms"
+
+
 def evolution_dir() -> Path:
     """Per-agent evolution audit trail — ``<data>/v2/evolution/<agent_id>/``.
 

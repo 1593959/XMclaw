@@ -904,30 +904,57 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         """Compute dynamic LLM timeout based on turn complexity.
 
         Capped at ``self._llm_timeout_s`` (default 300s) so explicit
-        user config always wins as the hard upper bound.
+        user config always wins as the hard upper bound. This is the
+        per-LLM-call wall-clock — NOT the whole turn (a multi-hop turn
+        makes many calls, each gets this budget).
 
-        Tiers:
-          * Simple conversation (no tools, no images, msg < 50 chars): 30s
-          * Standard tool chain (tools available, no images): 60s
-          * Vision-heavy (any image / screenshot attachment): 120s
-          * Extreme / complex multi-step: fallback to the configured upper bound
+        2026-06-05 redesign — the previous tiering had a fatal flaw:
+        ``tool_count > 0`` short-circuited to 60s, and in XMclaw almost
+        EVERY turn has tools available, so the "complex → full budget"
+        branch was unreachable. A reasoning model (K2.6 etc.) chewing
+        on a genuinely hard task ("拉 432 个技能 ID 按命名空间分类")
+        thinks well past 60s and got aborted mid-stream with
+        "exceeded 60s wall-clock". Tool *availability* is the wrong
+        complexity signal — having tools makes a turn MORE likely to be
+        long, not less.
+
+        New signal: short, simple-looking messages get a trimmed budget
+        so a "你好" doesn't reserve 300s; everything else (long prompts,
+        explicit work verbs, or images) gets the full configured bound.
+        ``tool_count`` is intentionally NOT used to *lower* the budget.
+
+        Tiers (each capped at the configured upper bound):
+          * Vision-heavy (any image attachment): 120s
+          * Trivially short message (< 50 chars, no work verbs): 60s
+          * Everything else: full configured bound (default 300s)
         """
         msg = (user_message or "").strip()
         msg_len = len(msg)
 
-        # Vision-heavy: any image attachment gets 120s
+        # Vision-heavy: image decoding + reasoning is slower, but bounded.
         if has_image:
             return min(120.0, self._llm_timeout_s)
 
-        # Simple conversation: no tools, short message
-        if tool_count == 0 and msg_len < 50:
-            return min(30.0, self._llm_timeout_s)
+        # Heuristic: does this look like real work (vs. a greeting)?
+        # Work verbs / task markers => never trim, even if the message
+        # is short ("分析这个", "fix the bug", "重构 X").
+        _work_markers = (
+            "分析", "整理", "分类", "重构", "实现", "修复", "生成", "总结",
+            "对比", "查", "搜", "写", "改", "列", "拉", "导出", "扫描", "审计",
+            "analyze", "refactor", "implement", "fix", "generate", "summar",
+            "compare", "search", "list", "export", "scan", "audit", "build",
+            "debug", "review", "explain", "find", "extract",
+        )
+        _looks_like_work = any(m in msg.lower() for m in _work_markers)
 
-        # Standard tool chain: tools available, no images
-        if tool_count > 0 and not has_image:
+        # Trivially short and not obviously a task: trim so a bare
+        # greeting doesn't reserve the full budget.
+        if msg_len < 50 and not _looks_like_work:
             return min(60.0, self._llm_timeout_s)
 
-        # Extreme / complex cases: fall back to the configured upper bound
+        # Everything else — anything that looks like real work, or any
+        # non-trivial prompt — gets the full configured wall-clock.
+        # Tool availability deliberately does NOT cap this (the old bug).
         return self._llm_timeout_s
 
     async def run_turn(

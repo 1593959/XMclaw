@@ -464,7 +464,27 @@ fact 是少量原子知识单元（句子级）。
       加 `_is_internal_session` 门）+ `tests/unit/test_v2_post_sampling_hooks.py`。
 - [ ] **M4**（stretch）召回管线收敛为 `MemoryRecallPipeline`（只重组不改语义）
 
-**进度日志**
+#### 1.4.5 Group — 多 Agent 群聊聊天室（编排工作流）
+
+> **状态**: 🟡 进行中 (2026-06-06 起)。调研见 `docs/audit/MULTI_AGENT_GROUPCHAT_RESEARCH_2026.md`，
+> 计划见 plan 文件 buzzing-twirling-blossom。复用现有多 agent 运行时，只补"群聊房间"层。
+
+- [x] **G1** 房间运行时：`GroupRoom` 模型 + `GroupRoomRegistry`(落盘 `~/.xmclaw/v2/rooms/`) +
+      `GroupOrchestrator`(选讲者循环：round_robin / supervisor-LLM；无状态回合复用
+      `AgentLoop.run_turn`)。文件：`daemon/group_room.py`、`daemon/group_orchestrator.py`、
+      `utils/paths.py(rooms_dir)`、`tests/unit/test_group_orchestrator.py`。
+- [ ] **G2** WS 接入(`app.py agent_ws` 群聊分支) + 共享记忆接线 + `routers/rooms.py`
+- [ ] **G3** 前端群聊房间 UI(多讲者 transcript / @点名 / 参与者栏)
+- [ ] **G4** 多 agent 控制面板(`pages/Agents.js` 升级)
+- [ ] **G5** 结构化人格(role/goal/backstory) + 终止/预算/死循环检测
+
+**Group 进度日志**
+2026-06-06: G1 落地 — 房间模型/注册表/编排器 + 4 项单测通过 (commit 待填)
+
+---
+
+#### 1.4.4 进度日志（接上）
+
 2026-06-05: M1 落地 — 标签分组 + 维护抽屉 + bucket 分组置顶 (commit 81c5e3f)
 2026-06-06: 后台任务面板折叠重复条目 ×N (commit 4504f5c)
 2026-06-06: M-fix1 — 内部反思会话跳过记忆抽取，断掉污染根因 (commit 待填)
