@@ -136,6 +136,7 @@ export const NAV_GROUPS = [
       { path: "/cognition",   label: "认知",     icon: "Eye" },
       { path: "/memory",      label: "记忆",     icon: "Database" },
       { path: "/agents",      label: "代理",     icon: "Users" },
+      { path: "/rooms",       label: "群聊房间", icon: "MessageSquare" },
       { path: "/tools",       label: "工具",     icon: "Wrench" },
     ],
   },

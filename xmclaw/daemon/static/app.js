@@ -87,6 +87,7 @@ import { SettingsPage } from "./pages/Settings.js";
 // 不破坏书签 / 外部链接。
 import { ToolsPage } from "./pages/Tools.js";
 import { AgentsPage } from "./pages/Agents.js";
+import { RoomsPage } from "./pages/Rooms.js";
 import { ChannelsPage } from "./pages/Channels.js";
 import { MemoryPage } from "./pages/Memory.js";
 import { SecurityPage } from "./pages/Security.js";
@@ -499,6 +500,7 @@ const routes = {
   "/trace":     (state) => html`<${TracePage} token=${state.auth.token} />`,
   "/workspace": (state) => html`<${WorkspacePage} token=${state.auth.token} />`,
   "/agents": (state) => html`<${AgentsPage} token=${state.auth.token} />`,
+  "/rooms": (state) => html`<${RoomsPage} token=${state.auth.token} />`,
   "/channels": (state) => html`<${ChannelsPage} token=${state.auth.token} />`,
   "/skills": (state) => html`<${SkillsPage} token=${state.auth.token} />`,
   "/marketplace": (state) => html`<${MarketplacePage} token=${state.auth.token} />`,
