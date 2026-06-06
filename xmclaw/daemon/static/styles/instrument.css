@@ -782,3 +782,60 @@
   .nb-recall-memo { animation: mm-crystallize .42s cubic-bezier(.22,.9,.3,1.1) both; --mm-c: var(--rc); }
   .nb-recall-memo__spark { animation: mm-spark .6s ease both; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   16. 聊天流渲染打磨（2026-06-06）：补齐 markdown 缺口 + 排版收紧
+   ═══════════════════════════════════════════════════════════════════════ */
+/* —— 行内代码（原本完全无样式，看着和正文一样）—— */
+.nb-md code {
+  font-family: var(--nb-font-mono, ui-monospace, monospace);
+  font-size: .875em;
+  background: color-mix(in srgb, var(--nb-accent, #8B5CF6) 13%, transparent);
+  color: var(--nb-cyan-light, #67E8F9);
+  padding: 1.5px 6px; border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--nb-accent, #8B5CF6) 20%, transparent);
+  word-break: break-word;
+}
+/* —— 原生 pre 代码块（未走 CodeBlock 的 fenced）—— */
+.nb-md pre {
+  background: #0A0E16;
+  border: 1px solid var(--nb-border, rgba(148,163,184,.14));
+  border-left: 2px solid var(--nb-cyan, #06B6D4);
+  border-radius: 8px;
+  padding: 12px 14px; margin: 10px 0; overflow: auto;
+  font-family: var(--nb-font-mono, monospace); font-size: 12.5px; line-height: 1.6;
+}
+.nb-md pre code { background: none; border: 0; padding: 0; color: #CBD5E1; font-size: inherit; }
+
+/* —— 标题留白（让 h 之间会呼吸；首个不顶白）—— */
+.nb-md h1, .nb-md h2, .nb-md h3, .nb-md h4, .nb-md h5 { margin-top: 16px; }
+.nb-md > :first-child { margin-top: 0 !important; }
+
+/* —— 列表：嵌套缩进 + GitHub 式 task checkbox —— */
+.nb-md ul ul, .nb-md ul ol, .nb-md ol ul, .nb-md ol ol { margin: 4px 0 4px 2px; }
+.nb-md li > p { margin-bottom: 4px; }
+.nb-md li input[type="checkbox"] { margin-right: 6px; accent-color: var(--nb-accent, #8B5CF6); }
+.nb-md ul.contains-task-list, .nb-md li.task-list-item { list-style: none; }
+
+/* —— 链接：下划线更明确 + 外链不挤 —— */
+.nb-md a { text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, var(--nb-cyan, #06B6D4) 50%, transparent); }
+
+/* —— 表格：溢出可横滚，不撑破气泡 —— */
+.nb-md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+
+/* —— 引用块收一下 —— */
+.nb-md blockquote { color: var(--nb-fg-secondary, #94A3B8); }
+
+/* —— 气泡：长正文行宽不至于太长（可读性）+ 选区配色 —— */
+.nb-msg--assistant .nb-msg__bubble { max-width: 78ch; }
+.nb-msg__bubble ::selection { background: color-mix(in srgb, var(--nb-accent, #8B5CF6) 35%, transparent); }
+
+/* —— 同角色连发的消息收紧上下间距（靠 data-role 相邻判定）—— */
+.nb-msg[data-role="assistant"] + .nb-msg[data-role="assistant"],
+.nb-msg[data-role="user"] + .nb-msg[data-role="user"] { padding-top: 4px; }
+
+/* —— 名字/时间统一等宽小字（与仪表台呼应）—— */
+.nb-msg__time { font-family: var(--xi-mono); font-variant-numeric: tabular-nums; }
+
+/* —— 首屏空状态图标与标题间距收一下（避免飘）—— */
+.nb-empty h3 { margin-top: 10px; }
