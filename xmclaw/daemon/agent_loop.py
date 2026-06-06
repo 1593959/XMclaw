@@ -94,12 +94,52 @@ from xmclaw.daemon.hop_loop import HopLoopMixin
 #   * ``…:to:…``              — agent-to-agent delegation sessions
 _INTERNAL_SESSION_PREFIXES = ("autonomous:", "goal-from-percept-", "reflect:", "_system:")
 
-# 2026-06-06 上下文污染修复：统一召回(recall top-k)原来无脑取最近 k 条邻居，
-# 哪怕全部不相关也渲染进 <memory-recall> 注入用户消息 → 污染上下文、把真实
-# 意图淹没，LLM 对着噪音答非所问（用户报："需要" → "候着呢"）。加 cosine
-# 距离阈值：只保留足够相关的(距离 ≤ 此值，similarity≈1-distance≥0.6)；无相关
-# 时不注入、不发召回卡。
-_UNIFIED_RECALL_MAX_DIST = 0.40
+# 2026-06-06 上下文污染修复 + 2026-06-07 动态召回重做：
+# 统一召回原来无脑取**固定 k=5** 条最近邻、距离阈值 0.40 偏松 → 模糊查询("需要")
+# 也能凑满 5 条边缘项注入 <memory-recall>，污染上下文/任务；而真正相关的事实多于
+# 5 条时又被硬截断("5 条不够")。改成**相关性驱动的动态条数**：
+#   1. 从库里取更大候选池（_RECALL_POOL_K）再排序筛，而非只看 5 个邻居；
+#   2. 绝对阈值收紧到 0.34（≈ similarity ≥ 0.66）——挡掉边缘噪音；
+#   3. 相对带 _RECALL_REL_BAND：只保留与**最佳命中**接近的，最佳本身就弱(无强相关)
+#      → 一条都不留，宁缺毋滥；
+#   4. 动态上限 _RECALL_MAX_ITEMS（默认 8，>5）——相关的多就多给，少就少给，常态 0。
+# 三条阈值都可被 cognition.memory_v2.recall.* 覆盖（见 __init__ 读取）。
+_UNIFIED_RECALL_MAX_DIST = 0.34       # 绝对距离上限（越小越严）
+_UNIFIED_RECALL_REL_BAND = 0.10       # 相对带：dist ≤ best_dist + band 才留
+_UNIFIED_RECALL_MAX_ITEMS = 8         # 动态上限（0~此值）
+_UNIFIED_RECALL_POOL_K = 20           # 候选池大小（从库里取多少来排序筛）
+
+
+def select_recall_indices(
+    distances: "list[float]",
+    *,
+    max_dist: float = _UNIFIED_RECALL_MAX_DIST,
+    rel_band: float = _UNIFIED_RECALL_REL_BAND,
+    max_items: int = _UNIFIED_RECALL_MAX_ITEMS,
+) -> list[int]:
+    """从（按距离升序的）召回候选里挑出该注入的下标——相关性驱动的动态条数。
+
+    三道闸：① 绝对阈值 ``dist ≤ max_dist``；② 相对带 ``dist ≤ best+rel_band``
+    （best = 第一个过绝对阈值的距离，最佳命中弱则整体收紧甚至全空）；③ 动态上限
+    ``max_items``。返回保留的下标列表（可能为空 = 本轮不注入任何召回）。纯函数，可测。
+    """
+    kept: list[int] = []
+    best: float | None = None
+    for i, d in enumerate(distances):
+        try:
+            d = float(d)
+        except (TypeError, ValueError):
+            continue
+        if d > max_dist:
+            continue
+        if best is None:
+            best = d
+        elif d > best + rel_band:
+            continue
+        kept.append(i)
+        if len(kept) >= max_items:
+            break
+    return kept
 
 
 def _is_internal_session(session_id: str) -> bool:
@@ -510,6 +550,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # post-factory.
         self._memory_service = memory_service
         self._memory_recall_top_k = max(1, int(memory_recall_top_k))
+        # 动态召回调参（cognition.memory_v2.recall.*，缺省走模块常量）。
+        _rc = {}
+        try:
+            _cfg0 = getattr(self, "_cfg", None) or {}
+            _rc = (((_cfg0.get("cognition") or {}).get("memory_v2") or {}).get("recall") or {}) \
+                if isinstance(_cfg0, dict) else {}
+        except Exception:  # noqa: BLE001
+            _rc = {}
+        self._recall_max_dist = float(_rc.get("max_distance", _UNIFIED_RECALL_MAX_DIST))
+        self._recall_rel_band = float(_rc.get("relative_band", _UNIFIED_RECALL_REL_BAND))
+        self._recall_max_items = max(1, int(_rc.get("max_items", _UNIFIED_RECALL_MAX_ITEMS)))
+        self._recall_pool_k = max(self._recall_max_items,
+                                  int(_rc.get("pool_k", _UNIFIED_RECALL_POOL_K)))
         self._memory_extractor = memory_extractor
         # Jarvisification Phase 4: hand embedder to cognitive state so
         # semantic salience computation works.
@@ -2092,11 +2145,16 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     )
                 _recall_tasks.append(_no_render())
             # Task B: unified_recall (builds unified_recall_block)
+            # 取更大候选池（而非固定 k=5），下面按相关性动态筛选注入数量。
+            _recall_pool_k = max(
+                int(getattr(self, "_recall_pool_k", _UNIFIED_RECALL_POOL_K)),
+                int(self._memory_recall_top_k),
+            )
             _recall_tasks.append(
                 asyncio.wait_for(
                     memory_v2_service.recall(
                         query=_shared_query_emb if _shared_query_emb is not None else user_message,
-                        k=self._memory_recall_top_k,
+                        k=_recall_pool_k,
                     ),
                     timeout=min(1.5, _recall_budget_remaining),
                 )
@@ -2152,20 +2210,25 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     _ur_t0 = time.perf_counter()
                     rendered: list[str] = []
                     event_hits: list[dict[str, Any]] = []
-                    _ur_skipped = 0
-                    for h in _v2_hits_result:
+                    # 相关性驱动的动态筛选（阈值可被 config 覆盖）。
+                    _distances = [float(getattr(h, "distance", 0.0) or 0.0) for h in _v2_hits_result]
+                    _keep = set(select_recall_indices(
+                        _distances,
+                        max_dist=float(getattr(self, "_recall_max_dist", _UNIFIED_RECALL_MAX_DIST)),
+                        rel_band=float(getattr(self, "_recall_rel_band", _UNIFIED_RECALL_REL_BAND)),
+                        max_items=int(getattr(self, "_recall_max_items", _UNIFIED_RECALL_MAX_ITEMS)),
+                    ))
+                    _ur_skipped = len(_v2_hits_result) - len(_keep)
+                    for _i, h in enumerate(_v2_hits_result):
+                        if _i not in _keep:
+                            continue
                         fact = h.fact
                         kind = getattr(fact, "kind", "?")
                         scope = getattr(fact, "scope", "?")
                         layer = getattr(fact, "layer", "?")
                         text = getattr(fact, "text", "")
                         fid = getattr(fact, "id", "")
-                        dist = float(getattr(h, "distance", 0.0) or 0.0)
-                        # 相关性阈值：距离过大 = 不相关 → 不注入、不上卡，
-                        # 避免污染上下文导致答非所问。
-                        if dist > _UNIFIED_RECALL_MAX_DIST:
-                            _ur_skipped += 1
-                            continue
+                        dist = _distances[_i]
                         rendered.append(
                             f"[{kind}/{scope} | d={dist:.2f}] {text}"
                         )
