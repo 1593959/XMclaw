@@ -868,3 +868,33 @@
   overflow-wrap: anywhere;
 }
 .nb-codeblock-v2 { overflow: hidden !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   18. 聊天密度收紧（2026-06-06）：用户反馈「太散太大、信息太少」
+   收留白 / 头像 / 气泡内边距 / 字号行高 / markdown 间距 → 一屏装更多。
+   只动聊天流(.nb-stream / .nb-msg / .nb-md)，不影响别处。
+   ═══════════════════════════════════════════════════════════════════════ */
+.nb-stream { padding: 8px 16px !important; }
+.nb-msg { gap: 10px !important; padding: 6px 0 !important; }
+.nb-msg__avatar { width: 26px !important; height: 26px !important; font-size: 12px !important; border-radius: 7px !important; }
+.nb-msg__body { gap: 2px !important; }
+.nb-msg__bubble { padding: 8px 12px !important; font-size: 13.5px !important; line-height: 1.55 !important; border-radius: 10px !important; }
+.nb-msg__name { font-size: 10px !important; margin-bottom: 0 !important; }
+.nb-msg__time { font-size: 9.5px !important; }
+.nb-msg-actions { margin-top: 1px !important; }
+
+/* markdown 段落/列表/标题间距收紧 */
+.nb-md p { margin-bottom: 6px !important; line-height: 1.55 !important; }
+.nb-md li { margin-bottom: 2px !important; line-height: 1.5 !important; }
+.nb-md ul, .nb-md ol { margin: 6px 0 !important; padding-left: 1.3em !important; }
+.nb-md h1, .nb-md h2, .nb-md h3, .nb-md h4 { margin-top: 10px !important; margin-bottom: 5px !important; }
+.nb-md h1 { font-size: 17px !important; } .nb-md h2 { font-size: 15px !important; } .nb-md h3 { font-size: 14px !important; }
+.nb-md pre, .nb-md table { margin: 7px 0 !important; }
+
+/* 流内各类卡片间距收紧 */
+.nb-memory-memo, .nb-recall-memo, .nb-toolcard-wrap, .nb-skill-note { margin: 3px 0 !important; }
+.nb-toolcard__summary { padding: 5px 10px !important; }
+
+/* 同角色连发再贴近一点 */
+.nb-msg[data-role="assistant"] + .nb-msg[data-role="assistant"],
+.nb-msg[data-role="user"] + .nb-msg[data-role="user"] { padding-top: 2px !important; }
