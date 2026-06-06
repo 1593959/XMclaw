@@ -22,11 +22,11 @@ This rewrite splits the grader into TWO INDEPENDENT signal layers:
 
 * **Signal B — independent (``_signals.py``)**: at least one of
   :class:`UserFollowupSignal` / :class:`HoldoutTestSignal` /
-  :class:`CrossJudgeSignal` must fire. ``UserFollowupSignal`` is the
-  only signal fully implemented today; the other two are stubs the
-  abstraction is shaped around. Stubbed signals return ``None`` —
-  they do NOT lower the score; they just fail to satisfy Iron Rule
-  #1 on their own.
+  :class:`CrossJudgeSignal` must fire. ``UserFollowupSignal`` and
+  ``HoldoutTestSignal`` are fully implemented today;
+  ``CrossJudgeSignal`` is a stub the abstraction is shaped around.
+  Stubbed signals return ``None`` — they do NOT lower the score;
+  they just fail to satisfy Iron Rule #1 on their own.
 
 Combined score:
 

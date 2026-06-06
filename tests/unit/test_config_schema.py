@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from xmclaw.daemon.config_schema import validate_config, validate_or_raise
+from xmclaw.daemon.config_schema import lint_config, validate_config, validate_or_raise
 from xmclaw.daemon.factory import ConfigError
 
 
@@ -221,3 +221,73 @@ def test_validate_or_raise_raises_config_error_with_paths():
     assert "autonomy_level" in msg
     # The summary line tells the user there are N problems.
     assert "2 problems" in msg or "validation failed" in msg
+
+
+# ─── lint_config extended checks ──────────────────────────────────
+
+
+def test_lint_config_returns_config_errors():
+    """lint_config wraps every problem in a ConfigError instance."""
+    errs = lint_config({"gateway": {"port": 99999}})
+    assert all(isinstance(e, ConfigError) for e in errs)
+    assert any("gateway.port" in str(e) for e in errs)
+
+
+def test_lint_config_url_validation():
+    errs = lint_config({"llm": {"openai": {"base_url": "not-a-url"}}})
+    assert any("llm.openai.base_url" in str(e) and "URL" in str(e) for e in errs)
+
+
+def test_lint_config_model_whitelist():
+    errs = lint_config({"llm": {"openai": {"default_model": "totally-unknown-model-xyz"}}})
+    assert any("unknown model name" in str(e) for e in errs)
+
+
+def test_lint_config_valid_model_passes():
+    assert lint_config({"llm": {"openai": {"default_model": "gpt-4o"}}}) == []
+
+
+def test_lint_config_ollama_model_format():
+    assert lint_config({"llm": {"openai": {"default_model": "ollama/llama3"}}}) == []
+
+
+def test_lint_config_temperature_range():
+    errs = lint_config({"llm": {"openai": {"temperature": 3.0}}})
+    assert any("temperature" in str(e) and "[0.0, 2.0]" in str(e) for e in errs)
+
+
+def test_lint_config_max_tokens_range():
+    errs = lint_config({"llm": {"openai": {"max_tokens": 200000}}})
+    assert any("max_tokens" in str(e) and "[1, 128000]" in str(e) for e in errs)
+
+
+def test_lint_config_agent_max_hops_range():
+    errs = lint_config({"agent": {"max_hops": 0}})
+    assert any("agent.max_hops" in str(e) for e in errs)
+
+
+def test_lint_config_tools_invoke_timeout_range():
+    errs = lint_config({"tools": {"invoke_timeout_s": 0}})
+    assert any("tools.invoke_timeout_s" in str(e) for e in errs)
+
+
+def test_lint_config_memory_v2_dependency():
+    errs = lint_config({"cognition": {"memory_v2": {"enabled": True}}})
+    assert any("lancedb_uri" in str(e) for e in errs)
+
+
+def test_lint_config_swarm_dependency():
+    errs = lint_config({"swarm": {"enabled": True, "max_subagents": 1}})
+    assert any("swarm" in str(e) and "max_subagents" in str(e) for e in errs)
+
+
+def test_lint_config_evolution_local_model():
+    errs = lint_config({
+        "evolution": {"enabled": True},
+        "llm": {"openai": {"default_model": "ollama/llama-3-8b"}},
+    })
+    assert any("local small model" in str(e) for e in errs)
+
+
+def test_lint_config_empty_is_valid():
+    assert lint_config({}) == []

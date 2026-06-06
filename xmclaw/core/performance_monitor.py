@@ -9,7 +9,7 @@ Tracks:
 - LLM call latency
 """
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -48,6 +48,20 @@ class TokenUsage:
     cost_estimate: float = 0.0
 
 
+@dataclass
+class TurnMetrics:
+    """Per-turn performance metrics."""
+    prep_time_ms: float = 0.0
+    llm_time_ms: float = 0.0
+    tool_time_ms: float = 0.0
+    recall_time_ms: float = 0.0
+    compression_time_ms: float = 0.0
+    total_time_ms: float = 0.0
+    hop_count: int = 0
+    tool_call_count: int = 0
+    timestamp: float = 0.0
+
+
 class PerformanceMonitor:
     """Central performance monitoring system.
 
@@ -64,6 +78,7 @@ class PerformanceMonitor:
         self._llm_stats: dict[str, OperationStats] = defaultdict(OperationStats)
         self._tool_stats: dict[str, OperationStats] = defaultdict(OperationStats)
         self._agent_stats: dict[str, OperationStats] = defaultdict(OperationStats)
+        self._generic_stats: dict[str, OperationStats] = defaultdict(OperationStats)
 
         # Token usage by provider
         self._token_usage: dict[str, TokenUsage] = defaultdict(TokenUsage)
@@ -74,6 +89,9 @@ class PerformanceMonitor:
         # Conversation tracking
         self._active_conversations: dict[str, dict[str, Any]] = {}
         self._conversation_history: list[dict[str, Any]] = []
+
+        # Turn-level metrics (bounded ring buffer)
+        self._turn_metrics_history: deque[TurnMetrics] = deque(maxlen=1000)
 
         # Timing context
         self._timing_stack: list[tuple[str, float]] = []
@@ -297,6 +315,46 @@ class PerformanceMonitor:
             "total_turns": sum(turns),
         }
 
+    # ── Turn Metrics ──────────────────────────────────────────────────────────
+
+    def record_turn_metrics(self, metrics: TurnMetrics) -> None:
+        """Record a completed turn's metrics."""
+        self._turn_metrics_history.append(metrics)
+
+    def get_recent_metrics(self, n: int = 100) -> list[TurnMetrics]:
+        """Return the last *n* turn metrics (oldest first within the slice)."""
+        return list(self._turn_metrics_history)[-n:]
+
+    def get_avg_latency(self, window_s: float = 300) -> float:
+        """Average turn latency (total_time_ms) over the last *window_s* seconds."""
+        cutoff = time.time() - window_s
+        recent = [m for m in self._turn_metrics_history if m.timestamp >= cutoff]
+        if not recent:
+            return 0.0
+        return sum(m.total_time_ms for m in recent) / len(recent)
+
+    def get_p95_latency(self, window_s: float = 300) -> float:
+        """P95 turn latency (total_time_ms) over the last *window_s* seconds."""
+        cutoff = time.time() - window_s
+        recent = [m.total_time_ms for m in self._turn_metrics_history if m.timestamp >= cutoff]
+        if not recent:
+            return 0.0
+        recent.sort()
+        idx = int(len(recent) * 0.95)
+        return recent[min(idx, len(recent) - 1)]
+
+    def get_generic_stats(self, operation_type: str = "") -> dict[str, Any]:
+        """Get generic operation statistics."""
+        if operation_type:
+            stats = self._generic_stats.get(operation_type)
+            if stats:
+                return self._stats_to_dict("generic", operation_type, stats)
+            return {}
+        return {
+            key: self._stats_to_dict("generic", key, stats)
+            for key, stats in self._generic_stats.items()
+        }
+
     def get_full_report(self) -> dict[str, Any]:
         """Get a complete performance report."""
         return {
@@ -304,9 +362,11 @@ class PerformanceMonitor:
             "llm": self.get_llm_stats(),
             "tools": self.get_tool_stats(),
             "agents": self.get_agent_stats(),
+            "generic": self.get_generic_stats(),
             "tokens": self.get_token_usage(),
             "events": self.get_event_summary(),
             "conversations": self.get_conversation_summary(),
+            "turn_metrics_count": len(self._turn_metrics_history),
         }
 
     def _stats_to_dict(self, category: str, name: str, stats: OperationStats) -> dict[str, Any]:
@@ -328,9 +388,11 @@ class PerformanceMonitor:
         self._llm_stats.clear()
         self._tool_stats.clear()
         self._agent_stats.clear()
+        self._generic_stats.clear()
         self._token_usage.clear()
         self._event_counts.clear()
         self._conversation_history.clear()
+        self._turn_metrics_history.clear()
 
 
 class OperationTimer:
@@ -341,13 +403,14 @@ class OperationTimer:
         self.operation_type = operation_type
         self.start_time: float = 0
         self.success: bool = True
+        self.duration: float = 0.0
 
     def __enter__(self):
         self.start_time = time.time()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        duration = time.time() - self.start_time
+        self.duration = time.time() - self.start_time
         self.success = exc_type is None
 
         if self.operation_type.startswith("llm:"):
@@ -358,13 +421,24 @@ class OperationTimer:
                     provider, model = provider_model.split(":", 1)
                 else:
                     provider, model = "unknown", provider_model
-                self.monitor.track_llm_call(provider, model, duration, self.success)
+                self.monitor.track_llm_call(provider, model, self.duration, self.success)
         elif self.operation_type.startswith("tool:"):
             tool_name = self.operation_type.split(":", 1)[1]
-            self.monitor.track_tool_call(tool_name, duration, self.success)
+            self.monitor.track_tool_call(tool_name, self.duration, self.success)
         elif self.operation_type.startswith("agent:"):
             agent_id = self.operation_type.split(":", 1)[1]
-            self.monitor.track_agent_turn(agent_id, duration, [], self.success)
+            self.monitor.track_agent_turn(agent_id, self.duration, [], self.success)
+        else:
+            # Generic operation tracking (turn:*, hop:*, etc.)
+            stats = self.monitor._generic_stats[self.operation_type]
+            stats.count += 1
+            stats.total_duration += self.duration
+            stats.min_duration = min(stats.min_duration, self.duration)
+            stats.max_duration = max(stats.max_duration, self.duration)
+            stats.last_duration = self.duration
+            stats.last_timestamp = datetime.now().isoformat()
+            if not self.success:
+                stats.error_count += 1
 
         return False  # Don't suppress exceptions
 

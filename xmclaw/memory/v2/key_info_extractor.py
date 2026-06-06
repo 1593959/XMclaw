@@ -744,6 +744,7 @@ async def extract_and_remember(
                 confidence=key.confidence,
                 source_event_id=source_event_id,
                 bucket=bucket,
+                provenance="auto_extract_regex",
             )
             written.append(fact)
         except Exception as exc:  # noqa: BLE001 — never fail user turn

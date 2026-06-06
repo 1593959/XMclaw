@@ -188,4 +188,6 @@ class SkillManifest:
         for k, v in list(d.items()):
             if isinstance(v, tuple):
                 d[k] = list(v)
+            elif isinstance(v, SkillTrustLevel):
+                d[k] = v.value
         return d

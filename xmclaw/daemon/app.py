@@ -772,7 +772,7 @@ def create_app(
             _disclosure_mode = _skills_cfg.get(
                 "disclosure_mode", DISCLOSURE_MODE_AUTO,
             )
-            _unified_threshold = _skills_cfg.get("unified_threshold", 20)
+            _unified_threshold = _skills_cfg.get("unified_threshold", 500)
             _skill_tools = SkillToolProvider(
                 orchestrator.registry,
                 watcher=_watcher_ref,

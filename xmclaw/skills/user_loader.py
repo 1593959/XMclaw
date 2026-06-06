@@ -308,9 +308,10 @@ class UserSkillsLoader:
                 "no concrete Skill subclass found in reloaded module"
             )
         # Cross-check id matches dir name.
-        if getattr(instance, "id", None) != skill_id:
+        instance_id = getattr(instance, "id", None)
+        if instance_id != skill_id:
             return None, None, (
-                f"reloaded Skill.id {instance.id!r} != dir {skill_id!r}"
+                f"reloaded Skill.id {instance_id!r} != dir {skill_id!r}"
             )
         version = getattr(instance, "version", None)
         if not isinstance(version, int) or version < 1:
@@ -377,7 +378,13 @@ class UserSkillsLoader:
                 error=f"import failed: {type(exc).__name__}: {exc}",
             )
 
-        skill_instance = self._instantiate(module)
+        try:
+            skill_instance = self._instantiate(module)
+        except RuntimeError as exc:
+            return LoadResult(
+                skill_id=skill_id, ok=False, skill_path=skill_py,
+                error=str(exc),
+            )
         if skill_instance is None:
             return LoadResult(
                 skill_id=skill_id, ok=False, skill_path=skill_py,
@@ -615,7 +622,7 @@ class UserSkillsLoader:
         # / paths lands in G-05 / G-06.
         extras = _parse_skill_md_frontmatter_extras(body)
 
-        skill = MarkdownProcedureSkill(id=skill_id, body=body, version=1)
+        skill = MarkdownProcedureSkill(id=skill_id, body=body, version=1, skill_dir=str(skill_dir))
         manifest = SkillManifest(
             id=skill_id, version=1, created_by=created_by,
             title=title, description=description, triggers=triggers,
@@ -662,6 +669,7 @@ class UserSkillsLoader:
                 v_title, v_desc, v_triggers = _parse_skill_md_frontmatter(v_body)
                 v_skill = MarkdownProcedureSkill(
                     id=skill_id, body=v_body, version=ver,
+                    skill_dir=str(skill_dir),
                 )
                 v_manifest = SkillManifest(
                     id=skill_id, version=ver,
@@ -803,6 +811,11 @@ class UserSkillsLoader:
                 or False
             ),
             model=str(data.get("model", "") or ""),
+            permissions_enforced=bool(
+                data.get("permissions_enforced")
+                or data.get("permissionsEnforced")
+                or False
+            ),
         )
 
 
@@ -883,6 +896,12 @@ def _parse_skill_md_frontmatter(
             if not line or line.startswith("#"):
                 continue
             if ":" not in line:
+                continue
+            # Skip YAML block-scalar indicators (multi-line scalars
+            # like ``description: >`` or ``body: |``) — the flat-key
+            # scanner can't handle them and would otherwise record ``>``
+            # or ``|`` as the literal value.
+            if line.rstrip().endswith((">", "|", ">-", "|-", ">+", "|+")):
                 continue
             key, _, val = line.partition(":")
             key = key.strip().lower()
@@ -1020,7 +1039,7 @@ def _parse_skill_md_frontmatter_extras(body: str) -> dict[str, Any]:
 # materializer + auto-evo migrator. Returning None means "no
 # created_by line" — caller defaults to "user" for back-compat.
 _CREATED_BY_RE = re.compile(
-    r"^created_by:\s*['\"]?([a-zA-Z_][a-zA-Z_0-9]*)['\"]?\s*$",
+    r"^created_by:\s*['\"]?([a-zA-Z_][a-zA-Z_0-9\-]*)['\"]?\s*$",
     re.MULTILINE,
 )
 

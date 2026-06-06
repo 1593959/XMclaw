@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XMclaw — 聊天页 精修版（深空·爪 + 变体1 状态栏）</title>
+<style>
+:root{
+  --ink:#0a0b0f;--ink-2:#0f1118;--ink-3:#161a22;--panel:#0d0f15;
+  --line:#1d212b;--line-2:#2a2f3b;
+  --tx:#eaedf3;--tx-2:#969db0;--tx-3:#596172;
+  --lime:#c8ff4d;--lime-dim:#9bd23a;--cyan:#5de3ff;--violet:#9b7bff;--amber:#ffc24d;
+  --glow:0 0 18px rgba(200,255,77,.22);--cglow:0 0 16px rgba(93,227,255,.3);
+  --mono:"JetBrains Mono","SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--sans);background:var(--ink);color:var(--tx);font-size:14px;line-height:1.62;
+  -webkit-font-smoothing:antialiased;overflow:hidden}
+.app{display:grid;grid-template-columns:236px 1fr;height:100vh;
+  background:radial-gradient(900px 380px at 16% -12%,rgba(155,123,255,.09),transparent 60%),
+             radial-gradient(680px 300px at 95% 6%,rgba(93,227,255,.06),transparent 55%),var(--ink)}
+@keyframes breathe{0%,100%{opacity:.5;transform:scale(1)}50%{opacity:1;transform:scale(1.22)}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(93,227,255,.5)}70%{box-shadow:0 0 0 7px rgba(93,227,255,0)}100%{box-shadow:0 0 0 0 rgba(93,227,255,0)}}
+@keyframes sheen{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+@keyframes bardance{0%,100%{height:5px}50%{height:13px}}
+@keyframes dots{0%,20%{opacity:.2}50%{opacity:1}100%{opacity:.2}}
+@keyframes shimmer{0%{transform:translateX(-120%)}100%{transform:translateX(420%)}}
+@keyframes toastin{0%{opacity:0;transform:translateY(10px) scale(.98)}100%{opacity:1;transform:none}}
+.claw{display:inline-block;vertical-align:middle}
+
+/* ===== 侧栏 ===== */
+.side{background:linear-gradient(180deg,var(--panel),var(--ink));border-right:1px solid var(--line);
+  display:flex;flex-direction:column;padding:15px 11px}
+.brand{display:flex;align-items:center;gap:11px;padding:5px 7px 17px}
+.mk{width:30px;height:30px;display:grid;place-items:center;color:var(--lime);filter:drop-shadow(var(--glow))}
+.brand .nm{font-weight:800;font-size:15.5px;letter-spacing:1.6px;
+  background:linear-gradient(90deg,var(--lime),var(--cyan),var(--lime));background-size:200% auto;
+  -webkit-background-clip:text;background-clip:text;color:transparent;animation:sheen 7s linear infinite}
+.newbtn{margin:0 0 16px;display:flex;align-items:center;gap:9px;justify-content:center;width:100%;padding:10px;
+  border:1px solid var(--lime-dim);background:rgba(200,255,77,.05);border-radius:11px;color:var(--lime);
+  font-family:var(--mono);font-size:12px;letter-spacing:.6px;cursor:pointer;font-weight:600;transition:.15s}
+.newbtn:hover{background:rgba(200,255,77,.11);box-shadow:var(--glow)}
+.lbl{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:1.6px;color:var(--tx-3);
+  padding:11px 9px 7px;display:flex;align-items:center;gap:8px}
+.lbl::after{content:"";flex:1;height:1px;background:var(--line)}
+.chat{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;color:var(--tx-2);cursor:pointer;
+  font-size:13px;position:relative;border:1px solid transparent;transition:.13s}
+.chat:hover{background:var(--ink-3);color:var(--tx)}
+.chat .sd{width:6px;height:6px;border-radius:50%;background:var(--tx-3);flex:none}
+.chat.on{background:var(--ink-3);color:var(--tx);border-color:var(--line-2)}
+.chat.on .sd{background:var(--lime);box-shadow:var(--glow)}
+.chat.on::before{content:"";position:absolute;left:-1px;width:3px;height:18px;background:var(--lime);border-radius:3px;box-shadow:var(--glow)}
+.chat small{margin-left:auto;color:var(--tx-3);font-family:var(--mono);font-size:10px}
+.list{overflow:auto;flex:1;margin-top:2px;display:flex;flex-direction:column;gap:1px}
+.nav{display:flex;align-items:center;gap:11px;padding:8px 11px;border-radius:10px;color:var(--tx-2);cursor:pointer;font-size:13px}
+.nav:hover{background:var(--ink-3);color:var(--tx)}.nav.on{color:var(--lime);background:rgba(200,255,77,.04)}
+.foot{margin-top:9px;padding:11px 9px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px;
+  font-family:var(--mono);font-size:10.5px;color:var(--tx-2)}
+.orb{width:8px;height:8px;border-radius:50%;background:var(--lime);box-shadow:var(--glow);animation:breathe 2.6s ease-in-out infinite;flex:none}
+.orb.think{background:var(--cyan);box-shadow:var(--cglow);animation:pulse 1.1s infinite}
+
+/* ===== 主区 ===== */
+.main{display:flex;flex-direction:column;min-width:0;position:relative}
+.wm{position:absolute;right:-30px;top:120px;width:480px;opacity:.03;pointer-events:none;color:var(--lime)}
+.top{display:flex;align-items:center;justify-content:space-between;padding:17px 30px 0}
+.top .kick{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--tx-3);text-transform:uppercase;margin-bottom:4px}
+.top h1{font-size:19px;font-weight:750;letter-spacing:.2px}
+.top .r{display:flex;gap:8px}
+.tag{font-family:var(--mono);font-size:11px;color:var(--tx-2);border:1px solid var(--line-2);padding:6px 12px;border-radius:999px;cursor:pointer}
+.tag:hover{border-color:var(--lime-dim);color:var(--tx)}
+
+/* ── 招牌：变体1 状态栏 ── */
+.hud{display:flex;align-items:center;margin:14px 30px 0;border:1px solid var(--line);border-radius:12px;
+  background:linear-gradient(90deg,rgba(155,123,255,.05),rgba(93,227,255,.035));
+  font-family:var(--mono);font-size:11px;color:var(--tx-2)}
+.hud .seg{display:flex;align-items:center;gap:8px;padding:10px 17px;border-right:1px solid var(--line);cursor:pointer;transition:.13s}
+.hud .seg:last-child{border:0}.hud .seg:hover{background:rgba(255,255,255,.03);color:var(--tx)}
+.hud .seg b{color:var(--tx);font-weight:650}.hud .k{color:var(--lime)}.hud .cy{color:var(--cyan)}
+.hud .seg .l{color:var(--tx-3);font-size:9.5px;letter-spacing:1px;text-transform:uppercase}
+.spark{display:inline-flex;gap:2px;align-items:flex-end;height:13px}
+.spark i{width:3px;background:var(--cyan);border-radius:1px;display:block;animation:bardance 1.4s ease-in-out infinite}
+.spark i:nth-child(2){animation-delay:.2s}.spark i:nth-child(3){animation-delay:.45s}
+.spark i:nth-child(4){animation-delay:.1s}.spark i:nth-child(5){animation-delay:.55s}.spark i:nth-child(6){animation-delay:.3s}
+
+.stream{flex:1;overflow:auto;padding:18px 0 6px;position:relative;z-index:1}
+.turn{max-width:790px;margin:0 auto;padding:0 30px}
+.u{display:flex;justify-content:flex-end;margin:6px 0 2px}
+.u .card{max-width:80%;background:var(--ink-3);border:1px solid var(--line-2);border-right:2px solid var(--lime-dim);
+  border-radius:13px;padding:11px 16px;font-size:14.5px}
+.a{display:flex;gap:14px;padding:15px 0 4px}
+.a .av{width:30px;height:30px;border-radius:9px;border:1px solid var(--lime-dim);display:grid;place-items:center;
+  background:rgba(200,255,77,.04);box-shadow:var(--glow);color:var(--lime);flex:none}
+.a .av.think{border-color:var(--cyan);box-shadow:var(--cglow);color:var(--cyan);animation:pulse 1.2s infinite}
+.a .bd{min-width:0;flex:1;font-size:15px;line-height:1.76}
+.a .bd p{margin:0 0 11px}.a .bd p:last-child{margin:0}
+.nm2{font-family:var(--mono);font-size:10.5px;letter-spacing:1px;color:var(--lime);margin-bottom:6px}
+code.inl{font-family:var(--mono);font-size:12.5px;background:var(--ink-3);border:1px solid var(--line);padding:1px 7px;border-radius:6px;color:var(--cyan)}
+
+.tool{border:1px solid var(--line);border-left:2px solid var(--cyan);border-radius:10px;overflow:hidden;margin:11px 0;background:var(--ink-2)}
+.tool .h{display:flex;align-items:center;gap:9px;padding:9px 13px;font-family:var(--mono);font-size:12px;color:var(--tx-2);background:rgba(93,227,255,.03)}
+.tool .h b{color:var(--cyan)}.tool .h .ok{margin-left:auto;color:var(--lime);font-weight:600}
+.tool .h .run{margin-left:auto;color:var(--cyan);font-weight:600}
+.tool .b{padding:9px 13px;font-family:var(--mono);font-size:11.5px;color:var(--tx-3);white-space:pre-wrap}
+.tool.running{position:relative}
+.tool.running::after{content:"";position:absolute;top:0;left:0;height:2px;width:30%;
+  background:linear-gradient(90deg,transparent,var(--cyan),transparent);animation:shimmer 1.3s linear infinite}
+pre.code{background:#06070b;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;
+  font-family:var(--mono);font-size:12.5px;line-height:1.66;margin:11px 0;color:#cdd3de}
+.code .k{color:var(--violet)}.code .s{color:var(--lime-dim)}.code .f{color:var(--cyan)}.code .c{color:#4d5566}.code .n{color:#e5c07b}
+.thinking{color:var(--cyan);font-family:var(--mono);font-size:13px;display:flex;align-items:center;gap:4px}
+.thinking .dot{animation:dots 1.2s infinite}.thinking .dot:nth-child(2){animation-delay:.2s}.thinking .dot:nth-child(3){animation-delay:.4s}
+
+.sep{max-width:790px;margin:16px auto;padding:0 30px;display:flex;align-items:center;gap:14px;color:var(--tx-3)}
+.sep .scr{flex:1;height:13px;background:repeating-linear-gradient(115deg,transparent 0 9px,var(--line-2) 9px 10px);opacity:.7}
+.sep span{font-family:var(--mono);font-size:9.5px;letter-spacing:2px}
+
+.cw{padding:10px 30px 18px;background:linear-gradient(transparent,var(--ink) 42%);position:relative;z-index:2}
+.comp{max-width:790px;margin:0 auto;background:var(--ink-2);border:1px solid var(--line-2);border-radius:15px;
+  padding:8px 8px 8px 16px;display:flex;align-items:flex-end;gap:10px;transition:.18s}
+.comp:focus-within{border-color:var(--lime-dim);box-shadow:0 0 0 3px rgba(200,255,77,.07),var(--glow)}
+.comp textarea{flex:1;border:0;outline:0;resize:none;background:transparent;color:var(--tx);font-family:inherit;
+  font-size:15px;line-height:1.6;padding:8px 0;max-height:160px}
+.ct{width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:var(--ink-3);color:var(--tx-2);
+  cursor:pointer;display:grid;place-items:center;font-size:14px}
+.send{width:36px;height:36px;border-radius:11px;border:0;cursor:pointer;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--lime),var(--lime-dim));color:#0a0b0f;box-shadow:var(--glow)}
+.hint{max-width:790px;margin:8px auto 0;text-align:center;font-family:var(--mono);font-size:10px;color:var(--tx-3);letter-spacing:.5px;
+  display:flex;gap:14px;justify-content:center}.hint kbd{color:var(--tx-2)}
+
+/* 技能归纳浮层（记忆点：自进化身份） */
+.toast{position:absolute;right:26px;bottom:96px;z-index:5;display:flex;align-items:center;gap:11px;
+  background:var(--ink-2);border:1px solid var(--lime-dim);border-radius:13px;padding:12px 15px;max-width:320px;
+  box-shadow:0 12px 40px rgba(0,0,0,.5),var(--glow);animation:toastin .4s ease both}
+.toast .ti{width:30px;height:30px;border-radius:9px;background:rgba(200,255,77,.08);display:grid;place-items:center;color:var(--lime);flex:none}
+.toast .tt{font-size:12.5px;line-height:1.5}.toast .tt b{color:var(--lime)}
+.toast .tx{display:block;color:var(--tx-3);font-family:var(--mono);font-size:10px;margin-top:2px}
+.toast .act{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--lime);border:1px solid var(--lime-dim);
+  padding:5px 9px;border-radius:7px;cursor:pointer;flex:none}
+</style>
+</head>
+<body>
+<svg width="0" height="0"><defs><symbol id="cl" viewBox="0 0 24 24">
+  <g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+    <path d="M6 21 C7 13 7 7 5 3"/><path d="M12 22 C13 13 13 6 11 2"/><path d="M18 21 C19 13 19 7 17 3"/></g></symbol></defs></svg>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand"><span class="mk"><svg class="claw" width="26" height="26"><use href="#cl"/></svg></span><span class="nm">XMCLAW</span></div>
+    <button class="newbtn"><svg class="claw" width="13" height="13"><use href="#cl"/></svg> NEW SESSION</button>
+    <div class="lbl">最近</div>
+    <div class="list">
+      <div class="chat on"><span class="sd"></span>批量压缩图片<small>now</small></div>
+      <div class="chat"><span class="sd"></span>记忆系统调研<small>2h</small></div>
+      <div class="chat"><span class="sd"></span>技能自主调用<small>1d</small></div>
+      <div class="chat"><span class="sd"></span>部署脚本优化<small>Mon</small></div>
+      <div class="chat"><span class="sd"></span>前端 UI 重设计<small>Mon</small></div>
+    </div>
+    <div class="lbl">导航</div>
+    <div class="nav on">▸ 对话</div><div class="nav">▸ 记忆</div><div class="nav">▸ 技能</div><div class="nav">▸ 仪表盘</div>
+    <div class="foot"><span class="orb"></span> 本地 · 127.0.0.1:8766</div>
+  </aside>
+
+  <main class="main">
+    <span class="wm"><svg width="480" height="480"><use href="#cl"/></svg></span>
+    <div class="top">
+      <div><div class="kick">▸ 当前会话</div><h1>批量压缩图片</h1></div>
+      <div class="r"><span class="tag">⚡ Kimi K2.6</span><span class="tag">mem ✓</span><span class="tag">⋯</span></div>
+    </div>
+
+    <!-- 招牌状态栏 · 变体1 -->
+    <div class="hud">
+      <div class="seg"><span class="orb"></span><b>HEARTBEAT</b><span class="k">alive</span></div>
+      <div class="seg"><span class="l">记忆</span><b>1,916</b> facts</div>
+      <div class="seg"><span class="l">技能</span><b>404</b><span class="k">+1 候选</span></div>
+      <div class="seg"><span class="l">进化</span><span class="spark"><i style="height:5px"></i><i style="height:9px"></i><i style="height:6px"></i><i style="height:12px"></i><i style="height:8px"></i><i style="height:13px"></i></span></div>
+      <div class="seg" style="margin-left:auto"><span class="l">自主</span><b>50</b><span class="l">/100</span></div>
+    </div>
+
+    <div class="stream">
+      <div class="turn">
+        <div class="u"><div class="card">帮我把 <code class="inl">assets/</code> 下所有 PNG 压缩一下，生成一个压缩报告。</div></div>
+        <div class="a">
+          <div class="av"><svg class="claw" width="17" height="17"><use href="#cl"/></svg></div>
+          <div class="bd">
+            <div class="nm2">XMCLAW</div>
+            <p>先扫 <code class="inl">assets/</code> 的 PNG，逐个 pngquant 压缩，最后汇总报告。</p>
+            <div class="tool"><div class="h">⌁ <b>file_glob</b> <span style="color:var(--tx-3)">assets/**/*.png</span><span class="ok">✓ 42</span></div><div class="b">hero.png · icons/logo.png · bg/cover.png … (+39)</div></div>
+            <div class="tool"><div class="h">⌁ <b>bash</b> <span style="color:var(--tx-3)">pngquant --quality=65-85</span><span class="ok">✓ ok</span></div><div class="b">42 files · 18.4 MB → 6.1 MB (-66.8%)</div></div>
+            <p>压缩完成，报告摘要：</p>
+<pre class="code"><span class="c"># compress_report.md</span>
+<span class="k">total</span>   = <span class="n">42</span> files · <span class="f">18.4 MB</span> → <span class="s">6.1 MB</span>
+<span class="k">saved</span>   = <span class="s">12.3 MB</span> (<span class="n">66.8%</span>)
+<span class="k">largest</span> = hero.png  <span class="f">2.1 MB</span> → <span class="s">0.6 MB</span></pre>
+            <p>报告已写到 <code class="inl">assets/compress_report.md</code>。要把这套流程**结晶成一个技能**吗？</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="sep"><span>CLAW</span><div class="scr"></div><span>本轮</span></div>
+
+      <!-- 用户追问 + 正在执行中的 thinking 状态（"活着"记忆点） -->
+      <div class="turn">
+        <div class="u"><div class="card">好，结晶成技能，顺便也压一下 <code class="inl" style="color:var(--ink);background:var(--lime);border:0">docs/</code> 里的图。</div></div>
+        <div class="a">
+          <div class="av think"><svg class="claw" width="17" height="17"><use href="#cl"/></svg></div>
+          <div class="bd">
+            <div class="nm2" style="color:var(--cyan)">XMCLAW <span class="thinking">· thinking<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span></div>
+            <p style="color:var(--tx-2)">正在结晶技能并扫描 <code class="inl">docs/</code> …</p>
+            <div class="tool running"><div class="h">⌁ <b>file_glob</b> <span style="color:var(--tx-3)">docs/**/*.png</span><span class="run">运行中…</span></div><div class="b">scanning…</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 技能归纳浮层：自进化身份的记忆点 -->
+    <div class="toast">
+      <span class="ti"><svg class="claw" width="16" height="16"><use href="#cl"/></svg></span>
+      <div class="tt">我刚归纳了一个新技能候选 <b>batch-png-compress</b><span class="tx">未信任 · 待你审核</span></div>
+      <span class="act">查看</span>
+    </div>
+
+    <div class="cw">
+      <div class="comp">
+        <button class="ct">＋</button>
+        <textarea rows="1" placeholder="对 XMclaw 说…   ( / 命令 · @ 技能 )"></textarea>
+        <button class="send"><svg class="claw" width="16" height="16" style="color:#0a0b0f"><use href="#cl"/></svg></button>
+      </div>
+      <div class="hint"><span><kbd>Enter</kbd> 发送</span><span><kbd>Shift+Enter</kbd> 换行</span><span><kbd>⌘K</kbd> 命令面板</span></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

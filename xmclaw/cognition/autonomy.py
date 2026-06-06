@@ -70,6 +70,8 @@ _DEFAULT_RISK_BY_KIND: dict[str, RiskLevel] = {
     "file_delete":        "high",
     "shell_command":      "high",
     "send_message":       "high",     # email / slack / etc
+    # Sub-agent delegation
+    "delegate_task":      "medium",   # spawns parallel_subagents — bounded cost, recoverable
 }
 
 

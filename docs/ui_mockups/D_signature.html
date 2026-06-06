@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XMclaw — 样张 D · 深空·爪（招牌识别）</title>
+<style>
+/* ===== 样张 D：「深空·爪」=====
+   设计母题：claw 三道爪痕 + 电光柠檬招牌色 + "活着"的呼吸质感。
+   不走模板：助手发言不套气泡（编辑流），爪痕做分隔，顶部一条"心跳遥测"HUD。 */
+:root{
+  --ink:#0a0b0f; --ink-2:#101218; --ink-3:#171a22; --panel:#0e1016;
+  --line:#20242e; --line-2:#2b303c;
+  --tx:#e9ecf2; --tx-2:#99a0b0; --tx-3:#5b6373;
+  --lime:#c8ff4d; --lime-dim:#9bd23a; --cyan:#5de3ff; --violet:#9b7bff;
+  --glow:0 0 24px rgba(200,255,77,.25);
+  --mono:"JetBrains Mono","SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--sans);background:var(--ink);color:var(--tx);font-size:14px;line-height:1.62;
+  -webkit-font-smoothing:antialiased;overflow:hidden}
+.app{display:grid;grid-template-columns:240px 1fr;height:100vh;
+  background:
+    radial-gradient(900px 360px at 18% -10%,rgba(155,123,255,.10),transparent 60%),
+    radial-gradient(700px 320px at 92% 8%,rgba(93,227,255,.07),transparent 55%),
+    var(--ink)}
+
+/* claw 母题（SVG 复用） */
+.claw{display:inline-block;vertical-align:middle}
+@keyframes breathe{0%,100%{opacity:.55;transform:scale(1)}50%{opacity:1;transform:scale(1.12)}}
+@keyframes sheen{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+
+/* ---- 侧栏 ---- */
+.side{background:linear-gradient(180deg,var(--panel),var(--ink));border-right:1px solid var(--line);
+  display:flex;flex-direction:column;padding:14px 10px;position:relative}
+.brand{display:flex;align-items:center;gap:10px;padding:6px 8px 16px}
+.mark{width:30px;height:30px;display:grid;place-items:center;filter:drop-shadow(var(--glow))}
+.brand .nm{font-weight:800;font-size:16px;letter-spacing:1.5px}
+.brand .nm b{background:linear-gradient(90deg,var(--lime),var(--cyan),var(--lime));
+  background-size:200% auto;-webkit-background-clip:text;background-clip:text;color:transparent;animation:sheen 6s linear infinite}
+.newbtn{margin:0 0 14px;display:flex;align-items:center;gap:9px;justify-content:center;width:100%;padding:10px;
+  border:1px solid var(--lime-dim);background:rgba(200,255,77,.06);border-radius:11px;color:var(--lime);
+  font-family:var(--mono);font-size:12.5px;letter-spacing:.5px;cursor:pointer;font-weight:600}
+.newbtn:hover{background:rgba(200,255,77,.12);box-shadow:var(--glow)}
+.lbl{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:1.4px;color:var(--tx-3);
+  padding:10px 10px 6px;display:flex;align-items:center;gap:6px}
+.lbl::before{content:"";flex:0 0 10px;height:1px;background:var(--line-2)}
+.chat{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;color:var(--tx-2);cursor:pointer;
+  font-size:13px;border:1px solid transparent}
+.chat:hover{background:var(--ink-3);color:var(--tx)}
+.chat.on{background:var(--ink-3);color:var(--tx);border-color:var(--line-2)}
+.chat.on::before{content:"";width:3px;height:16px;background:var(--lime);border-radius:2px;box-shadow:var(--glow)}
+.chat small{margin-left:auto;color:var(--tx-3);font-family:var(--mono);font-size:10.5px}
+.list{overflow:auto;flex:1;margin-top:2px}
+.nav{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;color:var(--tx-2);cursor:pointer;font-size:13px}
+.nav:hover{background:var(--ink-3);color:var(--tx)}.nav.on{color:var(--lime)}
+.foot{margin-top:8px;padding:10px;border-top:1px solid var(--line);display:flex;align-items:center;gap:9px;
+  font-family:var(--mono);font-size:11px;color:var(--tx-2)}
+.orb{width:9px;height:9px;border-radius:50%;background:var(--lime);box-shadow:var(--glow);animation:breathe 2.6s ease-in-out infinite}
+
+/* ---- 主区 ---- */
+.main{display:flex;flex-direction:column;min-width:0;position:relative}
+/* 巨大爪痕水印 */
+.watermark{position:absolute;right:-40px;top:80px;width:520px;opacity:.035;pointer-events:none}
+.top{display:flex;align-items:center;justify-content:space-between;padding:16px 28px 0}
+.top h1{font-size:18px;font-weight:750;letter-spacing:.3px}
+.top .right{display:flex;gap:9px}
+.tag{font-family:var(--mono);font-size:11px;color:var(--tx-2);border:1px solid var(--line-2);
+  padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.02)}
+/* 招牌"心跳遥测"HUD */
+.hud{display:flex;gap:0;align-items:center;margin:12px 28px 0;padding:9px 16px;border:1px solid var(--line);
+  border-radius:12px;background:linear-gradient(90deg,rgba(155,123,255,.05),rgba(93,227,255,.04));
+  font-family:var(--mono);font-size:11px;color:var(--tx-2);overflow:hidden}
+.hud .it{display:flex;align-items:center;gap:7px;padding:0 16px;border-right:1px solid var(--line)}
+.hud .it:last-child{border:0}.hud .it b{color:var(--tx);font-weight:600}
+.hud .k{color:var(--lime)}
+.hud .spark{display:inline-flex;gap:2px;align-items:flex-end;height:14px}
+.hud .spark i{width:3px;background:var(--cyan);border-radius:1px;display:block;opacity:.8}
+
+.stream{flex:1;overflow:auto;padding:20px 0 8px;position:relative;z-index:1}
+.turn{max-width:780px;margin:0 auto;padding:0 28px}
+/* 用户：内嵌卡片，右侧细爪边 */
+.u{margin:6px 0 4px;display:flex;justify-content:flex-end}
+.u .card{max-width:80%;background:var(--ink-3);border:1px solid var(--line-2);border-right:2px solid var(--lime-dim);
+  border-radius:12px;padding:11px 15px;font-size:14.5px}
+/* 助手：编辑流，不套气泡 */
+.a{display:flex;gap:13px;padding:14px 0 4px}
+.a .who{flex:0 0 30px}
+.a .av{width:30px;height:30px;border-radius:9px;border:1px solid var(--lime-dim);display:grid;place-items:center;
+  background:rgba(200,255,77,.05);box-shadow:var(--glow)}
+.a .body{min-width:0;flex:1;font-size:15px;line-height:1.74}
+.a .body p{margin:0 0 11px}.a .body p:last-child{margin:0}
+.name{font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--lime);margin-bottom:5px}
+code.inl{font-family:var(--mono);font-size:12.5px;background:var(--ink-3);border:1px solid var(--line);
+  padding:1px 7px;border-radius:6px;color:var(--cyan)}
+/* 爪痕分隔 */
+.sep{max-width:780px;margin:18px auto;padding:0 28px;display:flex;align-items:center;gap:14px;color:var(--tx-3)}
+.sep .scr{flex:1;height:14px;background:
+  repeating-linear-gradient(115deg,transparent 0 9px,var(--line-2) 9px 10px)}
+.sep span{font-family:var(--mono);font-size:10px;letter-spacing:2px}
+
+/* 工具卡 */
+.tool{border:1px solid var(--line);border-left:2px solid var(--cyan);border-radius:10px;overflow:hidden;
+  margin:11px 0;background:var(--ink-2)}
+.tool .h{display:flex;align-items:center;gap:9px;padding:9px 13px;font-family:var(--mono);font-size:12px;color:var(--tx-2)}
+.tool .h b{color:var(--cyan)}.tool .h .ok{margin-left:auto;color:var(--lime);font-weight:600}
+.tool .b{padding:0 13px 11px;font-family:var(--mono);font-size:11.5px;color:var(--tx-3);white-space:pre-wrap}
+pre.code{background:#06070a;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;
+  font-family:var(--mono);font-size:12.5px;line-height:1.66;margin:11px 0;color:#cdd3de}
+.code .k{color:var(--violet)}.code .s{color:var(--lime-dim)}.code .f{color:var(--cyan)}.code .c{color:#4d5566}.code .n{color:#e5c07b}
+
+/* 输入区 */
+.cw{padding:10px 28px 20px;background:linear-gradient(transparent,var(--ink) 40%);position:relative;z-index:2}
+.comp{max-width:780px;margin:0 auto;background:var(--ink-2);border:1px solid var(--line-2);border-radius:15px;
+  padding:8px 8px 8px 16px;display:flex;align-items:flex-end;gap:10px;transition:.2s}
+.comp:focus-within{border-color:var(--lime-dim);box-shadow:0 0 0 3px rgba(200,255,77,.08),var(--glow)}
+.comp textarea{flex:1;border:0;outline:0;resize:none;background:transparent;color:var(--tx);font-family:inherit;
+  font-size:15px;line-height:1.6;padding:8px 0;max-height:160px}
+.comp .ct{width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:var(--ink-3);color:var(--tx-2);
+  cursor:pointer;display:grid;place-items:center;font-size:14px}
+.send{width:36px;height:36px;border-radius:11px;border:0;cursor:pointer;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--lime),var(--lime-dim));color:#0a0b0f;font-weight:800;font-size:15px;box-shadow:var(--glow)}
+.hint{max-width:780px;margin:8px auto 0;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--tx-3);letter-spacing:.5px}
+</style>
+</head>
+<body>
+<svg width="0" height="0"><defs>
+  <symbol id="clawmark" viewBox="0 0 24 24">
+    <g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+      <path d="M6 21 C7 13 7 7 5 3"/><path d="M12 22 C13 13 13 6 11 2"/><path d="M18 21 C19 13 19 7 17 3"/>
+    </g>
+  </symbol>
+</defs></svg>
+
+<div class="app">
+  <!-- 侧栏 -->
+  <aside class="side">
+    <div class="brand">
+      <span class="mark" style="color:var(--lime)"><svg class="claw" width="26" height="26"><use href="#clawmark"/></svg></span>
+      <span class="nm"><b>XMCLAW</b></span>
+    </div>
+    <button class="newbtn"><svg class="claw" width="14" height="14"><use href="#clawmark"/></svg> NEW SESSION</button>
+    <div class="lbl">最近</div>
+    <div class="list">
+      <div class="chat on">批量压缩图片 <small>now</small></div>
+      <div class="chat">记忆系统调研 <small>2h</small></div>
+      <div class="chat">技能自主调用 <small>1d</small></div>
+      <div class="chat">部署脚本优化 <small>Mon</small></div>
+    </div>
+    <div class="lbl">导航</div>
+    <div class="nav on">▸ 对话</div>
+    <div class="nav">▸ 记忆</div>
+    <div class="nav">▸ 技能</div>
+    <div class="nav">▸ 仪表盘</div>
+    <div class="foot"><span class="orb"></span> 本地 · 127.0.0.1:8766</div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <span class="watermark" style="color:var(--lime)"><svg width="520" height="520"><use href="#clawmark"/></svg></span>
+
+    <div class="top">
+      <h1>批量压缩图片</h1>
+      <div class="right"><span class="tag">⚡ Kimi K2.6</span><span class="tag">mem ✓</span></div>
+    </div>
+
+    <!-- 招牌：心跳遥测 HUD -->
+    <div class="hud">
+      <div class="it"><span class="orb" style="width:7px;height:7px"></span> <b>HEARTBEAT</b> <span class="k">alive</span></div>
+      <div class="it"><span>记忆</span> <b>1,916</b> facts</div>
+      <div class="it"><span>技能</span> <b>404</b> · <span class="k">+1 候选</span></div>
+      <div class="it"><span>进化</span>
+        <span class="spark"><i style="height:5px"></i><i style="height:9px"></i><i style="height:6px"></i><i style="height:12px"></i><i style="height:8px"></i><i style="height:14px"></i></span>
+      </div>
+    </div>
+
+    <div class="stream">
+      <div class="turn">
+        <div class="u"><div class="card">帮我把 <code class="inl">assets/</code> 下所有 PNG 压缩一下，生成一个压缩报告。</div></div>
+
+        <div class="a">
+          <div class="who"><div class="av" style="color:var(--lime)"><svg class="claw" width="17" height="17"><use href="#clawmark"/></svg></div></div>
+          <div class="body">
+            <div class="name">XMCLAW</div>
+            <p>先扫 <code class="inl">assets/</code> 的 PNG，逐个 pngquant 压缩，最后汇总报告。</p>
+            <div class="tool"><div class="h">⌁ <b>file_glob</b> <span style="color:var(--tx-3)">assets/**/*.png</span><span class="ok">✓ 42</span></div>
+              <div class="b">hero.png · icons/logo.png · bg/cover.png … (+39)</div></div>
+            <div class="tool"><div class="h">⌁ <b>bash</b> <span style="color:var(--tx-3)">pngquant --quality=65-85</span><span class="ok">✓ ok</span></div>
+              <div class="b">42 files · 18.4 MB → 6.1 MB (-66.8%)</div></div>
+            <p>压缩完成，报告摘要：</p>
+<pre class="code"><span class="c"># compress_report.md</span>
+<span class="k">total</span>   = <span class="n">42</span> files · <span class="f">18.4 MB</span> → <span class="s">6.1 MB</span>
+<span class="k">saved</span>   = <span class="s">12.3 MB</span> (<span class="n">66.8%</span>)
+<span class="k">largest</span> = hero.png  <span class="f">2.1 MB</span> → <span class="s">0.6 MB</span></pre>
+            <p>报告已写到 <code class="inl">assets/compress_report.md</code>。这套流程我可以**结晶成一个技能**，下次直接喊。要吗？</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="sep"><span>CLAW</span><div class="scr"></div><span>↑ 上一轮</span></div>
+    </div>
+
+    <div class="cw">
+      <div class="comp">
+        <button class="ct">＋</button>
+        <textarea rows="1" placeholder="对 XMclaw 说…   ( / 命令 · @ 技能 )">好，结晶成技能</textarea>
+        <button class="send"><svg class="claw" width="16" height="16" style="color:#0a0b0f"><use href="#clawmark"/></svg></button>
+      </div>
+      <div class="hint">ENTER 发送 · SHIFT+ENTER 换行 · ⌘K 命令面板</div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

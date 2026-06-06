@@ -50,6 +50,7 @@ class MarkdownProcedureSkill(Skill):
     id: str
     body: str
     version: int = 1
+    skill_dir: str = ""  # Absolute path to the skill directory for resource resolution
 
     @property
     def stripped_body(self) -> str:
@@ -96,12 +97,27 @@ class MarkdownProcedureSkill(Skill):
             body = decision.content
         except Exception:  # noqa: BLE001 — never break a skill on scan failure
             pass
+
+        # Epic #27 G-09 (2026-06-06): inject SKILL_ROOT path so the LLM
+        # can resolve relative references (scripts/, assets/, references/)
+        # in the procedure body. Without this, the agent sees
+        # ``python3 "$SKILL_ROOT/scripts/scan.py"`` but has no way to
+        # know where the skill directory actually lives.
+        instructions = body
+        if self.skill_dir:
+            instructions = (
+                f"> **SKILL_ROOT** = `{self.skill_dir}`\n\n"
+                f"_All relative paths (scripts/, assets/, references/) "
+                f"below resolve against this directory._\n\n"
+                f"{body}"
+            )
+
         return SkillOutput(
             ok=True,
             result={
                 "kind": "markdown_procedure",
                 "skill_id": self.id,
-                "instructions": body,
+                "instructions": instructions,
                 "guidance": (
                     f"Skill {self.id!r} loaded successfully. The "
                     "'instructions' field above is the authoritative "

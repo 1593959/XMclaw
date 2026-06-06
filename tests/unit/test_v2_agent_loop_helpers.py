@@ -479,3 +479,72 @@ class TestHopLoopSurface:
             if not name.startswith("_")
         ]
         assert len(public) > 0
+
+# ---------------------------------------------------------------------------
+# _steps_warrant_subagents — autonomous subagent trigger heuristic
+# ---------------------------------------------------------------------------
+
+
+class TestStepsWarrantSubagents:
+    def test_two_steps_never_trigger(self):
+        from xmclaw.daemon.agent_loop import _steps_warrant_subagents
+
+        assert _steps_warrant_subagents(["read foo.py", "write bar.py"]) is False
+
+    def test_three_simple_steps_no_trigger(self):
+        from xmclaw.daemon.agent_loop import _steps_warrant_subagents
+
+        # Each step has only 1 verb → not complex enough
+        assert _steps_warrant_subagents([
+            "read foo.py",
+            "read bar.py",
+            "read baz.py",
+        ]) is False
+
+    def test_three_complex_independent_steps_trigger(self):
+        from xmclaw.daemon.agent_loop import _steps_warrant_subagents
+
+        # Each step has >=2 verbs and no dependency markers
+        assert _steps_warrant_subagents([
+            "search and analyze the auth module",
+            "search and analyze the billing module",
+            "search and analyze the notification module",
+        ]) is True
+
+    def test_dependency_markers_block_trigger(self):
+        from xmclaw.daemon.agent_loop import _steps_warrant_subagents
+
+        # Steps contain "then" / "after" / "然后" → sequential
+        assert _steps_warrant_subagents([
+            "search and analyze the auth module",
+            "then refactor and test the auth module",
+            "then deploy and verify the auth module",
+        ]) is False
+
+    def test_mixed_complexity_partial_trigger(self):
+        from xmclaw.daemon.agent_loop import _steps_warrant_subagents
+
+        # 3 steps, 2 complex + 1 simple → 2/3 threshold met
+        assert _steps_warrant_subagents([
+            "search and analyze the auth module",
+            "search and analyze the billing module",
+            "read docs",
+        ]) is True
+
+    def test_chinese_dependency_markers_block(self):
+        from xmclaw.daemon.agent_loop import _steps_warrant_subagents
+
+        assert _steps_warrant_subagents([
+            "搜索并分析认证模块",
+            "然后重构并测试认证模块",
+            "最后部署并验证认证模块",
+        ]) is False
+
+    def test_chinese_complex_steps_trigger(self):
+        from xmclaw.daemon.agent_loop import _steps_warrant_subagents
+
+        assert _steps_warrant_subagents([
+            "搜索并分析认证模块",
+            "搜索并分析计费模块",
+            "搜索并分析通知模块",
+        ]) is True

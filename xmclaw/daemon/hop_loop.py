@@ -34,6 +34,14 @@ _MEMORY_HONESTY_TRIGGERS: tuple[str, ...] = (
 _MEMORY_TOOLS: frozenset[str] = frozenset({"remember", "learn_about_user"})
 
 
+def _messages_hash(messages: list[Message]) -> int:
+    """Cheap fingerprint for message-list caching."""
+    h = 0
+    for m in messages:
+        h = hash((h, m.role, m.content, m.tool_call_id, len(m.tool_calls)))
+    return h
+
+
 def _check_memory_honesty(
     assistant_text: str | None,
     tool_calls_made: list[Any],
@@ -443,6 +451,8 @@ class HopLoopMixin:
         events: list[BehavioralEvent],
         tool_calls_made: list[dict[str, Any]],
         turn_uuid: str,
+        llm_timeout_s: float = 300.0,
+        _turn_metrics: "dict[str, Any] | None" = None,
     ) -> AgentTurnResult | None:
         """Execute the LLM ↔ tool hop loop.
 
@@ -466,6 +476,10 @@ class HopLoopMixin:
             strict=getattr(self, "_narration_strict", False),
         )
         _narration_nudge_pending: str | None = None
+        # 2026-06-04: compression result cache. If messages haven't
+        # changed since the last compression, skip the 1-3s pipeline.
+        _last_compress_hash: int | None = None
+        _last_compressed_messages: list[Message] | None = None
 
         # 2026-05-12 Batch A.1: GoalAnchor — runtime trick to make
         # weak/short-context models do long tool chains. Every N hops
@@ -682,20 +696,40 @@ class HopLoopMixin:
                     ))
                     _narration_nudge_pending = None
                 _did_compress, _did_emit = False, False
-                try:
-                    _new_msgs, _did_compress = await self._maybe_compress_messages(
-                        messages, session_id,
-                    )
-                    if _did_compress:
-                        messages = _new_msgs
-                        await publish(EventType.CONTEXT_COMPRESSED, {
-                            "hop": hop,
-                            "trigger": "proactive_threshold",
-                            "session_id": session_id,
-                        })
-                        _did_emit = True
-                except Exception:  # noqa: BLE001
-                    pass
+                # 2026-06-04: cache hit when messages unchanged.
+                _compress_hash = _messages_hash(messages)
+                if (
+                    _last_compress_hash is not None
+                    and _compress_hash == _last_compress_hash
+                    and _last_compressed_messages is not None
+                ):
+                    messages = _last_compressed_messages
+                    _did_compress = True
+                else:
+                    try:
+                        _new_msgs, _did_compress = await self._maybe_compress_messages(
+                            messages, session_id,
+                        )
+                        if _did_compress:
+                            messages = _new_msgs
+                            _last_compress_hash = _compress_hash
+                            _last_compressed_messages = list(messages)
+                            await publish(EventType.CONTEXT_COMPRESSED, {
+                                "hop": hop,
+                                "trigger": "proactive_threshold",
+                                "session_id": session_id,
+                            })
+                            _did_emit = True
+                    except Exception as _exc:  # noqa: BLE001
+                        # 2026-06-04: aggregate compression errors.
+                        try:
+                            from xmclaw.core.error_aggregator import ErrorSeverity, get_aggregator
+                            get_aggregator().record(
+                                ErrorSeverity.WARNING, __name__, "run_hop_loop.compress",
+                                _exc, message="proactive compression failed",
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
 
                 _b227_attempts = 0
                 _b227_last_classified: Any = None
@@ -706,9 +740,10 @@ class HopLoopMixin:
                 # output and burning tokens. We append the partial
                 # assistant text + a continuation prompt and re-call
                 # up to N times before giving up.
-                _B230_MAX_CONTINUES = 3
+                _B230_MAX_CONTINUES = 1  # 2026-06-04: reduced from 3 to 1
                 _b230_continue_count = 0
                 _b230_acc_content = ""
+                _b230_orig_max_tokens: int | None = None
                 # Wave-32+ Speculation: build a per-hop cache that
                 # the on_tool_block callback fills with prefetched
                 # read-only tool tasks. Phase B below checks the
@@ -744,31 +779,181 @@ class HopLoopMixin:
                     except Exception:  # noqa: BLE001
                         pass
 
+                # 2026-06-04: first-token timeout = max(total/3, 5s).
+                # If the first chunk doesn't arrive within this window,
+                # we try a fallback profile before giving up.
+                _first_token_timeout = max(llm_timeout_s / 3.0, 5.0)
+
+                async def _call_llm_with_first_token_guard(
+                    _llm: Any,
+                ) -> Any:
+                    """Call complete_streaming with first-token + total timeouts.
+
+                    If the first token doesn't arrive within ``_first_token_timeout``,
+                    cancel the call and try the registry's default fallback profile
+                    once.  Raises ``asyncio.TimeoutError`` when both primary and
+                    fallback fail the first-token window.
+                    """
+                    _ft_event = asyncio.Event()
+                    _done_event = asyncio.Event()
+                    _resp: Any = None
+                    _err: Exception | None = None
+
+                    async def _wc(delta: str) -> None:
+                        _ft_event.set()
+                        await _emit_chunk(delta)
+
+                    async def _wtc(delta: str) -> None:
+                        _ft_event.set()
+                        await _emit_thinking_chunk(delta)
+
+                    async def _do_call(_llm_instance: Any) -> None:
+                        nonlocal _resp, _err
+                        try:
+                            _resp = await _llm_instance.complete_streaming(
+                                messages, tools=tool_specs,
+                                on_chunk=_wc,
+                                on_thinking_chunk=_wtc,
+                                on_tool_block=_on_tool_block,
+                                on_stream_fallback=_on_stream_fallback,
+                                cancel=cancel_event,
+                            )
+                        except Exception as exc:
+                            _err = exc
+                        finally:
+                            _done_event.set()
+
+                    _task = asyncio.create_task(_do_call(_llm))
+                    try:
+                        await asyncio.wait_for(
+                            _ft_event.wait(),
+                            timeout=_first_token_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        if _done_event.is_set():
+                            # Completed without chunks (non-streaming fallback)
+                            if _err is not None:
+                                raise _err
+                            return _resp
+                        # First-token timeout — cancel and try fallback
+                        _task.cancel()
+                        try:
+                            await _task
+                        except asyncio.CancelledError:
+                            pass
+
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).warning(
+                            "agent_loop.first_token_timeout hop=%d "
+                            "ft_timeout=%.1fs session=%s model=%s",
+                            hop, _first_token_timeout, session_id,
+                            getattr(_llm, "model", "") or "",
+                        )
+
+                        # Try fallback profile
+                        _fallback = None
+                        _registry = getattr(self, "_llm_registry", None)
+                        if _registry is not None:
+                            _default = _registry.default()
+                            if _default is not None and _default.llm is not _llm:
+                                _fallback = _default.llm
+
+                        if _fallback is not None:
+                            await publish(EventType.INNER_MONOLOGUE, {
+                                "kind": "first_token_fallback",
+                                "original_model": getattr(_llm, "model", "") or "",
+                                "fallback_model": getattr(_fallback, "model", "") or "",
+                                "hop": hop,
+                            })
+                            _ft_event.clear()
+                            _done_event.clear()
+                            _resp = None
+                            _err = None
+                            _task = asyncio.create_task(_do_call(_fallback))
+                            try:
+                                await asyncio.wait_for(
+                                    _ft_event.wait(),
+                                    timeout=_first_token_timeout,
+                                )
+                            except asyncio.TimeoutError:
+                                if _done_event.is_set():
+                                    if _err is not None:
+                                        raise _err
+                                    return _resp
+                                _task.cancel()
+                                try:
+                                    await _task
+                                except asyncio.CancelledError:
+                                    pass
+                                raise asyncio.TimeoutError("first_token")
+                            # Fallback first token arrived, wait for completion
+                            await asyncio.wait_for(_task, timeout=llm_timeout_s)
+                            if _err is not None:
+                                raise _err
+                            return _resp
+                        else:
+                            raise asyncio.TimeoutError("first_token")
+
+                    # First token arrived from primary, wait for completion
+                    await asyncio.wait_for(_task, timeout=llm_timeout_s)
+                    if _err is not None:
+                        raise _err
+                    return _resp
+
                 while True:  # outer = B-230 auto-continue
                     while True:  # inner = B-227 classify-and-retry
                         try:
-                            response = await asyncio.wait_for(
-                                llm.complete_streaming(
-                                    messages, tools=tool_specs, on_chunk=_emit_chunk,
-                                    on_thinking_chunk=_emit_thinking_chunk,
-                                    on_tool_block=_on_tool_block,
-                                    on_stream_fallback=_on_stream_fallback,
-                                    cancel=cancel_event,
-                                ),
-                                timeout=self._llm_timeout_s,
-                            )
+                            response = await _call_llm_with_first_token_guard(llm)
                             break  # inner: success
                         except asyncio.TimeoutError:
                             # Re-raise into the original timeout handler
                             # below (separate path with its own user msg).
                             raise
                         except Exception as _exc:  # noqa: BLE001
+                            from xmclaw.utils.error_classifier import (
+                                classify_api_error, backoff_schedule,
+                                is_non_transient_reason,
+                            )
                             ce = classify_api_error(
                                 _exc,
                                 provider=getattr(llm, "__class__", type(llm)).__name__,
                                 model=getattr(llm, "model", "") or "",
                             )
                             _b227_last_classified = ce
+
+                            # 2026-06-04: fast-fail non-transient errors.
+                            # Auth, billing, model_not_found etc. will never
+                            # succeed on retry — surface immediately.
+                            if is_non_transient_reason(ce.reason):
+                                try:
+                                    from xmclaw.utils.log import get_logger
+                                    get_logger(__name__).warning(
+                                        "agent_loop.llm_fast_fail hop=%d reason=%s "
+                                        "non_transient=True msg=%s",
+                                        hop, ce.reason.value, ce.message[:120],
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                raise
+
+                            # 2026-06-04: context_overflow gets 1 retry only,
+                            # and we force-compress BEFORE sleeping.
+                            _is_context_overflow = ce.reason.value in (
+                                "context_overflow", "payload_too_large",
+                                "long_context_tier",
+                            )
+                            if _is_context_overflow and _b227_attempts >= 1:
+                                try:
+                                    from xmclaw.utils.log import get_logger
+                                    get_logger(__name__).warning(
+                                        "agent_loop.llm_retry_exhausted hop=%d "
+                                        "reason=%s context_overflow_retry_limit=1",
+                                        hop, ce.reason.value,
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                raise
+
                             schedule = backoff_schedule(ce.reason)
                             if (
                                 not ce.retryable
@@ -780,6 +965,29 @@ class HopLoopMixin:
                                 # in LLM_RESPONSE with the classified
                                 # reason as category.
                                 raise
+
+                            # 2026-06-04: if we have a fallback profile,
+                            # switch immediately instead of sleeping on the
+                            # same profile.
+                            _registry = getattr(self, "_llm_registry", None)
+                            if _registry is not None and _b227_attempts > 0:
+                                _default = _registry.default()
+                                if _default is not None and _default.llm is not llm:
+                                    try:
+                                        from xmclaw.utils.log import get_logger
+                                        get_logger(__name__).info(
+                                            "agent_loop.llm_fallback_switch "
+                                            "hop=%d from=%s to=%s",
+                                            hop,
+                                            getattr(llm, "model", "") or "",
+                                            getattr(_default.llm, "model", "") or "",
+                                        )
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    llm = _default.llm
+                                    _b227_attempts = 0  # reset retry budget for new profile
+                                    continue  # retry immediately with new profile
+
                             sleep_ms = schedule[_b227_attempts]
                             try:
                                 from xmclaw.utils.log import get_logger
@@ -806,6 +1014,8 @@ class HopLoopMixin:
                                     )
                                     if _did_force:
                                         messages = _new_msgs
+                                        _last_compress_hash = _messages_hash(messages)
+                                        _last_compressed_messages = list(messages)
                                         await publish(EventType.CONTEXT_COMPRESSED, {
                                             "hop": hop,
                                             "trigger": "reactive_" + ce.reason.value,
@@ -836,6 +1046,32 @@ class HopLoopMixin:
                         and not cancel_event.is_set()
                     ):
                         _b230_acc_content += response.content
+                        # 2026-06-04: force-compress before continue to avoid
+                        # repeated truncation on already-bloated context.
+                        try:
+                            _new_msgs, _did_force = await self._maybe_compress_messages(
+                                messages, session_id, force=True,
+                            )
+                            if _did_force:
+                                messages = _new_msgs
+                                _last_compress_hash = None
+                                _last_compressed_messages = None
+                        except Exception:  # noqa: BLE001
+                            pass
+                        # 2026-06-04: give the LLM more headroom on the
+                        # continue call by bumping max_tokens when the
+                        # provider exposes it as a mutable attribute.
+                        try:
+                            _orig = getattr(llm, "max_tokens", None)
+                            if (
+                                _orig is not None
+                                and isinstance(_orig, int)
+                                and _orig > 0
+                            ):
+                                _b230_orig_max_tokens = _orig
+                                llm.max_tokens = int(_orig * 1.5)
+                        except Exception:  # noqa: BLE001
+                            pass
                         # B-230 fix: remove the previous continuation
                         # pair (assistant + user) so accumulated content
                         # doesn't duplicate across continues, preserving
@@ -900,14 +1136,14 @@ class HopLoopMixin:
                 await publish(EventType.ANTI_REQ_VIOLATION, {
                     "message": (
                         f"LLM provider call exceeded "
-                        f"{self._llm_timeout_s:.0f}s wall-clock at hop {hop} "
+                        f"{llm_timeout_s:.0f}s wall-clock at hop {hop} "
                         "— aborting turn rather than blocking forever."
                     ),
                     "hop": hop,
                     "category": "llm_timeout",
                 })
                 err = (
-                    f"LLM call timed out after {self._llm_timeout_s:.0f}s "
+                    f"LLM call timed out after {llm_timeout_s:.0f}s "
                     "(hop {hop}). Provider may be overloaded or stuck."
                 ).format(hop=hop)
                 await publish(EventType.LLM_RESPONSE, {
@@ -932,6 +1168,14 @@ class HopLoopMixin:
                     events=events,
                     error=f"{type(exc).__name__}: {exc}",
                 )
+            finally:
+                # 2026-06-04: restore max_tokens if we bumped it for B-230
+                # continue.  Runs even when the above except blocks return.
+                if _b230_orig_max_tokens is not None:
+                    try:
+                        llm.max_tokens = _b230_orig_max_tokens
+                    except Exception:  # noqa: BLE001
+                        pass
 
             latency_ms = (time.perf_counter() - t0) * 1000.0
             await publish(EventType.LLM_RESPONSE, {
@@ -1138,18 +1382,25 @@ class HopLoopMixin:
                         "call_id": call.id, "name": call.name,
                     })
 
-                # Phase B: invoke tools with read-parallel / write-serial
+                # Phase B: invoke tools with read-parallel / write-smart
                 # semantics (B-7).  Read-only tools (file_read, list_dir,
-                # web_search, …) run concurrently; anything that mutates
-                # state runs one-at-a-time in the order the model emitted
-                # it, so consecutive writes can't race on shared files or
-                # DB rows.
+                # web_search, …) run concurrently; write tools are grouped
+                # by target file path so calls touching different files run
+                # in parallel while calls touching the same file remain
+                # serial, preserving safety.
                 from xmclaw.cognition.speculation import maybe_await_cached
 
                 _read_only_names = {
                     spec.name for spec in (effective_tools.list_tools() or [])
                     if getattr(spec, "read_only", False)
                 }
+
+                def _extract_target_path(tc: Any) -> str | None:
+                    args = getattr(tc, "args", None) or {}
+                    for key in ("path", "file", "filepath", "filename"):
+                        if key in args:
+                            return str(args[key])
+                    return None
 
                 async def _invoke_one(call: Any) -> Any:
                     return await maybe_await_cached(
@@ -1159,26 +1410,64 @@ class HopLoopMixin:
                         ),
                     )
 
-                _invoke_results: list[Any] = []
-                _idx = 0
+                async def _serial_writes(
+                    _items: list[tuple[int, Any]],
+                ) -> list[tuple[int, Any]]:
+                    _out: list[tuple[int, Any]] = []
+                    for _i, _c in _items:
+                        _out.append((_i, await _invoke_one(_c)))
+                    return _out
+
                 _tc_list = response.tool_calls
+                _invoke_results: list[Any] = [None] * len(_tc_list)
+                _idx = 0
                 while _idx < len(_tc_list):
                     if _tc_list[_idx].name in _read_only_names:
                         # Collect a contiguous run of read-only calls
                         _batch: list[Any] = []
+                        _indices: list[int] = []
                         while (
                             _idx < len(_tc_list)
                             and _tc_list[_idx].name in _read_only_names
                         ):
                             _batch.append(_tc_list[_idx])
+                            _indices.append(_idx)
                             _idx += 1
-                        _invoke_results.extend(
-                            await asyncio.gather(*[_invoke_one(c) for c in _batch])
+                        _batch_results = await asyncio.gather(
+                            *[_invoke_one(c) for c in _batch]
                         )
+                        for _i, _res in zip(_indices, _batch_results):
+                            _invoke_results[_i] = _res
                     else:
-                        # Serial write (or unknown) tool
-                        _invoke_results.append(await _invoke_one(_tc_list[_idx]))
-                        _idx += 1
+                        # Collect a contiguous run of write calls
+                        _write_batch: list[Any] = []
+                        _write_indices: list[int] = []
+                        while (
+                            _idx < len(_tc_list)
+                            and _tc_list[_idx].name not in _read_only_names
+                        ):
+                            _write_batch.append(_tc_list[_idx])
+                            _write_indices.append(_idx)
+                            _idx += 1
+
+                        # Group by target path so different files run in
+                        # parallel while the same file stays serial.
+                        _path_groups: dict[str | None, list[tuple[int, Any]]] = {}
+                        for _w_idx, _w_tc in zip(_write_indices, _write_batch):
+                            _path = _extract_target_path(_w_tc)
+                            if _path not in _path_groups:
+                                _path_groups[_path] = []
+                            _path_groups[_path].append((_w_idx, _w_tc))
+
+                        # Execute each path group serially, all groups in parallel.
+                        _group_results = await asyncio.gather(*[
+                            _serial_writes(_items) for _items in _path_groups.values()
+                        ])
+
+                        # Flatten back into result list preserving original order.
+                        for _grp in _group_results:
+                            for _i, _res in _grp:
+                                _invoke_results[_i] = _res
 
                 # Cancel any speculated tools whose ToolCall didn't
                 # end up in the response — defensive cleanup, should
@@ -1861,9 +2150,16 @@ class HopLoopMixin:
                     self._post_sampling_bg.discard,
                 )
 
+            if _turn_metrics is not None:
+                _turn_metrics["hop_count"] = hop + 1
+                _turn_metrics["tool_call_count"] = len(tool_calls_made)
+
             return AgentTurnResult(
                 ok=True, text=response.content, hops=hop + 1,
                 tool_calls=tool_calls_made,
                 events=events,
             )
+        if _turn_metrics is not None:
+            _turn_metrics["hop_count"] = hop
+            _turn_metrics["tool_call_count"] = len(tool_calls_made)
         return None

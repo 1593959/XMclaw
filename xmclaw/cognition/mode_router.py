@@ -88,6 +88,8 @@ _TRIVIAL_QUESTIONS_RE = re.compile(
 )
 
 # Swarm cues — phrases that imply parallelisable independent slices.
+# 2026-05-30: expanded with implicit multi-task signals so the agent
+# fans out even when the user doesn't use explicit "parallel" wording.
 _SWARM_CUES_RE = re.compile(
     r"\b(compare\s+\w+\s+(and|with|to|vs|against)\s+\w+|"
     r"summari[sz]e\s+each|"
@@ -96,10 +98,15 @@ _SWARM_CUES_RE = re.compile(
     r"in\s+parallel|"
     r"side[\s-]by[\s-]side|"
     r"compare\s+these|"
+    r"check\s+all|"
+    r"review\s+all|"
     r"分别(总结|分析|检查|对比)|"
     r"对比[\s\S]{0,30}(和|与|及|跟)|"
     r"并行|"
-    r"逐一(分析|总结|检查))",
+    r"逐一(分析|总结|检查)|"
+    r"都(检查|看一下|查一下|分析一下|总结一下)|"
+    r"各(个|文件|模块|目录).{0,20}(检查|分析|总结)|"
+    r"同时.{0,15}(查|看|分析|总结))",
     re.IGNORECASE,
 )
 

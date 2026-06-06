@@ -890,6 +890,7 @@ async def create_fact(request: Request) -> Any:
     fact = await svc.remember(
         text, kind=kind, scope=scope, layer=layer,
         confidence=confidence, bucket=bucket,
+        provenance="manual_ui",
     )
     return {"created": fact.to_dict()}
 

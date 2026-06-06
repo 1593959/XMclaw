@@ -64,6 +64,34 @@ class SkillRef:
     manifest: SkillManifest
 
 
+@dataclass
+class SkillUsageStats:
+    """Usage statistics for a single skill.
+
+    Tracked at the registry level so every invocation path (agent loop,
+    REPL, HTTP API) is counted regardless of which caller initiated the
+    run.  Latency is wall-clock from ``registry.get()`` through
+    ``skill.run()`` completion — the caller is responsible for passing
+    the measured value.
+    """
+
+    skill_id: str
+    call_count: int = 0
+    success_count: int = 0
+    total_latency_ms: float = 0.0
+    last_used: float = 0.0
+
+    @property
+    def success_rate(self) -> float:
+        """Fraction of calls that reported success."""
+        return self.success_count / self.call_count if self.call_count > 0 else 0.0
+
+    @property
+    def avg_latency_ms(self) -> float:
+        """Mean latency across all recorded calls."""
+        return self.total_latency_ms / self.call_count if self.call_count > 0 else 0.0
+
+
 class SkillRegistry:
     """Versioned in-memory store for skills. Optional disk persistence
     for the history log; skills themselves stay in-process because they
@@ -89,6 +117,57 @@ class SkillRegistry:
             self._history_dir.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.RLock()
+
+        # Usage statistics: skill_id -> SkillUsageStats.  Populated lazily
+        # by ``record_usage``; never raises on missing keys.
+        self._usage_stats: dict[str, SkillUsageStats] = {}
+
+    # ── usage statistics ──
+
+    def record_usage(
+        self,
+        skill_id: str,
+        success: bool,
+        latency_ms: float,
+    ) -> SkillUsageStats:
+        """Record one invocation of ``skill_id``.
+
+        Parameters
+        ----------
+        skill_id : str
+            The skill that was executed.
+        success : bool
+            Whether the skill reported a successful result.
+        latency_ms : float
+            Wall-clock milliseconds from resolution to completion.
+
+        Returns
+        -------
+        SkillUsageStats
+            The updated stats object for this skill.
+        """
+        with self._lock:
+            existing = self._usage_stats.get(skill_id)
+            if existing is None:
+                existing = SkillUsageStats(skill_id=skill_id)
+                self._usage_stats[skill_id] = existing
+            # dataclass is mutable, so update in place.
+            existing.call_count += 1
+            if success:
+                existing.success_count += 1
+            existing.total_latency_ms += latency_ms
+            existing.last_used = now_ts()
+            return existing
+
+    def get_usage_stats(self, skill_id: str) -> SkillUsageStats | None:
+        """Return usage stats for a single skill, or ``None`` if never recorded."""
+        with self._lock:
+            return self._usage_stats.get(skill_id)
+
+    def get_all_usage_stats(self) -> dict[str, SkillUsageStats]:
+        """Return a shallow copy of the full usage-stats map."""
+        with self._lock:
+            return dict(self._usage_stats)
 
     # ── registration ──
 

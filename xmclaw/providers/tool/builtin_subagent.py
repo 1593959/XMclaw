@@ -19,7 +19,7 @@ and runs them concurrently using:
 2. The same underlying LLM (passed at construction).
 3. *Optionally* a stripped-down ToolProvider (passed at construction)
    for the subagents. If absent, subagents are pure-reasoning.
-4. A hard hop cap per subagent (default 6) — sub-agents are leaves,
+4. A hard hop cap per subagent (default 50) — sub-agents are leaves,
    not full agent loops.
 5. A wall-clock timeout for the whole fanout.
 
@@ -41,7 +41,7 @@ Safety
 ======
 
 * Hard cap on subtask count (max 8) to prevent runaway fanouts.
-* Per-subagent hop cap (default 6) to prevent infinite loops.
+* Per-subagent hop cap (default 50) to prevent infinite loops.
 * Wall-clock timeout (default 90s for the whole fanout).
 * Subagent failures don't poison the result — they're rolled up as
   ``[subagent N error: ...]`` so partial progress is visible.
@@ -101,7 +101,7 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
         "INDEPENDENT pieces (e.g. \"summarise these 3 files\", "
         "\"compare options A/B/C\"). Do NOT use when subtasks depend on "
         "each other — sub-agents share no context with each other. "
-        "Sub-agents have a 6-hop cap (raise via max_hops up to 12 if a "
+        "Sub-agents have a 50-hop cap (raise via max_hops up to 100 if a "
         "task is heavier) and no further fanout capability."
     ),
     parameters_schema={
@@ -186,7 +186,7 @@ class SubagentToolProvider(ToolProvider):
     * ``tools`` — optional inner ``ToolProvider`` for sub-agents to
       use. None means leaf sub-agents are pure reasoning.
     * ``max_hops_per_subagent`` — hard cap on tool-use loop length
-      inside one sub-agent. Default 6.
+      inside one sub-agent. Default 50.
     * ``max_concurrency`` — semaphore to throttle the asyncio.gather.
       Default 4 — keeps pressure off the LLM endpoint.
     * ``fanout_timeout_s`` — wall-clock cap for the whole fanout.
@@ -201,7 +201,7 @@ class SubagentToolProvider(ToolProvider):
         *,
         llm: Any | None = None,
         tools: ToolProvider | None = None,
-        max_hops_per_subagent: int = 6,
+        max_hops_per_subagent: int = 50,
         max_concurrency: int = 4,
         # 2026-05-25: both caps bumped to 5 min per user request.
         # Previous 120s fanout cap aborted mid-way through real-world
@@ -529,7 +529,8 @@ class SubagentToolProvider(ToolProvider):
         # Hop cap exhausted.
         return _SubResult(
             index=index, subtask=subtask, ok=False,
-            error=f"subagent exhausted {self._max_hops} hops",
+            error=f"subagent exhausted {self._max_hops} hops — "
+                   f"raise max_hops if the task legitimately needs more",
             hops=self._max_hops,
             elapsed_s=time.perf_counter() - t0,
         )

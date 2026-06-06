@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XMclaw — 招牌状态栏 实验室</title>
+<style>
+:root{
+  --ink:#0a0b0f;--ink-2:#101218;--ink-3:#171a22;--panel:#0e1016;
+  --line:#20242e;--line-2:#2b303c;
+  --tx:#e9ecf2;--tx-2:#99a0b0;--tx-3:#5b6373;
+  --lime:#c8ff4d;--lime-dim:#9bd23a;--cyan:#5de3ff;--violet:#9b7bff;--amber:#ffc24d;--rose:#ff6b8a;
+  --glow:0 0 20px rgba(200,255,77,.25);
+  --mono:"JetBrains Mono","SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);background:
+  radial-gradient(800px 300px at 30% 0,rgba(155,123,255,.08),transparent 60%),var(--ink);
+  color:var(--tx);min-height:100vh;padding:34px 28px 60px}
+h0{display:block;font-size:13px;color:var(--tx-3);font-family:var(--mono);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px}
+.title{font-size:22px;font-weight:750;margin-bottom:6px}
+.sub{color:var(--tx-2);font-size:13.5px;max-width:720px;margin-bottom:30px}
+.caption{font-family:var(--mono);font-size:11px;color:var(--lime);letter-spacing:1.5px;margin:30px 0 10px;text-transform:uppercase;display:flex;gap:9px;align-items:center}
+.caption::before{content:"";width:18px;height:1px;background:var(--lime-dim)}
+.note{color:var(--tx-3);font-size:12px;margin:6px 0 0}
+.frame{max-width:1080px}
+
+@keyframes breathe{0%,100%{opacity:.5;transform:scale(1)}50%{opacity:1;transform:scale(1.25)}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(200,255,77,.5)}70%{box-shadow:0 0 0 7px rgba(200,255,77,0)}100%{box-shadow:0 0 0 0 rgba(200,255,77,0)}}
+@keyframes think{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+@keyframes bardance{0%,100%{height:5px}50%{height:14px}}
+.orb{width:8px;height:8px;border-radius:50%;background:var(--lime);box-shadow:var(--glow);animation:breathe 2.6s ease-in-out infinite}
+.orb.think{background:var(--cyan);animation:pulse 1.1s infinite}
+.orb.idle{background:var(--tx-3);box-shadow:none;animation:none}
+.spark{display:inline-flex;gap:2px;align-items:flex-end;height:15px}
+.spark i{width:3px;background:var(--cyan);border-radius:1px;display:block}
+.spark.live i{animation:bardance 1.4s ease-in-out infinite}
+.spark.live i:nth-child(2){animation-delay:.2s}.spark.live i:nth-child(3){animation-delay:.4s}
+.spark.live i:nth-child(4){animation-delay:.1s}.spark.live i:nth-child(5){animation-delay:.5s}.spark.live i:nth-child(6){animation-delay:.3s}
+
+/* ===== 变体 1：分段 HUD（D 原型精修）===== */
+.hud{display:flex;align-items:center;padding:0 4px;border:1px solid var(--line);border-radius:13px;
+  background:linear-gradient(90deg,rgba(155,123,255,.06),rgba(93,227,255,.04));font-family:var(--mono);font-size:11.5px;color:var(--tx-2)}
+.hud .seg{display:flex;align-items:center;gap:8px;padding:11px 18px;border-right:1px solid var(--line);cursor:pointer;transition:.15s}
+.hud .seg:last-child{border:0}
+.hud .seg:hover{background:rgba(255,255,255,.03);color:var(--tx)}
+.hud .seg b{color:var(--tx);font-weight:650}
+.hud .k{color:var(--lime)}.hud .cy{color:var(--cyan)}
+.hud .seg .lab{color:var(--tx-3);font-size:10px;letter-spacing:1px;text-transform:uppercase}
+
+/* ===== 变体 2：仪表簇（每个指标一个小卡 + 微型计量）===== */
+.cluster{display:flex;gap:10px}
+.gauge{flex:1;border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--ink-2);position:relative;overflow:hidden}
+.gauge .top{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:9.5px;letter-spacing:1.2px;color:var(--tx-3);text-transform:uppercase}
+.gauge .val{font-size:19px;font-weight:750;margin-top:3px;letter-spacing:-.3px}
+.gauge .val small{font-size:11px;color:var(--tx-2);font-weight:500;margin-left:4px;font-family:var(--mono)}
+.gauge .meter{height:3px;border-radius:2px;background:var(--ink-3);margin-top:9px;overflow:hidden}
+.gauge .meter i{display:block;height:100%;border-radius:2px}
+.gauge .badge{position:absolute;top:10px;right:12px;font-family:var(--mono);font-size:9.5px;padding:2px 7px;border-radius:6px;
+  background:rgba(200,255,77,.12);color:var(--lime)}
+
+/* ===== 变体 3：极简单行 ticker ===== */
+.ticker{display:flex;align-items:center;gap:0;font-family:var(--mono);font-size:12px;color:var(--tx-2);
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:9px 2px}
+.ticker .t{padding:0 16px;display:flex;align-items:center;gap:7px;position:relative}
+.ticker .t::after{content:"·";position:absolute;right:-2px;color:var(--tx-3)}
+.ticker .t:last-child::after{display:none}
+.ticker b{color:var(--tx)}.ticker .k{color:var(--lime)}
+
+/* 状态演示行 */
+.states{display:flex;gap:26px;flex-wrap:wrap;font-family:var(--mono);font-size:12px;color:var(--tx-2);margin-top:4px}
+.states .s{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:9px 14px;background:var(--ink-2)}
+</style>
+</head>
+<body>
+<div class="frame">
+  <h0>XMCLAW · 招牌元素</h0>
+  <div class="title">生命体征状态栏（你说"不错"的那条，精修 + 三种处理）</div>
+  <div class="sub">设想：这条横条是**全 app 通用**的招牌——每个页面顶部都有，实时显示 agent 的"脉搏"。每段可点击跳到对应子系统（心跳→日志、记忆→记忆页、技能→技能页、进化→进化页）。下面给你三种处理 + 几个"活着"的状态，挑一个。</div>
+
+  <div class="caption">变体 1 · 分段 HUD（D 原型精修，胶囊分段）</div>
+  <div class="hud">
+    <div class="seg"><span class="orb"></span><b>HEARTBEAT</b><span class="k">alive</span></div>
+    <div class="seg"><span class="lab">记忆</span><b>1,916</b> facts</div>
+    <div class="seg"><span class="lab">技能</span><b>404</b><span class="k">+1 候选</span></div>
+    <div class="seg"><span class="lab">进化</span><span class="spark live"><i style="height:5px"></i><i style="height:9px"></i><i style="height:6px"></i><i style="height:12px"></i><i style="height:8px"></i><i style="height:14px"></i></span></div>
+    <div class="seg" style="margin-left:auto"><span class="lab">模型</span><b class="cy">Kimi K2.6</b></div>
+    <div class="seg"><span class="lab">自主</span><b>50</b><span class="lab">/100</span></div>
+  </div>
+  <div class="note">每段 hover 高亮、可点击。心跳球呼吸动效。进化 spark 实时跳动。</div>
+
+  <div class="caption">变体 2 · 仪表簇（每个指标一张小卡 + 微型计量条）</div>
+  <div class="cluster">
+    <div class="gauge"><div class="top"><span class="orb"></span> HEARTBEAT</div><div class="val">alive <small>1.2k turns</small></div><div class="meter"><i style="width:78%;background:var(--lime)"></i></div></div>
+    <div class="gauge"><div class="top">🧠 记忆</div><div class="val">1,916<small>facts</small></div><div class="meter"><i style="width:64%;background:var(--cyan)"></i></div></div>
+    <div class="gauge"><span class="badge">+1 候选</span><div class="top">⚙️ 技能</div><div class="val">404<small>installed</small></div><div class="meter"><i style="width:90%;background:var(--violet)"></i></div></div>
+    <div class="gauge"><div class="top">🧬 进化</div><div class="val">3<small>本周晋升</small></div><div class="meter"><i style="width:30%;background:var(--amber)"></i></div></div>
+    <div class="gauge"><div class="top">🎚 自主</div><div class="val">50<small>/100</small></div><div class="meter"><i style="width:50%;background:var(--lime-dim)"></i></div></div>
+  </div>
+  <div class="note">更"仪表盘 / 驾驶舱"感，信息更结构化，适合也放在仪表盘页顶部。</div>
+
+  <div class="caption">变体 3 · 极简单行 ticker（最轻，几乎不占地方）</div>
+  <div class="ticker">
+    <div class="t"><span class="orb"></span><b>alive</b></div>
+    <div class="t">记忆 <b>1,916</b></div>
+    <div class="t">技能 <b>404</b> <span class="k">+1</span></div>
+    <div class="t">进化 <span class="spark live"><i style="height:4px"></i><i style="height:8px"></i><i style="height:6px"></i><i style="height:11px"></i><i style="height:7px"></i></span></div>
+    <div class="t" style="margin-left:auto">Kimi K2.6</div>
+    <div class="t">自主 <b>50</b></div>
+  </div>
+  <div class="note">克制版，几乎只是一行字，适合聊天页这种"主角是对话"的页面。</div>
+
+  <div class="caption">心跳的"活着"状态（同一条会随 agent 状态变）</div>
+  <div class="states">
+    <div class="s"><span class="orb"></span> HEARTBEAT <span style="color:var(--lime)">alive</span> — 空闲待命，呼吸亮</div>
+    <div class="s"><span class="orb think"></span> HEARTBEAT <span style="color:var(--cyan)">thinking…</span> — 正在干活，脉冲扩散</div>
+    <div class="s"><span class="orb idle"></span> HEARTBEAT <span style="color:var(--tx-3)">idle</span> — 长时间无活动，灰静</div>
+  </div>
+</div>
+</body>
+</html>

@@ -90,6 +90,21 @@ class FailoverReason(enum.Enum):
     unknown = "unknown"                        # Unclassifiable — retry with backoff
 
 
+# Reasons that should never be retried with the same args — fast-fail.
+NON_TRANSIENT_REASONS: tuple[FailoverReason, ...] = (
+    FailoverReason.auth,
+    FailoverReason.auth_permanent,
+    FailoverReason.billing,
+    FailoverReason.model_not_found,
+    FailoverReason.format_error,
+)
+
+
+def is_non_transient_reason(reason: FailoverReason) -> bool:
+    """Return True if the reason is non-transient and should not be retried."""
+    return reason in NON_TRANSIENT_REASONS
+
+
 # ── Classification result ────────────────────────────────────────────
 
 @dataclass
@@ -123,6 +138,10 @@ class ClassifiedError:
     @property
     def is_auth(self) -> bool:
         return self.reason in (FailoverReason.auth, FailoverReason.auth_permanent)
+
+    @property
+    def is_transient(self) -> bool:
+        return self.reason not in NON_TRANSIENT_REASONS
 
 
 # ── Pattern libraries ────────────────────────────────────────────────
@@ -809,4 +828,6 @@ __all__ = [
     "ClassifiedError",
     "classify_api_error",
     "backoff_schedule",
+    "NON_TRANSIENT_REASONS",
+    "is_non_transient_reason",
 ]

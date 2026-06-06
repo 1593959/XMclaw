@@ -415,6 +415,7 @@ async def llm_extract_and_remember(
                 confidence=f["confidence"],
                 source_event_id=source_event_id,
                 bucket=bucket,
+                provenance="auto_extract_llm",
             )
             written.append(fact)
         except Exception as exc:  # noqa: BLE001

@@ -1001,6 +1001,7 @@ class BuiltinToolsMemoryMixin:
                 confidence=effective_conf,
                 bucket=bdef.tag,
                 source_event_id=getattr(call, "id", None),
+                provenance="tool_invoked",
             )
             cron_info: dict[str, Any] | None = None
             if action == "add" and bdef.tag == "commitment" and due_ts:

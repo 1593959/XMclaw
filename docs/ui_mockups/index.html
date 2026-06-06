@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XMclaw UI 样张对比</title>
+<style>
+  body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#111;color:#eee}
+  .bar{display:flex;gap:8px;align-items:center;padding:10px 16px;background:#1a1a1a;border-bottom:1px solid #2a2a2a;position:sticky;top:0}
+  .bar b{margin-right:8px}
+  .bar button{padding:7px 14px;border-radius:8px;border:1px solid #333;background:#222;color:#ccc;cursor:pointer;font-size:13px}
+  .bar button.on{background:#3a5bd9;border-color:#3a5bd9;color:#fff}
+  .bar .desc{margin-left:auto;color:#888;font-size:12.5px}
+  iframe{width:100%;height:calc(100vh - 49px);border:0;display:block;background:#fff}
+</style>
+</head>
+<body>
+  <div class="bar">
+    <b>XMclaw UI 样张</b>
+    <button data-f="G_chat_refined.html" class="on">✦ G · 精修聊天页</button>
+    <button data-f="F_statusbar_lab.html">🩺 状态栏实验室</button>
+    <button data-f="D_signature.html">D · 深空·爪(初版)</button>
+    <button data-f="E_bold.html">★ E · 大胆编辑</button>
+    <span style="width:1px;height:20px;background:#333"></span>
+    <button data-f="A_minimal.html">A · 极简</button>
+    <button data-f="B_dark_ide.html">B · 深色IDE</button>
+    <button data-f="C_warm.html">C · 温暖</button>
+    <span class="desc" id="d">★ 有识别性：爪痕母题 + 电光柠檬 + 心跳遥测，"活着"的深色控制台</span>
+  </div>
+  <iframe id="f" src="G_chat_refined.html"></iframe>
+  <script>
+    const D={G_chat_refined:"✦ 精修：变体1 状态栏 + 打磨过的侧栏/消息流/工具卡 + thinking 实时态 + 技能归纳浮层",
+             F_statusbar_lab:"🩺 招牌状态栏：你说不错的那条，三种处理 + 活着的状态演示",
+             D_signature:"★ 有识别性：爪痕母题 + 电光柠檬 + 心跳遥测，'活着'的深色控制台",
+             E_bold:"★ 有识别性：亮色高对比 + 超大号字 + 电光靛蓝 + 大爪痕，被设计过的'杂志'感",
+             A_minimal:"类 Linear / Claude：浅色、留白、克制专业",
+             B_dark_ide:"类 Cursor / VSCode：深色、高密度、工具感",
+             C_warm:"个人助理 / 陪伴感：暖色、圆角、有人格"};
+    document.querySelectorAll(".bar button").forEach(b=>b.onclick=()=>{
+      document.querySelectorAll(".bar button").forEach(x=>x.classList.remove("on"));
+      b.classList.add("on");
+      const f=b.dataset.f;document.getElementById("f").src=f;
+      document.getElementById("d").textContent=D[f.replace(".html","")];
+    });
+  </script>
+</body>
+</html>

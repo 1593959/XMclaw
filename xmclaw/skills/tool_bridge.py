@@ -113,7 +113,7 @@ _VALID_DISCLOSURE_MODES = frozenset({
     DISCLOSURE_MODE_UNIFIED,
     DISCLOSURE_MODE_AUTO,
 })
-_DEFAULT_UNIFIED_THRESHOLD = 20
+_DEFAULT_UNIFIED_THRESHOLD = 500
 
 
 def _to_tool_name(skill_id: str) -> str:
@@ -182,6 +182,13 @@ class SkillToolProvider:
     # ------------------------------------------------------------------
 
     def list_tools(self) -> list[ToolSpec]:
+        # Invalidate the tool-name cache so that any registry mutation
+        # (new registration, promote, rollback, uninstall) is visible
+        # on the next invoke() — otherwise list_tools() shows the new
+        # skill but invoke() returns "unknown skill tool" because the
+        # stale cache doesn't contain it.
+        self._invalidate_tool_name_cache()
+
         specs = []
         # B-299: prepend the meta-discovery tool so the LLM can ask
         # "is there a skill for X?" out-of-band when the prefilter's
@@ -341,9 +348,15 @@ class SkillToolProvider:
         try:
             out = await skill.run(SkillInput(args=call_args))
         except Exception as exc:  # noqa: BLE001
+            latency_ms = self._elapsed_ms(t0)
+            self._registry.record_usage(skill_id, success=False, latency_ms=latency_ms)
             return self._error_result(
                 call.id, f"{type(exc).__name__}: {exc}", t0
             )
+
+        # Record usage statistics for this invocation.
+        latency_ms = self._elapsed_ms(t0)
+        self._registry.record_usage(skill_id, success=bool(out.ok), latency_ms=latency_ms)
 
         # B-295: surface the chosen version in metadata so agent_loop's
         # GRADER_VERDICT publisher attributes the score to the right
@@ -366,7 +379,7 @@ class SkillToolProvider:
             ok=bool(out.ok),
             content=out.result,
             error=None if out.ok else _coerce_error(out.result),
-            latency_ms=self._elapsed_ms(t0),
+            latency_ms=latency_ms,
             side_effects=tuple(out.side_effects or ()),
             metadata=result_metadata,
         )
@@ -1698,6 +1711,17 @@ class SkillToolProvider:
                 for sid in self._registry.list_skill_ids()
             }
         return self._tool_name_cache.get(tool_name)
+
+    def _invalidate_tool_name_cache(self) -> None:
+        """Drop the lazy cache so the next invoke rebuilds it.
+
+        Called by list_tools() so that any registry mutation (new skill
+        registration, promote, rollback, uninstall) is visible on the
+        next turn — otherwise list_tools() shows the new skill but
+        invoke() returns "unknown skill tool" because the stale cache
+        doesn't contain it.
+        """
+        self._tool_name_cache = None
 
     @staticmethod
     def _error_result(call_id: str, error: str, t0: float) -> ToolResult:

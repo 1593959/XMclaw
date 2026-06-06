@@ -22,8 +22,8 @@ the tool's own self-report agree that the work was actually useful":
   infrastructure.
 * :class:`HoldoutTestSignal` — execute a registered deterministic
   check ("after this skill runs, file X exists with property Y").
-  **Stubbed** today (returns ``None`` until skill registry exposes
-  ``eval_test_id``); the abstraction is the load-bearing piece.
+  **Implemented** via :mod:`xmclaw.core.grader.holdout_registry`
+  (production) and optional on-disk JSON dataset (fallback).
 * :class:`CrossJudgeSignal` — two LLM judges from different families
   score the same artifact. **Disagreement is a NEGATIVE signal**, not
   a positive consensus. Peer research (arxiv 2505.22960) showed
@@ -64,6 +64,7 @@ Import direction (per ``xmclaw/core/AGENTS.md``):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Protocol
 
 from xmclaw.core.bus.events import BehavioralEvent, EventType
@@ -83,6 +84,15 @@ class IndependentSignalResult:
     score: float | None  # None = signal not applicable
     kind: str            # "user_followup" | "holdout_test" | "cross_judge_agreement" | "none"
     evidence: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class HoldoutExample:
+    """A single holdout example for dataset-based Signal B."""
+
+    skill_id: str
+    input: Any
+    expected_output: Any
 
 
 class IndependentSignal(Protocol):
@@ -277,35 +287,54 @@ class UserFollowupSignal:
 class HoldoutTestSignal:
     """Signal B — execute a deterministic holdout check.
 
-    Conceptually: a skill registers ``eval_test_id`` pointing at a
-    callable that returns ``True`` when the post-state of the world
-    matches the skill's claim ("file X exists", "DB row Y has value
-    Z"). On invocation, the grader looks up that callable, executes
-    it, and the boolean answer becomes the signal score (1.0 / 0.0).
+    Two resolution paths:
 
-    **Status (Epic #27 sweep #10, 2026-05-19):** fully wired via
-    :mod:`xmclaw.core.grader.holdout_registry`. Pre-fix this was a
-    stub that always returned ``None`` unless tests passed an
-    explicit ``holdout_test_passed`` payload override; the sweep
-    audit caught that the docs implied multi-signal grading was
-    real while only ``UserFollowupSignal`` actually fired. The
-    registry now lets production code register named checks at
-    boot time + skill load time; ``eval_test_id`` resolves via
-    :func:`holdout_registry.run_check`.
+    1. **Registry-based** (production): ``eval_test_id`` in the event
+       payload resolves to a registered callable via
+       :mod:`xmclaw.core.grader.holdout_registry`. The callable inspects
+       the post-state (e.g. file existence) and returns a boolean.
+
+    2. **Dataset-based** (fallback): on-disk JSON examples under
+       ``~/.xmclaw/holdout/*.json`` are loaded at init time. When an
+       event carries ``skill_id`` matching an example, the event's
+       ``result`` is compared against ``expected_output``.
 
     Resolution order:
       1. ``holdout_test_passed`` payload override (test escape hatch).
       2. ``eval_test_id`` → registry lookup → run → bool / None.
-      3. ``None`` (signal not applicable).
+      3. ``skill_id`` → on-disk example match → compare.
+      4. ``None`` (signal not applicable).
 
     Honest about partial infra: the registry has no automatic
     population — skills that want a holdout check must either
     register one at boot or in their loader hook. Empty registry
-    = the signal continues to behave as it did before the fix
-    (returns None for events without payload override).
+    and empty dataset = the signal returns None for events without
+    payload override.
     """
 
     name = "holdout_test"
+
+    def __init__(self, holdout_dir: Path | None = None) -> None:
+        self._holdout_dir = holdout_dir or Path.home() / ".xmclaw" / "holdout"
+        self._holdout_dir.mkdir(parents=True, exist_ok=True)
+        self._examples: list[HoldoutExample] = []
+        self._load_examples()
+
+    def _load_examples(self) -> None:
+        """Load holdout examples from ``self._holdout_dir/*.json``."""
+        import json
+
+        for f in self._holdout_dir.glob("*.json"):
+            try:
+                data = json.loads(f.read_text())
+                self._examples.append(HoldoutExample(**data))
+            except Exception:
+                pass
+
+    @staticmethod
+    def _match(actual: Any, expected: Any) -> bool:
+        """Compare actual result against expected output."""
+        return actual == expected
 
     async def probe(
         self,
@@ -326,8 +355,8 @@ class HoldoutTestSignal:
                 "source": "payload_override",
             }
         if not eval_test_id:
-            # No registered holdout — signal not applicable.
-            return None, {}
+            # No registered holdout id — try dataset fallback.
+            return await self._probe_dataset(event)
 
         # Sweep #10 real path: resolve eval_test_id → callable → run.
         from xmclaw.core.grader.holdout_registry import (
@@ -351,6 +380,57 @@ class HoldoutTestSignal:
             "passed": passed,
             "source": "registry",
         }
+
+    async def _probe_dataset(
+        self,
+        event: BehavioralEvent,
+    ) -> tuple[float | None, dict[str, Any]]:
+        """Dataset-based fallback: compare event result against on-disk
+        holdout examples for the matching skill.
+        """
+        if not self._examples:
+            return None, {}
+
+        skill_id = event.payload.get("skill_id")
+        if not skill_id:
+            return None, {}
+
+        matching = [ex for ex in self._examples if ex.skill_id == skill_id]
+        if not matching:
+            return None, {}
+
+        result = event.payload.get("result")
+        passed = sum(1 for ex in matching if self._match(result, ex.expected_output))
+        total = len(matching)
+        ratio = passed / total if total > 0 else 0.0
+
+        if ratio >= 0.8:
+            return 0.7, {
+                "source": "holdout_dataset",
+                "skill_id": skill_id,
+                "passed": passed,
+                "total": total,
+                "verdict": "promising",
+                "reason": f"Matched {passed}/{total} holdout examples",
+            }
+        elif ratio >= 0.5:
+            return 0.4, {
+                "source": "holdout_dataset",
+                "skill_id": skill_id,
+                "passed": passed,
+                "total": total,
+                "verdict": "mixed",
+                "reason": f"Matched {passed}/{total} holdout examples",
+            }
+        else:
+            return 0.3, {
+                "source": "holdout_dataset",
+                "skill_id": skill_id,
+                "passed": passed,
+                "total": total,
+                "verdict": "concerning",
+                "reason": f"Only matched {passed}/{total} holdout examples",
+            }
 
 
 class CrossJudgeSignal:
@@ -460,6 +540,7 @@ async def best_independent_score(
 
 __all__ = [
     "CrossJudgeSignal",
+    "HoldoutExample",
     "HoldoutTestSignal",
     "IndependentSignal",
     "IndependentSignalResult",

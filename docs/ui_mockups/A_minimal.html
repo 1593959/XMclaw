@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XMclaw — 样张 A · 极简干净</title>
+<style>
+  /* ===== 样张 A：极简干净（类 Linear / Claude）=====
+     浅色为主、大量留白、克制配色、清晰排版。可视为设计方向参考，非最终代码。 */
+  :root{
+    --bg:#fbfbfa; --surface:#ffffff; --surface-2:#f4f4f2;
+    --border:#e8e8e4; --border-strong:#dcdcd6;
+    --text:#1f1f1d; --text-2:#6b6b66; --text-3:#9b9b94;
+    --accent:#3a5bd9; --accent-soft:#eef1fc;
+    --user-bg:#f0f1f4; --code-bg:#1c1d22; --code-text:#e6e6e6;
+    --ok:#2f9e6b; --warn:#c9821e;
+    --radius:12px; --radius-sm:8px;
+    --shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.05);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:var(--font);background:var(--bg);color:var(--text);
+    font-size:14.5px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  .app{display:grid;grid-template-columns:248px 1fr;height:100vh}
+
+  /* ---- 侧栏 ---- */
+  .side{background:var(--surface-2);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;padding:14px 10px}
+  .brand{display:flex;align-items:center;gap:9px;padding:6px 8px 14px}
+  .logo{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#4a6bff,#7d5bff);
+    display:grid;place-items:center;color:#fff;font-weight:700;font-size:13px}
+  .brand b{font-size:15px;font-weight:650;letter-spacing:.2px}
+  .newbtn{margin:0 0 14px;display:flex;align-items:center;gap:8px;width:100%;
+    padding:9px 12px;border:1px solid var(--border-strong);background:var(--surface);
+    border-radius:var(--radius-sm);color:var(--text);font-size:13.5px;cursor:pointer;
+    font-family:inherit;font-weight:550;box-shadow:var(--shadow)}
+  .newbtn:hover{border-color:var(--accent)}
+  .seclabel{font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+    color:var(--text-3);padding:8px 10px 4px;font-weight:600}
+  .navitem,.chatitem{display:flex;align-items:center;gap:9px;padding:7px 10px;
+    border-radius:var(--radius-sm);color:var(--text-2);cursor:pointer;font-size:13.5px}
+  .navitem:hover,.chatitem:hover{background:var(--surface);color:var(--text)}
+  .navitem.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .chatitem{color:var(--text);font-weight:500}
+  .chatitem small{color:var(--text-3);font-weight:400}
+  .chatlist{overflow:auto;flex:1;margin-top:4px}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--ok)}
+  .side-foot{padding:10px;border-top:1px solid var(--border);display:flex;
+    align-items:center;gap:9px;color:var(--text-2);font-size:12.5px}
+  .ava{width:24px;height:24px;border-radius:50%;background:#d9d6ff}
+
+  /* ---- 主区 ---- */
+  .main{display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+  .topbar{height:52px;border-bottom:1px solid var(--border);display:flex;
+    align-items:center;justify-content:space-between;padding:0 22px;background:var(--surface)}
+  .topbar .title{font-weight:600;font-size:14.5px}
+  .topbar .meta{display:flex;align-items:center;gap:14px;color:var(--text-2);font-size:12.5px}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
+    background:var(--surface-2);border:1px solid var(--border);font-size:12px}
+  .pill .dot{background:var(--ok)}
+
+  .stream{flex:1;overflow:auto;padding:30px 0}
+  .turn{max-width:760px;margin:0 auto;padding:0 24px 26px}
+  .role{display:flex;align-items:center;gap:9px;margin-bottom:7px;font-size:12.5px;
+    color:var(--text-3);font-weight:600;letter-spacing:.2px}
+  .role .badge{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;
+    font-size:11px;font-weight:700;color:#fff}
+  .badge.u{background:#8a8f99}.badge.a{background:linear-gradient(135deg,#4a6bff,#7d5bff)}
+  .bubble.user{background:var(--user-bg);border-radius:var(--radius);padding:12px 15px}
+  .msg{font-size:15px;line-height:1.7}
+  .msg p{margin:0 0 10px}.msg p:last-child{margin:0}
+
+  /* 工具卡片 */
+  .tool{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;
+    margin:12px 0;background:var(--surface);box-shadow:var(--shadow)}
+  .tool .head{display:flex;align-items:center;gap:9px;padding:9px 13px;
+    background:var(--surface-2);border-bottom:1px solid var(--border);font-size:12.5px}
+  .tool .head .tname{font-family:var(--mono);font-weight:600;color:var(--text)}
+  .tool .head .ok{margin-left:auto;color:var(--ok);font-size:12px;font-weight:600}
+  .tool .body{padding:11px 13px;font-family:var(--mono);font-size:12.5px;
+    color:var(--text-2);white-space:pre-wrap}
+
+  /* 代码块 */
+  pre.code{background:var(--code-bg);color:var(--code-text);border-radius:var(--radius);
+    padding:14px 16px;overflow:auto;font-family:var(--mono);font-size:12.8px;line-height:1.65;margin:12px 0}
+  pre.code .k{color:#c792ea}.code .s{color:#c3e88d}.code .f{color:#82aaff}.code .c{color:#5c6370}
+
+  /* 输入区 */
+  .composer-wrap{padding:14px 24px 22px;background:linear-gradient(transparent,var(--bg) 30%)}
+  .composer{max-width:760px;margin:0 auto;background:var(--surface);border:1px solid var(--border-strong);
+    border-radius:16px;box-shadow:var(--shadow);padding:8px 8px 8px 16px;display:flex;
+    align-items:flex-end;gap:10px}
+  .composer textarea{flex:1;border:0;outline:0;resize:none;font-family:inherit;font-size:15px;
+    line-height:1.6;background:transparent;color:var(--text);padding:8px 0;max-height:160px}
+  .send{width:34px;height:34px;border-radius:10px;border:0;background:var(--accent);color:#fff;
+    cursor:pointer;display:grid;place-items:center;font-size:15px}
+  .ctools{display:flex;gap:4px}
+  .ctool{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:var(--surface);
+    color:var(--text-2);cursor:pointer;display:grid;place-items:center;font-size:14px}
+  .hint{max-width:760px;margin:7px auto 0;color:var(--text-3);font-size:11.5px;text-align:center}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 侧栏 -->
+  <aside class="side">
+    <div class="brand"><div class="logo">X</div><b>XMclaw</b></div>
+    <button class="newbtn">＋ 新对话</button>
+    <div class="seclabel">最近会话</div>
+    <div class="chatlist">
+      <div class="chatitem" style="background:var(--surface)"><span class="dot"></span>把项目里的图片批量压缩 <small>· 刚刚</small></div>
+      <div class="chatitem">记忆系统调研 <small>· 2h</small></div>
+      <div class="chatitem">技能自主调用排查 <small>· 昨天</small></div>
+      <div class="chatitem">部署脚本优化 <small>· 周一</small></div>
+    </div>
+    <div class="seclabel">导航</div>
+    <div class="navitem active">💬 对话</div>
+    <div class="navitem">🧠 记忆</div>
+    <div class="navitem">⚙️ 技能</div>
+    <div class="navitem">📊 仪表盘</div>
+    <div class="side-foot"><div class="ava"></div>本地 daemon · 127.0.0.1</div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <div class="topbar">
+      <div class="title">把项目里的图片批量压缩</div>
+      <div class="meta">
+        <span class="pill"><span class="dot"></span>Kimi K2.6</span>
+        <span class="pill">记忆 ✓</span>
+        <span>⋯</span>
+      </div>
+    </div>
+
+    <div class="stream">
+      <div class="turn">
+        <div class="role"><span class="badge u">我</span>You</div>
+        <div class="bubble user"><div class="msg"><p>帮我把 assets 目录下所有 PNG 压缩一下，生成一个压缩报告。</p></div></div>
+      </div>
+
+      <div class="turn">
+        <div class="role"><span class="badge a">AI</span>XMclaw</div>
+        <div class="msg">
+          <p>好的，我先扫描 <code>assets/</code> 下的 PNG，然后逐个用 pngquant 压缩，最后汇总成报告。</p>
+          <div class="tool">
+            <div class="head">🔧 <span class="tname">file_glob</span><span style="color:var(--text-3)">pattern: assets/**/*.png</span><span class="ok">✓ 42 files</span></div>
+            <div class="body">assets/hero.png · assets/icons/logo.png · assets/bg/cover.png … (+39)</div>
+          </div>
+          <div class="tool">
+            <div class="head">🔧 <span class="tname">bash</span><span style="color:var(--text-3)">pngquant --quality=65-85</span><span class="ok">✓ done</span></div>
+            <div class="body">compressed 42 files · 18.4 MB → 6.1 MB (-66.8%)</div>
+          </div>
+          <p>压缩完成。下面是写入的报告脚本：</p>
+<pre class="code"><span class="c"># report.md 摘要</span>
+<span class="k">总计</span>: 42 张 · <span class="f">18.4 MB</span> → <span class="s">6.1 MB</span>
+<span class="k">节省</span>: 12.3 MB (66.8%)
+<span class="k">最大单张</span>: hero.png 2.1 MB → 0.6 MB</pre>
+          <p>报告已写到 <code>assets/compress_report.md</code>，要我把这套流程存成一个可复用技能吗？</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="ctools"><button class="ctool">＋</button><button class="ctool">🎤</button></div>
+        <textarea rows="1" placeholder="给 XMclaw 发消息…">好，存成技能</textarea>
+        <button class="send">↑</button>
+      </div>
+      <div class="hint">XMclaw 可能出错，关键结论请核实 · Enter 发送，Shift+Enter 换行</div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
