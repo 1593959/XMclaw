@@ -11,6 +11,7 @@ const { useState, useEffect, useCallback } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 import { apiGet, apiPost } from "../lib/api.js";
+import { buildWsUrl } from "../lib/ws.js";
 import { toast } from "../lib/toast.js";
 import { confirmDialog } from "../lib/dialog.js";
 import { Vitals, VitalsCell, Readout, Sparkbar } from "../components/molecules/Instrument.js";
@@ -79,19 +80,57 @@ function RoomRunPanel({ token, room }) {
   const [running, setRunning] = useState(false);
   const [chatRows, setChatRows] = useState([]);       // [{speaker,text}]
   const [wf, setWf] = useState(null);                 // workflow result
+  const [live, setLive] = useState([]);               // 实时活动流 [{agent,label,kind}]
+  // 实时活动：运行时开 WS 订阅房间 session，按 agent_id 显示谁在思考/调工具/发言。
+  // 事件本就发到 group:<room_id>（每个 agent 的 run_turn 用房间 session_id）。
+  const openLiveWs = () => {
+    try {
+      const ws = new WebSocket(buildWsUrl("group:" + room.room_id, token));
+      ws.onmessage = (ev) => {
+        let f; try { f = JSON.parse(ev.data); } catch (_) { return; }
+        if (f.replayed) return;            // 历史回放不算实时
+        const a = f.agent_id || "?";
+        const t = f.type;
+        let label = null, kind = "info";
+        if (t === "llm_request") { label = "正在思考…"; kind = "think"; }
+        else if (t === "tool_call_emitted") { label = "调用 " + ((f.payload && (f.payload.name || f.payload.tool_name)) || "工具"); kind = "tool"; }
+        else if (t === "tool_invocation_finished") { label = "工具完成"; kind = "tool"; }
+        else if (t === "llm_response") { label = "已发言"; kind = "done"; }
+        if (label) setLive((prev) => [...prev.slice(-40), { agent: a, label, kind, ts: Date.now() }]);
+      };
+      return ws;
+    } catch (_) { return null; }
+  };
   const run = async () => {
-    setRunning(true); setWf(null);
+    setRunning(true); setWf(null); setLive([]);
+    const ws = openLiveWs();
     try {
       const out = await apiPost(`/api/v2/rooms/${encodeURIComponent(room.room_id)}/run`, { message: msg.trim() }, token);
       if (room.mode === "workflow") setWf(out);
       else setChatRows(out.transcript || []);
       setMsg("");
     } catch (e) { toast.error("运行失败：" + (e.message || e)); }
-    finally { setRunning(false); }
+    finally {
+      setRunning(false);
+      try { ws && ws.close(); } catch (_) {}
+    }
   };
   return html`
     <div class="xi-panel" style="padding:12px;margin-top:10px">
       <div class="xi-seclabel" style="margin-bottom:8px">${room.mode === "workflow" ? "工作流运行" : "群聊"} · ${room.room_id}</div>
+      ${(running || live.length > 0) ? html`
+        <div style="margin-bottom:10px;border:1px solid var(--nb-border);border-radius:7px;padding:7px 10px;background:color-mix(in srgb,var(--nb-cyan,#06B6D4) 6%,transparent)">
+          <div class="xi-seclabel" style="margin-bottom:5px">实时活动 ${running ? "· 运行中…" : "· 已结束"}</div>
+          <div style="display:flex;flex-direction:column;gap:3px;max-height:140px;overflow:auto;font-family:var(--nb-font-mono);font-size:11.5px">
+            ${live.length === 0 ? html`<span style="opacity:.6">等待 agent 响应…</span>` : null}
+            ${live.slice(-14).map((e, i) => html`
+              <div key=${i} style="display:flex;gap:6px;align-items:center">
+                <span style="width:6px;height:6px;border-radius:50%;background:${speakerColor(e.agent)};flex:0 0 auto"></span>
+                <span style="color:${speakerColor(e.agent)}">${e.agent}</span>
+                <span style="opacity:.8">${e.kind === "think" ? "💭" : e.kind === "tool" ? "🔧" : e.kind === "done" ? "✓" : "·"} ${e.label}</span>
+              </div>`)}
+          </div>
+        </div>` : null}
       ${room.mode === "workflow"
         ? html`
           ${wf ? html`
