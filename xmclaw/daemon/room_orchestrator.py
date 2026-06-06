@@ -106,8 +106,13 @@ class RoomOrchestrator:
     # ════════════════════════════════════════════════════════════════════
     async def _run_chat(self, user_message: str, on_speaker: OnSpeaker | None) -> dict[str, Any]:
         spoke: list[str] = []
+        # @点名：用户消息以 @<参与者> 开头 → 强制该 agent 先发言（手动指定讲者）。
+        forced = self._parse_mention(user_message)
         for _ in range(max(1, int(self.room.max_rounds))):
-            speaker = await self._select_chat_speaker()
+            if forced is not None:
+                speaker, forced = forced, None
+            else:
+                speaker = await self._select_chat_speaker()
             if speaker is None:
                 break
             ctx = self._chat_context(speaker)
@@ -115,6 +120,17 @@ class RoomOrchestrator:
             spoke.append(speaker)
             self._last_speaker = speaker
         return {"speakers": spoke, "rounds": len(spoke), "ok": True}
+
+    def _parse_mention(self, user_message: str) -> str | None:
+        """从 ``@aid …`` 抽出被点名的参与者（精确匹配 room.participants）。"""
+        m = re.match(r"^\s*@(\S+)", user_message or "")
+        if not m:
+            return None
+        tag = m.group(1)
+        for p in self.room.participants:
+            if p == tag:
+                return p
+        return None
 
     async def _select_chat_speaker(self) -> str | None:
         ps = list(self.room.participants)

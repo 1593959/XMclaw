@@ -63,10 +63,19 @@ function AgentRow({ a, onDelete, busy }) {
           ${typeof a.tool_count === "number" ? html`<${Badge} tone="muted" title="工具数量">${a.tool_count} tools</${Badge}>` : null}
         </span>
       </div>
+      ${(a.role || a.goal)
+        ? html`<div style="display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.3rem">
+            ${a.role ? html`<${Badge} tone="purple" title="人设角色">🎭 ${a.role}</${Badge}>` : null}
+            ${a.goal ? html`<span style="font-size:.72rem;color:var(--xmc-fg-muted)">🎯 ${a.goal}</span>` : null}
+          </div>`
+        : null}
+      ${a.backstory
+        ? html`<small style="display:block;margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.7rem">📖 ${a.backstory}</small>`
+        : null}
       ${a.model
         ? html`<small style="display:block;margin-top:.25rem;color:var(--xmc-fg-muted);font-size:.75rem">模型: <code>${a.model}</code></small>`
         : null}
-      ${a.system_prompt_preview
+      ${(a.system_prompt_preview && !a.role)
         ? html`<small style="display:block;margin-top:.2rem;color:var(--xmc-fg-muted);font-size:.72rem">${a.system_prompt_preview}…</small>`
         : null}
       ${!isPrimary
@@ -94,6 +103,9 @@ const PERSONA_TEMPLATES = [
     key: "code_reviewer",
     label: "🔍 代码审查",
     agent_id: "code_reviewer",
+    role: "代码审查员",
+    goal: "找出代码里的 bug、安全与性能问题并给出可落地的修改建议",
+    backstory: "资深工程师，挑剔但只对事不对人，从不空泛表扬",
     system_prompt: (
       "你是 XMclaw 的代码审查子 agent。当主 agent 派活给你时：\n"
       + "1. 用 file_read / list_dir 看完相关文件\n"
@@ -106,6 +118,9 @@ const PERSONA_TEMPLATES = [
     key: "test_runner",
     label: "🧪 测试执行",
     agent_id: "test_runner",
+    role: "测试执行员",
+    goal: "跑测试、定位失败、给最小复现，不擅自改代码",
+    backstory: "严格遵循流程，结果导向，只汇报事实",
     system_prompt: (
       "你是 XMclaw 的测试子 agent。任务流程：\n"
       + "1. bash 运行 pytest / npm test / 用户指定的命令\n"
@@ -117,6 +132,9 @@ const PERSONA_TEMPLATES = [
     key: "doc_writer",
     label: "📝 文档撰写",
     agent_id: "doc_writer",
+    role: "技术文档撰写",
+    goal: "把代码功能写成清晰的中文文档/注释/API doc",
+    backstory: "擅长把复杂逻辑讲给新人听，落盘前先给主 agent 确认",
     system_prompt: (
       "你是 XMclaw 的文档子 agent。当被派活：\n"
       + "1. file_read 看代码弄懂功能\n"
@@ -128,6 +146,9 @@ const PERSONA_TEMPLATES = [
     key: "researcher",
     label: "🌐 网络研究",
     agent_id: "researcher",
+    role: "网络研究员",
+    goal: "找最新资料、读核心源、给带链接的事实总结",
+    backstory: "信息敏感，优先 30 天内资料，严格区分事实与观点",
     system_prompt: (
       "你是 XMclaw 的研究子 agent。主 agent 给你一个题目时：\n"
       + "1. web_search 找最新资料（优先 30 天内）\n"
@@ -139,6 +160,9 @@ const PERSONA_TEMPLATES = [
     key: "debugger",
     label: "🐛 Bug 排查",
     agent_id: "debugger",
+    role: "Bug 排查员",
+    goal: "复现错误、顺 stack trace 找根因、给最小修复补丁",
+    backstory: "顺藤摸瓜的侦探型，改动必讲清为什么这么改",
     system_prompt: (
       "你是 XMclaw 的 debug 子 agent。流程：\n"
       + "1. 收到错误 → bash 复现\n"
@@ -150,6 +174,9 @@ const PERSONA_TEMPLATES = [
     key: "planner",
     label: "🗺 任务规划",
     agent_id: "planner",
+    role: "任务规划师",
+    goal: "把大任务拆成 3-7 个可验证的有序步骤",
+    backstory: "条理清晰，每步都标明工具与完成判据，不说废话",
     system_prompt: (
       "你是 XMclaw 的规划子 agent。主 agent 抛过来一个大任务：\n"
       + "1. 拆成 3-7 个有序步骤\n"
@@ -169,13 +196,21 @@ function _templateConfigJson(tpl) {
 
 function CreateAgentForm({ token, onCreated }) {
   const [agentId, setAgentId] = useState("");
+  const [role, setRole] = useState("");
+  const [goal, setGoal] = useState("");
+  const [backstory, setBackstory] = useState("");
+  const [style, setStyle] = useState("");
   const [configText, setConfigText] = useState(
-    '{\n  "llm": {\n    "provider": "anthropic",\n    "model": "claude-sonnet-4-6"\n  },\n  "system_prompt": "你是一个专注于代码审查的子 agent。"\n}'
+    '{\n  "llm": {\n    "provider": "anthropic",\n    "model": "claude-sonnet-4-6"\n  }\n}'
   );
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const applyTemplate = (tpl) => {
     setAgentId(tpl.agent_id);
+    setRole(tpl.role || "");
+    setGoal(tpl.goal || "");
+    setBackstory(tpl.backstory || "");
+    setStyle(tpl.style || "");
     setConfigText(_templateConfigJson(tpl));
   };
 
@@ -196,10 +231,13 @@ function CreateAgentForm({ token, onCreated }) {
     try {
       await postJson("/api/v2/agents", token, {
         agent_id: agentId.trim(),
+        // G5: 结构化人格随顶层传给后端，自动合成进 system_prompt
+        role: role.trim(), goal: goal.trim(),
+        backstory: backstory.trim(), style: style.trim(),
         config,
       });
       toast.success(`agent ${agentId} 已创建`);
-      setAgentId("");
+      setAgentId(""); setRole(""); setGoal(""); setBackstory(""); setStyle("");
       setOpen(false);
       onCreated();
     } catch (err) {
@@ -248,6 +286,25 @@ function CreateAgentForm({ token, onCreated }) {
           required
         />
       </label>
+      <div style="margin-bottom:.4rem">
+        <small style="display:block;margin-bottom:.25rem;color:var(--xmc-fg-muted);font-size:.72rem">
+          🎭 结构化人格 (G5 — 编排时主持人/主管靠这些判断该谁上；会自动合成进 system_prompt)：
+        </small>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem">
+          <input type="text" value=${role} onInput=${(e) => setRole(e.target.value)}
+            placeholder="角色 role（如：研究员）"
+            style="padding:.3rem;font-size:.76rem" />
+          <input type="text" value=${style} onInput=${(e) => setStyle(e.target.value)}
+            placeholder="风格 style（如：严谨）"
+            style="padding:.3rem;font-size:.76rem" />
+        </div>
+        <input type="text" value=${goal} onInput=${(e) => setGoal(e.target.value)}
+          placeholder="目标 goal（这个 agent 要达成什么）"
+          style="display:block;width:100%;margin-top:.4rem;padding:.3rem;font-size:.76rem" />
+        <input type="text" value=${backstory} onInput=${(e) => setBackstory(e.target.value)}
+          placeholder="背景 backstory（一句话人物设定，可空）"
+          style="display:block;width:100%;margin-top:.4rem;padding:.3rem;font-size:.76rem" />
+      </div>
       <label style="display:block;margin-bottom:.4rem;font-size:.78rem">
         config (JSON — 直接抄主 agent config.json 里 llm 节即可):
         <textarea

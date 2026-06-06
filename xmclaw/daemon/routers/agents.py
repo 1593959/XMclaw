@@ -35,6 +35,46 @@ router = APIRouter(prefix="/api/v2/agents", tags=["agents"])
 
 _RESERVED_IDS = frozenset({"main"})
 
+# G5: 结构化人格字段（CrewAI 式）。存在 agent config 顶层，既喂给编排器选讲/
+# 派活（见 routers/rooms.py:_persona_of），也合成进 system_prompt 让 agent 真按
+# 人格说话。
+_PERSONA_KEYS = ("role", "goal", "backstory", "style")
+
+
+def _compose_persona(config: dict[str, Any]) -> None:
+    """把 role/goal/backstory/style 合成成一段中文人设，前置进 system_prompt（原位改）。
+
+    幂等：用一对标记夹住人设块，重复 create 不会叠加。无任何人格字段则不动。
+    """
+    parts: list[str] = []
+    role = str(config.get("role") or "").strip()
+    goal = str(config.get("goal") or "").strip()
+    backstory = str(config.get("backstory") or "").strip()
+    style = str(config.get("style") or "").strip()
+    if role:
+        parts.append(f"你的身份是「{role}」。")
+    if goal:
+        parts.append(f"你的核心目标：{goal}")
+    if backstory:
+        parts.append(f"背景设定：{backstory}")
+    if style:
+        parts.append(f"表达风格：{style}")
+    if not parts:
+        return
+    block = "【人设】\n" + "\n".join(parts)
+    existing = str(config.get("system_prompt") or "").strip()
+    # 去掉旧人设块（若有），避免叠加
+    import re as _re
+    existing = _re.sub(r"【人设】[\s\S]*?(?=\n\n|\Z)", "", existing).strip()
+    config["system_prompt"] = (block + ("\n\n" + existing if existing else "")).strip()
+
+
+def _persona_fields(cfg: dict[str, Any]) -> dict[str, Any]:
+    """从 config 抽出人格字段供 UI 展示（仅非空）。"""
+    if not isinstance(cfg, dict):
+        return {}
+    return {k: cfg[k] for k in _PERSONA_KEYS if cfg.get(k)}
+
 
 def _manager(request: Request) -> MultiAgentManager | None:
     """Pull the manager off ``app.state``.
@@ -83,6 +123,7 @@ def _workspace_summary(
         sp = cfg.get("system_prompt") or llm_cfg.get("system_prompt") or ""
         if isinstance(sp, str) and sp.strip():
             base["system_prompt_preview"] = sp.strip()[:120]
+        base.update(_persona_fields(cfg))
     loop = getattr(ws, "agent_loop", None)
     if loop is not None:
         tools = getattr(loop, "_tools", None)
@@ -123,6 +164,7 @@ def _primary_summary(request: Request) -> dict[str, Any]:
         sp = cfg.get("system_prompt") or llm_cfg.get("system_prompt") or ""
         if isinstance(sp, str) and sp.strip():
             base["system_prompt_preview"] = sp.strip()[:120]
+        base.update(_persona_fields(cfg))
     tools = getattr(primary, "_tools", None)
     if tools is not None and hasattr(tools, "list_tools"):
         try:
@@ -213,6 +255,13 @@ async def create_agent(request: Request) -> JSONResponse:
         return JSONResponse(
             {"ok": False, "error": "config must be an object"}, status_code=400
         )
+
+    # G5: 顶层也接受 role/goal/backstory/style（UI 直接传），并入 config。
+    for k in _PERSONA_KEYS:
+        if k in body and k not in config:
+            config[k] = body[k]
+    # 把结构化人格合成进 system_prompt（agent 真按人设说话）。
+    _compose_persona(config)
 
     try:
         ws = await manager.create(agent_id, config)

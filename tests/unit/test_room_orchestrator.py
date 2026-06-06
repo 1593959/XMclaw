@@ -82,6 +82,15 @@ async def test_chat_llm_selects_speaker_and_can_stop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_at_mention_forces_first_speaker() -> None:
+    loops = _loops("alice", "bob")
+    room = GroupRoom(room_id="r", strategy="chat", participants=["alice", "bob"], max_rounds=1)
+    orch = RoomOrchestrator(room, lambda x: loops.get(x))  # 无 LLM
+    out = await orch.run("@bob 你先说")
+    assert out["speakers"][0] == "bob"  # @点名生效
+
+
+@pytest.mark.asyncio
 async def test_chat_excludes_last_speaker_in_round_robin() -> None:
     loops = _loops("x", "y", "z")
     room = GroupRoom(room_id="r", strategy="chat", participants=["x", "y", "z"], max_rounds=3)

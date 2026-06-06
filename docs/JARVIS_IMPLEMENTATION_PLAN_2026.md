@@ -481,15 +481,24 @@ fact 是少量原子知识单元（句子级）。
       文件：`daemon/room_orchestrator.py`、`daemon/group_room.py(strategy 字段)`、
       `daemon/routers/rooms.py`、`static/pages/Rooms.js(4 策略选择器)`、
       `tests/unit/test_room_orchestrator.py(14)`、`tests/integration/test_rooms_router.py`。
-- [ ] **G3** 前端群聊房间 UI 打磨(多讲者 transcript / @点名 / 参与者栏)
-- [ ] **G4** 多 agent 控制面板(`pages/Agents.js` 升级)
-- [ ] **G5** 结构化人格(role/goal/backstory) config 落地 + 预算/死循环检测
+- [x] **G3** 前端群聊房间 UI：多讲者 transcript + 参与者侧栏(实时状态点) + @点名
+      (点名字/手打 `@aid` 强制该 agent 先发言，后端 `_parse_mention` 接) + 4 策略统一
+      渲染(非群聊也显示分步 transcript + 最终结果块)。`static/pages/Rooms.js`。
+- [x] **G4** 多 agent 控制面板：`pages/Agents.js` 显示人设(🎭 role/🎯 goal/📖 backstory)
+      徽章 + 创建表单加结构化人格输入 + 6 个预设模板带 role/goal/backstory。
+- [x] **G5** 结构化人格落地：agent config 顶层 role/goal/backstory/style →
+      `_compose_persona` 幂等合成进 system_prompt(agent 真按人设说话)，并经 summary
+      透出供编排器 `_persona_of` 选讲/派活。`routers/agents.py`、`tests/unit/test_agent_persona.py(5)`。
+- [ ] **G5b** 预算/token 上限 + 死循环额外检测(autonomous 已有 stall→replan)。
 
 **Group 进度日志**
 2026-06-06: G1 落地 — 房间模型/注册表/编排器 + 单测 (commit 待填)
 2026-06-06: G 重做 — 用户判错"逻辑跑偏"，调研 AutoGen/Magentic-One/CrewAI/LangGraph 真实
   实现，重写为统一 `RoomOrchestrator`(4 策略)，修历史模型+参与者限定+真接 LLM 选讲/派活/
-  台账，退役旧两内核；28 测试通过 (commit 待填)
+  台账，退役旧两内核；28 测试通过 (commit a5d1c18)
+2026-06-06: G3+G4+G5 — 群聊 UI(参与者侧栏+实时状态+@点名) + 多 agent 面板人设展示/创建 +
+  结构化人格落 config(_compose_persona 合成 system_prompt)；@点名后端接 _parse_mention；
+  20 测试通过 (commit 待填)
 
 ---
 

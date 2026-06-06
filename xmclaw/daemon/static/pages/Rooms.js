@@ -115,13 +115,22 @@ function RoomRunPanel({ token, room }) {
       return ws;
     } catch (_) { return null; }
   };
+  // 生效策略：room.strategy 优先，否则从 mode 推（与后端 resolve_strategy 同构）
+  const STRAT_LABEL = { chat: "群聊", sequential: "固定流水线", supervisor: "主管派活", autonomous: "目标驱动·自主" };
+  const strat = room.strategy || (room.mode === "workflow" ? "autonomous" : "chat");
+  const isChat = strat === "chat";
+  // 参与者实时状态：从 live 流取每个 agent 最近一次动作
+  const statusOf = (aid) => {
+    for (let i = live.length - 1; i >= 0; i--) if (live[i].agent === aid) return live[i];
+    return null;
+  };
   const run = async () => {
     setRunning(true); setWf(null); setLive([]);
     const ws = openLiveWs();
     try {
       const out = await apiPost(`/api/v2/rooms/${encodeURIComponent(room.room_id)}/run`, { message: msg.trim() }, token);
-      if (room.mode === "workflow") setWf(out);
-      else setChatRows(out.transcript || []);
+      setChatRows(out.transcript || []);           // 4 策略都回 transcript
+      if (!isChat) setWf(out);                       // 非群聊额外给最终结果块
       setMsg("");
     } catch (e) { toast.error("运行失败：" + (e.message || e)); }
     finally {
@@ -129,13 +138,21 @@ function RoomRunPanel({ token, room }) {
       try { ws && ws.close(); } catch (_) {}
     }
   };
+  // @点名：把消息开头换成 @aid（替换已有的前导 @）
+  const mention = (aid) => setMsg((m) => `@${aid} ` + String(m || "").replace(/^@\S+\s*/, ""));
   return html`
     <div class="xi-panel" style="padding:12px;margin-top:10px">
-      <div class="xi-seclabel" style="margin-bottom:8px">${room.mode === "workflow" ? "工作流运行" : "群聊"} · ${room.room_id}</div>
+      <div class="xi-seclabel" style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+        <span>${STRAT_LABEL[strat] || strat} · ${room.room_id}</span>
+        ${room.shared_memory ? html`<span style="font-size:10px;opacity:.6">🧠 记忆互通</span>` : null}
+      </div>
+      <div style="display:flex;gap:12px;align-items:flex-start">
+        <!-- 主区 -->
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
       ${(running || live.length > 0) ? html`
         <div style="margin-bottom:10px;border:1px solid var(--nb-border);border-radius:7px;padding:7px 10px;background:color-mix(in srgb,var(--nb-cyan,#06B6D4) 6%,transparent)">
           <div class="xi-seclabel" style="margin-bottom:5px">实时活动 ${running ? "· 运行中…" : "· 已结束"}</div>
-          <div style="display:flex;flex-direction:column;gap:3px;max-height:140px;overflow:auto;font-family:var(--nb-font-mono);font-size:11.5px">
+          <div style="display:flex;flex-direction:column;gap:3px;max-height:120px;overflow:auto;font-family:var(--nb-font-mono);font-size:11.5px">
             ${live.length === 0 ? html`<span style="opacity:.6">等待 agent 响应…</span>` : null}
             ${live.slice(-14).map((e, i) => html`
               <div key=${i} style="display:flex;gap:6px;align-items:center">
@@ -145,35 +162,8 @@ function RoomRunPanel({ token, room }) {
               </div>`)}
           </div>
         </div>` : null}
-      ${room.mode === "workflow"
-        ? html`
-          ${wf ? html`
-            <div style="display:flex;flex-direction:column;gap:8px">
-              <div class="nb-recall-memo" style="--rc:var(--nb-success,#34D399)">
-                <div class="nb-recall-memo__head" style="cursor:default">
-                  <span class="nb-recall-memo__spark">✓</span>
-                  <span class="nb-recall-memo__title">工作流${wf.ok ? "完成" : "未完成"}</span>
-                  <span class="nb-recall-memo__q">完成 ${wf.completed || 0} · 失败 ${wf.failed || 0}</span>
-                </div>
-              </div>
-              ${wf.assignments && Object.keys(wf.assignments).length ? html`
-                <div>
-                  <div class="xi-seclabel">任务分派</div>
-                  ${Object.entries(wf.assignments).map(([t, a]) => html`
-                    <div style="font-family:var(--nb-font-mono);font-size:12px;padding:2px 0">
-                      <span style="color:${speakerColor(a)}">●</span> ${a} ← <code>${t}</code>
-                    </div>`)}
-                </div>` : null}
-              <div>
-                <div class="xi-seclabel">最终结果</div>
-                <div class="nb-md" style="white-space:pre-wrap">${wf.result || "(空)"}</div>
-              </div>
-            </div>
-          ` : html`<div style="opacity:.6;font-size:.85rem">输入补充说明（可空）后点「运行工作流」，编排器会按房间目标拆解、分派、聚合。</div>`}
-        `
-        : html`
-          <div style="display:flex;flex-direction:column;gap:8px;max-height:360px;overflow:auto">
-            ${chatRows.length === 0 ? html`<div style="opacity:.6;font-size:.85rem">发条消息开始群聊，agent 会轮流/由主持人挑选发言。</div>` : null}
+          <div style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow:auto">
+            ${chatRows.length === 0 ? html`<div style="opacity:.6;font-size:.85rem">${isChat ? "发条消息开始群聊，主持人会挑选 agent 轮流发言。" : "点「运行」，编排器会按房间目标分步推进，下面会逐步显示每个 agent 的产出。"}</div>` : null}
             ${chatRows.map((r, i) => html`
               <div key=${i} style="display:flex;gap:8px;align-items:flex-start">
                 <span style="flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin-top:6px;background:${speakerColor(r.speaker)};box-shadow:0 0 6px ${speakerColor(r.speaker)}"></span>
@@ -183,14 +173,38 @@ function RoomRunPanel({ token, room }) {
                 </div>
               </div>`)}
           </div>
-        `}
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <input class="xmc-h-input" style="flex:1" placeholder=${room.mode === "workflow" ? "补充说明（可空）" : "对房间说点什么…"}
-          value=${msg} onInput=${(e) => setMsg(e.target.value)}
-          onKeyDown=${(e) => { if (e.key === "Enter" && !running) run(); }} />
-        <button type="button" class="xmc-h-btn xmc-h-btn--primary" disabled=${running} onClick=${run}>
-          ${running ? "跑中…" : (room.mode === "workflow" ? "运行工作流" : "发送")}
-        </button>
+          ${(!isChat && wf && wf.result) ? html`
+            <div style="margin-top:10px;border-top:1px dashed var(--nb-border);padding-top:8px">
+              <div class="xi-seclabel" style="color:var(--nb-success,#34D399)">✓ 最终结果（${wf.speakers ? wf.speakers.length : 0} 步）</div>
+              <div class="nb-md" style="white-space:pre-wrap;font-size:13.5px">${wf.result}</div>
+            </div>` : null}
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <input class="xmc-h-input" style="flex:1" placeholder=${isChat ? "对房间说点什么…（可 @点名）" : "补充说明（可空）"}
+              value=${msg} onInput=${(e) => setMsg(e.target.value)}
+              onKeyDown=${(e) => { if (e.key === "Enter" && !running) run(); }} />
+            <button type="button" class="xmc-h-btn xmc-h-btn--primary" disabled=${running} onClick=${run}>
+              ${running ? "跑中…" : (isChat ? "发送" : "运行")}
+            </button>
+          </div>
+        </div>
+        <!-- 参与者侧栏 -->
+        <div style="flex:0 0 132px;border-left:1px solid var(--nb-border);padding-left:10px">
+          <div class="xi-seclabel" style="margin-bottom:6px">参与者 ${(room.participants || []).length}</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${(room.participants || []).map((aid) => {
+              const st = statusOf(aid);
+              const busy = running && st && st.kind !== "done";
+              return html`<div key=${aid} title=${isChat ? "点击 @点名" : ""}
+                onClick=${() => isChat && mention(aid)}
+                style=${"display:flex;align-items:center;gap:6px;font-size:12px;" + (isChat ? "cursor:pointer" : "")}>
+                <span style=${"width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:" + speakerColor(aid) + (busy ? ";animation:xi-live-blink 1s infinite" : "")}></span>
+                <span style="color:${speakerColor(aid)};font-family:var(--nb-font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${aid}</span>
+                ${st ? html`<span style="font-size:9px;opacity:.6;margin-left:auto">${st.kind === "think" ? "💭" : st.kind === "tool" ? "🔧" : "✓"}</span>` : null}
+              </div>`;
+            })}
+          </div>
+          ${isChat ? html`<div style="font-size:10px;opacity:.5;margin-top:8px">点名字 = @ 指定下一个发言</div>` : null}
+        </div>
       </div>
     </div>
   `;
