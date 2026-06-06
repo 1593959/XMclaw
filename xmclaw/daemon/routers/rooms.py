@@ -48,6 +48,30 @@ def _get_loop(request: Request, agent_id: str) -> Any:
     return getattr(ws, "agent_loop", None) if ws is not None else None
 
 
+def _apply_shared_memory(request: Request, room) -> int:
+    """记忆互通：房间 shared_memory=true 时，把每个参与者的 ``_memory_service``
+    指到同一个共享实例(``app.state.memory_v2_service``，主 agent 用的那个)，
+    于是房间内任一 agent 写的 fact，其他 agent 都能召回。纯运行时覆盖，不动
+    factory。返回成功接线的参与者数。
+    """
+    if not getattr(room, "shared_memory", False):
+        return 0
+    shared = getattr(request.app.state, "memory_v2_service", None)
+    if shared is None:
+        return 0
+    n = 0
+    for aid in room.participants:
+        loop = _get_loop(request, aid)
+        if loop is None:
+            continue
+        try:
+            loop._memory_service = shared  # noqa: SLF001 — 运行时共享接线
+            n += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return n
+
+
 # ── CRUD ──
 @router.get("")
 async def list_rooms(request: Request) -> JSONResponse:
@@ -126,6 +150,9 @@ async def run_room(room_id: str, request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001
         body = {}
     user_message = (body or {}).get("message", "") or ""
+
+    # 记忆互通：把房间参与者接到同一 MemoryService（若开启）。
+    _apply_shared_memory(request, room)
 
     if room.mode == "workflow":
         swarm = getattr(request.app.state, "swarm_orchestrator", None)

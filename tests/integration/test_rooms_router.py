@@ -51,6 +51,7 @@ def _build_app(tmp_path) -> FastAPI:
     app.state.agent = _FakeLoop("main")        # chat /run 用
     app.state.agents = None
     app.state.swarm_orchestrator = _FakeSwarm()  # workflow /run 用
+    app.state.memory_v2_service = object()       # 共享记忆 sentinel
     return app
 
 
@@ -100,3 +101,32 @@ def test_workflow_room_run(tmp_path) -> None:
 def test_run_unknown_room_404(tmp_path) -> None:
     with TestClient(_build_app(tmp_path)) as c:
         assert c.post("/api/v2/rooms/nope/run", json={}).status_code == 404
+
+
+def test_shared_memory_wires_participants(tmp_path) -> None:
+    """房间 shared_memory=true 跑一次后，参与者的 _memory_service 被接到
+    app.state.memory_v2_service（同一实例 → 记忆互通）。"""
+    app = _build_app(tmp_path)
+    shared = app.state.memory_v2_service
+    with TestClient(app) as c:
+        c.post("/api/v2/rooms", json={
+            "room_id": "smem", "participants": ["main"], "mode": "chat",
+            "max_rounds": 1, "shared_memory": True,
+        })
+        # 跑之前 main loop 的 memory 还不是共享实例
+        assert getattr(app.state.agent, "_memory_service", None) is not shared
+        c.post("/api/v2/rooms/smem/run", json={"message": "hi"})
+        # 跑之后被接到共享实例
+        assert app.state.agent._memory_service is shared
+
+
+def test_shared_memory_off_does_not_wire(tmp_path) -> None:
+    app = _build_app(tmp_path)
+    shared = app.state.memory_v2_service
+    with TestClient(app) as c:
+        c.post("/api/v2/rooms", json={
+            "room_id": "nomem", "participants": ["main"], "mode": "chat",
+            "max_rounds": 1, "shared_memory": False,
+        })
+        c.post("/api/v2/rooms/nomem/run", json={"message": "hi"})
+        assert getattr(app.state.agent, "_memory_service", None) is not shared
