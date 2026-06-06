@@ -695,6 +695,145 @@ def make_lifespan(
                                 exc,
                             )
 
+                    # 2026-05-30: channels — full teardown + rebuild from
+                    # the fresh ``channels`` block. Pre-fix this was the
+                    # one runtime-shaped section with no reload path:
+                    # adding feishu app_id/app_secret required
+                    # ``xmclaw stop && start`` or the live agent kept
+                    # insisting the channel "wasn't configured" (real
+                    # user report 2026-06-07 01:10-01:14). Full rebuild
+                    # is fine because channels carry no in-flight state
+                    # worth preserving across a creds change — an
+                    # operator editing the block is explicitly opting
+                    # into a reset.
+                    if "channels" in top_changed:
+                        try:
+                            from xmclaw.daemon.channel_dispatcher import (
+                                ChannelDispatcher,
+                            )
+                            from xmclaw.providers.channel.registry import (
+                                discover as _ch_discover,
+                            )
+
+                            # Drain any in-flight startup warmup before
+                            # tearing down — stopping mid-start races the
+                            # adapter's connect logic and can leak the
+                            # underlying lark_oapi / aiohttp client.
+                            old_warmup = getattr(
+                                _app.state,
+                                "channel_dispatcher_warmup_task",
+                                None,
+                            )
+                            if old_warmup is not None and not old_warmup.done():
+                                try:
+                                    await asyncio.wait_for(
+                                        old_warmup, timeout=5.0,
+                                    )
+                                except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                                    pass
+
+                            old = getattr(
+                                _app.state, "channel_dispatcher", None,
+                            )
+                            if old is not None:
+                                try:
+                                    await old.stop_all()
+                                except Exception as exc:  # noqa: BLE001
+                                    log.warning(
+                                        "config_reloaded.channels."
+                                        "stop_failed err=%s",
+                                        exc,
+                                    )
+
+                            channels_cfg = (config or {}).get("channels") or {}
+                            if (
+                                not isinstance(channels_cfg, dict)
+                                or not channels_cfg
+                                or agent is None
+                            ):
+                                _app.state.channel_dispatcher = None
+                                _app.state.channel_dispatcher_warmup_task = None
+                                log.info(
+                                    "config_reloaded.channels applied count=0"
+                                )
+                            else:
+                                manifests = _ch_discover(
+                                    include_scaffolds=False,
+                                )
+                                _spu = [
+                                    _id for _id, _c in channels_cfg.items()
+                                    if isinstance(_c, dict)
+                                    and _c.get("session_per_user") is True
+                                ]
+                                new_dispatcher = ChannelDispatcher(
+                                    agent,
+                                    app_state=_app.state,
+                                    session_per_user_channels=frozenset(_spu),
+                                )
+                                for ch_id, ch_cfg in channels_cfg.items():
+                                    if (
+                                        not isinstance(ch_cfg, dict)
+                                        or not ch_cfg.get("enabled")
+                                    ):
+                                        continue
+                                    manifest = manifests.get(ch_id)
+                                    if manifest is None:
+                                        log.warning(
+                                            "config_reloaded.channels."
+                                            "unknown id=%s",
+                                            ch_id,
+                                        )
+                                        continue
+                                    try:
+                                        modpath, clsname = (
+                                            manifest.adapter_factory_path
+                                            .split(":")
+                                        )
+                                        mod = __import__(
+                                            modpath, fromlist=[clsname],
+                                        )
+                                        AdapterCls = getattr(mod, clsname)
+                                        try:
+                                            adapter_inst = AdapterCls(
+                                                ch_cfg, bus=bus,
+                                            )
+                                        except TypeError:
+                                            adapter_inst = AdapterCls(ch_cfg)
+                                        new_dispatcher.add(adapter_inst)
+                                    except Exception as exc:  # noqa: BLE001
+                                        log.warning(
+                                            "config_reloaded.channels."
+                                            "build_failed id=%s err=%s",
+                                            ch_id, exc,
+                                        )
+                                if new_dispatcher._adapters:
+                                    _app.state.channel_dispatcher = (
+                                        new_dispatcher
+                                    )
+                                    _app.state.channel_dispatcher_warmup_task = (
+                                        asyncio.create_task(
+                                            new_dispatcher.start_all(),
+                                            name="channel-dispatcher-reload",
+                                        )
+                                    )
+                                    log.info(
+                                        "config_reloaded.channels applied "
+                                        "count=%d",
+                                        len(new_dispatcher._adapters),
+                                    )
+                                else:
+                                    _app.state.channel_dispatcher = None
+                                    _app.state.channel_dispatcher_warmup_task = None
+                                    log.info(
+                                        "config_reloaded.channels applied "
+                                        "count=0"
+                                    )
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "config_reloaded.channels_failed err=%s",
+                                exc,
+                            )
+
                 bus.subscribe(
                     lambda e: e.type == EventType.CONFIG_RELOADED,
                     _on_config_reloaded,
@@ -1597,6 +1736,15 @@ def make_lifespan(
         # cron pushing INTO the bus) is a separate follow-up.
         _cognitive_daemon = None
         _percept_bus = None
+        # 2026-06-06: default-init at the outer scope. ``_experiment_loop``
+        # is only assigned INSIDE the ``continuous_loop.enabled`` block
+        # (~line 1953), but it's read unconditionally at
+        # ``_app.state.experiment_loop = _experiment_loop`` below. With
+        # cognition.enabled=true but continuous_loop.enabled=false the
+        # block is skipped → UnboundLocalError crashed daemon startup
+        # ("Application startup failed. Exiting."). Mirror the
+        # ``_cognitive_daemon = None`` guard right above.
+        _experiment_loop = None
         _cont_loop_cfg = ((config or {}).get("cognition") or {}).get(
             "continuous_loop"
         ) or {}
