@@ -839,3 +839,32 @@
 
 /* —— 首屏空状态图标与标题间距收一下（避免飘）—— */
 .nb-empty h3 { margin-top: 10px; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   17. 代码块修复（2026-06-06）：拍平多余内盒 + 长行换行(不再横滚切断)
+   截图症状：工具卡参数/错误的代码漂在一个比外框浅的内盒里、和行号错开；
+   错误长文本不换行 → 横向滚动，开头被切掉。
+   ═══════════════════════════════════════════════════════════════════════ */
+/* 拍平 <pre>/<code> 内盒：代码块里的 code 不要任何背景/边框/内边距/圆角，
+   贴着 .nb-codeblock-v2 的统一深底渲染。 */
+.nb-codeblock-code,
+.nb-codeblock-v2 pre,
+.nb-codeblock-v2 code {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.nb-codeblock-v2 code {
+  padding: 0 !important;
+  display: block;
+  color: inherit;
+  font-size: inherit;
+}
+/* 长行换行：JSON 短行不受影响，错误等长文本自动折行，不再横向滚动切断 */
+.nb-codeblock-code {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.nb-codeblock-v2 { overflow: hidden !important; }
