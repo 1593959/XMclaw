@@ -198,10 +198,24 @@ function FilterBar({ kind, scope, q, onChange }) {
 
 // Phase M1：把平铺事实列表按 bucket 分组，并把「需关注」（矛盾 / 已失效 /
 // 已 forget / 已 supersede）的事实抽出来置顶成一个高亮组。
+// 疑似"一次性命令被误存成长期事实"（如 "目标: 删除所有无法正常使用的技能"）。
+// 与后端 key_info_extractor._is_transient_command / cleanup 脚本同源的启发式，
+// 让这类垃圾自动落进"⚠ 需关注"组，方便用户一眼看见并删除。
+const _STRAY_CMD_RE = new RegExp(
+  "^\\s*(?:目标|偏好|纠正)[:：]\\s*"
+  + "(?:你们?|您|咱们?|我们)?\\s*(?:请|帮我|帮忙|麻烦|给我|让你)?\\s*"
+  + "(?:把|将|删除|删掉|删|移除|去掉|去除|清除|清理|清空|改|修改|调整|修复|重构|"
+  + "替换|换|运行|执行|跑|重启|启动|停止|停掉|关闭|开启|打开|安装|卸载|更新|升级|"
+  + "部署|发布|回滚|重置|生成|创建|新建|添加|做个|搞|弄|处理|检查|测试)"
+);
+function _looksLikeStrayCommand(f) {
+  return _STRAY_CMD_RE.test((f.text || "").trim());
+}
 function _factNeedsAttention(f) {
   return (f.contradicts && f.contradicts.length > 0)
     || f.forgotten
     || Boolean(f.superseded_by)
+    || _looksLikeStrayCommand(f)
     || (f.invalid_at != null && f.invalid_at * 1000 < Date.now());
 }
 function groupFacts(facts) {
