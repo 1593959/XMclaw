@@ -138,6 +138,34 @@ _QUAL_GOAL_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# 一次性命令/任务请求过滤器（2026-06-06）。
+# 根因 bug：``_QUAL_GOAL_RE`` 把 "希望/想要/打算 + <任意动作>" 全当成长期"目标/
+# 愿景"结晶进记忆 —— 于是 "希望删除所有无法正常使用的技能" 这种**当下命令**被误存
+# 成用户的人生目标。区分：真目标是**期望的终态**（"提升满意度"、"成为第一"），命令
+# 是**对系统/agent 的动作**（"删除X"、"改配置"、"帮我跑Y"）。后者是 TODO 不是记忆。
+# 若 qual-goal 捕获的子句以下列**祈使动作动词**开头 → 判定为一次性命令，跳过。
+_TRANSIENT_CMD_RE = re.compile(
+    r"^\s*(?:你们?|您|咱们?|我们)?\s*"
+    r"(?:请\s*|帮(?:我|忙)\s*|麻烦\s*|给我\s*|让你\s*)?"
+    r"(?:"
+    # 把/将 字句（处置/命令）："把这些坏技能清理掉"
+    r"(?:把|将)\s*\S"
+    r"|"
+    # 直接祈使动作动词开头
+    r"删除|删掉|删|移除|去掉|去除|清除|清理|清空|"
+    r"改(?:成|为|一下)?|修改|调整|修复|重构|替换|换掉?|"
+    r"运行|执行|跑(?:一下)?|重启|启动|停(?:止|掉)?|关闭|开启|打开|"
+    r"安装|卸载|更新|升级|部署|发布|回滚|重置|"
+    r"生成|创建|新建|加上?|添加|做个|搞|弄|处理|检查|测试|查(?:一下|查)?|看(?:一下|看)?"
+    r")",
+)
+
+
+def _is_transient_command(text: str) -> bool:
+    """子句以祈使动作动词开头 = 一次性命令，不该当长期目标记。"""
+    return bool(_TRANSIENT_CMD_RE.match(text or ""))
+
+
 # Explicit user memorisation directive: 记住 / 记一下 / 留个底 / 以后都 /
 # 下次都 / never / always / from now on
 _REMEMBER_DIRECT_RE = re.compile(
@@ -463,7 +491,9 @@ def extract_keys(message: str) -> list[ExtractedKey]:
     # ── Qualitative goals (non-numeric) ──
     for m in _QUAL_GOAL_RE.finditer(message):
         text = (m.group(2) or m.group(3) or "").strip()
-        if text:
+        # 一次性命令（"希望删除X"、"想让你改Y"）不是长期目标 → 跳过，避免把当下
+        # 指令误存成用户的人生目标（2026-06-06 根因修复）。
+        if text and not _is_transient_command(text):
             _add(
                 f"目标: {text}",
                 kind="project", scope="project",
