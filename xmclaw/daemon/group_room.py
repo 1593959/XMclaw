@@ -22,6 +22,7 @@ from typing import Any, Literal
 from xmclaw.utils.paths import rooms_dir
 
 SpeakerPolicy = Literal["round_robin", "supervisor"]
+RoomMode = Literal["chat", "workflow"]
 
 # 房间 session id 约定：``group:<room_id>``。前端订阅这个 session 即可收到
 # 房间内所有讲者的事件（事件顶层自带 agent_id）。
@@ -51,11 +52,18 @@ class GroupRoom:
 
     room_id: str
     name: str = ""
-    # 自定义用途/目标：喂给 supervisor 选讲者 + 注入每个 agent 的回合上下文。
+    # 自定义用途/目标：chat 模式喂给 supervisor 选讲者；workflow 模式作为
+    # 编排目标(success goal)喂给 SwarmOrchestrator 拆解。
     purpose: str = ""
     participants: list[str] = field(default_factory=list)  # agent_id 列表
-    policy: SpeakerPolicy = "round_robin"
-    max_rounds: int = 6          # 一次用户消息后，agent 之间最多连说几轮
+    # 房间形态：
+    #   "chat"     — 群聊：agent 之间轮流/主持人发言（GroupOrchestrator）
+    #   "workflow" — 目标驱动工作流：目标→拆解→按能力分派→聚合
+    #                （WorkflowRoomRunner 复用 SwarmOrchestrator）
+    mode: RoomMode = "chat"
+    policy: SpeakerPolicy = "round_robin"   # chat 模式的选讲者策略
+    aggregation: str = "map_reduce"          # workflow 模式的聚合策略
+    max_rounds: int = 6          # chat：一条用户消息后 agent 间最多连说几轮
     shared_memory: bool = True   # 房间内 agent 是否共享同一 MemoryService
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)

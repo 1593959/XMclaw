@@ -99,3 +99,67 @@ async def test_supervisor_without_llm_falls_back_to_round_robin() -> None:
     orch = GroupOrchestrator(room, get_agent_loop=lambda x: loops.get(x))
     out = await orch.run_round("hi")
     assert out["speakers"] == ["a", "b"]
+
+
+# ── WorkflowRoomRunner（workflow 模式，复用 SwarmOrchestrator 的薄层）──
+from xmclaw.daemon.workflow_room import WorkflowRoomRunner
+
+
+class _FakeSwarmResult:
+    def __init__(self) -> None:
+        self.ok = True
+        self.result = "汇总：竞品分析完成"
+        self.assignments = {"task1": "researcher", "task2": "analyst"}
+        self.completed = 2
+        self.failed = 0
+        self.timed_out = 0
+        self.elapsed_seconds = 1.2
+
+
+class _FakeSwarm:
+    def __init__(self) -> None:
+        self.dispatched = []
+
+    async def dispatch(self, req):
+        self.dispatched.append(req)
+        return _FakeSwarmResult()
+
+
+@pytest.mark.asyncio
+async def test_workflow_room_runs_and_emits() -> None:
+    events: list[tuple[str, dict]] = []
+
+    async def _pub(t, p):
+        events.append((t, p))
+
+    room = GroupRoom(room_id="wf", mode="workflow", purpose="做个竞品分析",
+                     participants=["researcher", "analyst"], aggregation="map_reduce")
+    swarm = _FakeSwarm()
+    runner = WorkflowRoomRunner(room, swarm, publish=_pub)
+    out = await runner.run()
+    assert out["ok"] is True
+    assert out["result"] == "汇总：竞品分析完成"
+    assert out["assignments"] == {"task1": "researcher", "task2": "analyst"}
+    # dispatch 收到目标 = 房间 purpose
+    assert swarm.dispatched[0].description == "做个竞品分析"
+    # 推了 started / assignments / done 三类事件
+    types = [t for t, _ in events]
+    assert "workflow_started" in types
+    assert "workflow_assignments" in types
+    assert "workflow_done" in types
+
+
+@pytest.mark.asyncio
+async def test_workflow_empty_goal_errors() -> None:
+    room = GroupRoom(room_id="wf2", mode="workflow", purpose="", participants=["a"])
+    runner = WorkflowRoomRunner(room, _FakeSwarm())
+    out = await runner.run("")  # 无 purpose 无消息
+    assert out["ok"] is False and out.get("error") == "empty goal"
+
+
+def test_room_mode_default_and_workflow_field() -> None:
+    assert GroupRoom(room_id="x").mode == "chat"
+    r = GroupRoom(room_id="y", mode="workflow", aggregation="vote")
+    assert r.mode == "workflow" and r.aggregation == "vote"
+    # 往返保留 mode/aggregation
+    assert GroupRoom.from_dict(r.to_dict()).mode == "workflow"
