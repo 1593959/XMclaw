@@ -579,3 +579,35 @@ def test_list_facts_includes_bucket_field() -> None:
         assert "bucket" in facts[0]
         assert facts[0]["bucket"] == "user_preference"
         assert facts[0]["forgotten"] is False
+
+
+# ── overview (Phase M2) ───────────────────────────────────────────
+
+
+def test_overview_disabled_when_no_service() -> None:
+    app = _build_app(with_service=False)
+    with TestClient(app) as client:
+        r = client.get("/api/v2/memory/v2/overview")
+        assert r.status_code in (200, 503)
+
+
+def test_overview_aggregates() -> None:
+    app = _build_app()
+    with TestClient(app) as client:
+        client.post("/api/v2/memory/v2/facts",
+                    json={"text": "用户喜欢简短回复", "kind": "preference", "scope": "user"})
+        client.post("/api/v2/memory/v2/facts",
+                    json={"text": "用户在做电商项目", "kind": "identity", "scope": "user"})
+        r = client.get("/api/v2/memory/v2/overview")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["enabled"] is True
+        assert body["total"] == 2
+        assert body["by_kind"].get("preference") == 1
+        assert body["by_kind"].get("identity") == 1
+        assert body["by_scope"].get("user") == 2
+        assert body["embedder_dim"] == 4
+        assert isinstance(body["recent"], list) and len(body["recent"]) == 2
+        # 干净库无矛盾/过期
+        assert body["contradictions"] == 0
+        assert body["stale"] == 0

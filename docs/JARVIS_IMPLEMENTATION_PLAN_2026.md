@@ -444,7 +444,11 @@ fact 是少量原子知识单元（句子级）。
 - [x] **M1.2** FactRow 仪表化：kind/scope/layer 做成 chip、conf 迷你条、证据
       ×N、过期/矛盾高亮；**改正改为行内编辑**（textarea + Ctrl/⌘+Enter 保存，
       替掉 window.prompt）。文件：`pages/_panels/memory_facts_v2.js` + `instrument.css`。
-- [ ] **M2** 后端 `/api/v2/memory/v2/overview` 聚合接口 + 前端单请求渲染
+- [x] **M2** 后端 `/api/v2/memory/v2/overview` 聚合接口（总数 + by_kind/scope/
+      layer/bucket + 矛盾/过期/forgotten/superseded + recent10 + embedder），
+      前端 refreshStatus 附带拉取并入 status，读数条多显示「矛盾 / 已过期」。
+      文件：`routers/memory_v2.py`、`pages/_panels/memory_facts_v2.js`、
+      `tests/integration/test_v2_memory_v2_router.py`（新增 overview 测试）。
 - [ ] **M3** `MEMORY_RECALLED` 事件 + 对话流「💭 想起 N 条」召回卡（写/读对称）
 - [x] **M-fix1** 记忆污染根因：内部反思会话（goal-from-percept-/reflect:/
       autonomous:/_system: …）不再抽取 lesson/preference 写入用户记忆。反思

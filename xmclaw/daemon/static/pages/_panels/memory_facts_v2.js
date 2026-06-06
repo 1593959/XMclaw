@@ -131,16 +131,23 @@ function StatusBanner({ status, onRetry }) {
       </div>
     `;
   }
+  // M2：有 overview 数据时多显示「矛盾 / 过期」两格可操作读数。
+  const hasOv = status.contradictions != null || status.stale != null;
   return html`
     <${Vitals}>
       <${VitalsCell} icon=${html`<${Sparkbar} live=${true} />`}>
         <${Readout} label="L1 FACTS" value=${status.fact_count} unit="结构化事实" />
       </${VitalsCell}>
+      ${hasOv ? html`
+        <${VitalsCell}>
+          <${Readout} label="矛盾" value=${status.contradictions || 0} unit="contradicts" deltaDir=${(status.contradictions || 0) > 0 ? "down" : "up"} />
+        </${VitalsCell}>
+        <${VitalsCell}>
+          <${Readout} label="已过期" value=${status.stale || 0} unit="stale" />
+        </${VitalsCell}>
+      ` : null}
       <${VitalsCell}>
-        <${Readout} label="EMBEDDER" value=${status.embedder_name || "—"} />
-      </${VitalsCell}>
-      <${VitalsCell}>
-        <${Readout} label="向量维度" value=${status.embedder_dim} unit="dim" />
+        <${Readout} label="EMBEDDER" value=${status.embedder_name || "—"} unit=${"dim " + (status.embedder_dim || 0)} />
       </${VitalsCell}>
       <${VitalsCell}>
         <${Readout} label="状态" value=${status.healthy ? "ONLINE" : "DEGRADED"} />
@@ -416,7 +423,11 @@ export function FactsV2Tab({ token }) {
   const refreshStatus = useCallback(async () => {
     try {
       const r = await apiGet("/api/v2/memory/v2/status", token);
-      setStatus(r);
+      // M2：附带拉一次 overview，把矛盾/过期/分布并进 status 给读数条用。
+      // 失败不影响主流程（status 本身已够渲染）。
+      let ov = null;
+      try { ov = await apiGet("/api/v2/memory/v2/overview", token); } catch (_) { /* best-effort */ }
+      setStatus(ov && ov.enabled ? { ...r, ...ov, fact_count: ov.total } : r);
     } catch (e) {
       // 2026-05-26 (followup): distinguish "v2 config flag is off"
       // (server's deliberate 503 with body.error === memory_v2_disabled)

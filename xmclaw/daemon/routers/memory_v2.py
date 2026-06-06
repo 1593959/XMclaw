@@ -136,6 +136,83 @@ async def status(request: Request) -> dict[str, Any]:
     }
 
 
+# ── Consolidated overview (Phase M2) ─────────────────────────────
+
+
+@router.get("/overview")
+async def overview(request: Request) -> Any:
+    """Phase M2：一次返回记忆页读数条 + 分组需要的全部聚合，前端不再拼
+    status/count/facts 多个请求。复用 recall() 拉全量后在 Python 聚合。"""
+    import time as _time
+
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    try:
+        hits = await svc.recall(
+            None,
+            k=5000,
+            min_confidence=0.0,
+            include_relations=False,
+            include_superseded=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": True, "healthy": False, "error": str(exc)}
+
+    now = _time.time()
+    by_kind: dict[str, int] = {}
+    by_scope: dict[str, int] = {}
+    by_layer: dict[str, int] = {}
+    by_bucket: dict[str, int] = {}
+    total = contradictions = stale = forgotten = superseded = 0
+    recent: list[dict[str, Any]] = []
+    for h in hits:
+        f = h.fact
+        is_forgotten = f.superseded_by == "__forgotten__"
+        is_superseded = bool(f.superseded_by) and not is_forgotten
+        if is_forgotten:
+            forgotten += 1
+            continue
+        if is_superseded:
+            superseded += 1
+            continue
+        total += 1
+        by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
+        by_scope[f.scope] = by_scope.get(f.scope, 0) + 1
+        by_layer[f.layer] = by_layer.get(f.layer, 0) + 1
+        b = getattr(f, "bucket", "") or "(未分桶)"
+        by_bucket[b] = by_bucket.get(b, 0) + 1
+        if f.contradicts:
+            contradictions += 1
+        if getattr(f, "invalid_at", None) is not None and f.invalid_at < now:
+            stale += 1
+        recent.append({
+            "id": f.id, "text": f.text[:120], "kind": f.kind,
+            "layer": f.layer, "bucket": getattr(f, "bucket", "") or "",
+            "ts_last": f.ts_last,
+        })
+
+    recent.sort(key=lambda r: r["ts_last"], reverse=True)
+    embedder_dim = svc.embedder.dim if svc.embedder else 0
+    embedder_name = svc.embedder.name if svc.embedder else "(none)"
+    return {
+        "enabled": True,
+        "healthy": True,
+        "total": total,
+        "by_kind": by_kind,
+        "by_scope": by_scope,
+        "by_layer": by_layer,
+        "by_bucket": by_bucket,
+        "contradictions": contradictions,
+        "stale": stale,
+        "forgotten": forgotten,
+        "superseded": superseded,
+        "recent": recent[:10],
+        "embedder_name": embedder_name,
+        "embedder_dim": embedder_dim,
+    }
+
+
 # ── Embedder config inspection + test ────────────────────────────
 
 
