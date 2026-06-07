@@ -411,44 +411,6 @@ _BASH_SPEC = ToolSpec(
     },
 )
 
-_PWSH_SPEC = ToolSpec(
-    name="pwsh",
-    description=(
-        "Run a **PowerShell** command on the local machine (Windows only). "
-        "Returns combined stdout+stderr plus the exit code.\n\n"
-        "Use this tool when you need native PowerShell syntax — pipelines, "
-        "cmdlets, objects, or Windows-specific operations. For cross-platform "
-        "commands (git, python, npm) the ``bash`` tool is usually sufficient.\n\n"
-        "Native syntax examples:\n"
-        "  • List directory: ``Get-ChildItem -Path . -Recurse`` or ``ls``\n"
-        "  • Filter text: ``Select-String -Pattern 'foo' -Path *.log``\n"
-        "  • Create dir: ``New-Item -ItemType Directory -Path 'foo/bar'``\n"
-        "  • Env var: ``$env:PATH`` (read), ``$env:FOO='bar'`` (set)\n"
-        "  • Pipeline: ``Get-Process | Where-Object {$_.CPU -gt 100}``\n"
-        "  • Conditional chain: ``cmd; if ($?) { cmd2 }`` (NOT ``&&``)\n\n"
-        "⚠ PowerShell 5.1 does NOT support ``&&``/``||``. "
-        "Use ``;`` for unconditional chaining or ``if ($?) { … }`` for conditional."
-    ),
-    parameters_schema={
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "PowerShell command to execute.",
-            },
-            "cwd": {
-                "type": "string",
-                "description": "Optional working directory.",
-            },
-            "timeout_seconds": {
-                "type": "number",
-                "description": "Kill after N seconds. Default 300.",
-            },
-        },
-        "required": ["command"],
-    },
-)
-
 _WEB_FETCH_SPEC = ToolSpec(
     name="web_fetch",
     read_only=True,

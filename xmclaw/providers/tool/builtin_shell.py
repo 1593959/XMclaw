@@ -20,7 +20,6 @@ from xmclaw.providers.tool._helpers import (
 )
 
 _BASH_DEFAULT_TIMEOUT = 30.0
-_PWSH_DEFAULT_TIMEOUT = 300.0
 _BASH_MAX_OUTPUT = 100_000
 _MAX_WEB_BYTES = 50_000
 
@@ -106,12 +105,6 @@ class BuiltinToolsShellMixin:
 
     async def _bash(self, call: ToolCall, t0: float) -> ToolResult:
         return await self._run_shell(call, t0, default_timeout=_BASH_DEFAULT_TIMEOUT)
-
-    async def _pwsh(self, call: ToolCall, t0: float) -> ToolResult:
-        """PowerShell-native entry point — same runtime as _bash but
-        advertises a PowerShell-first schema so the LLM emits native
-        syntax instead of bash-isms that fail on Windows."""
-        return await self._run_shell(call, t0, default_timeout=_PWSH_DEFAULT_TIMEOUT)
 
     async def _run_shell(
         self, call: ToolCall, t0: float, *, default_timeout: float,
