@@ -2039,6 +2039,11 @@ class HopLoopMixin:
                         memory_v2_service=getattr(
                             self, "_memory_service", None,
                         ),
+                        # Phase 1 (CMP): hand the Gateway to hooks so
+                        # they can route writes through the unified pipeline.
+                        memory_gateway=getattr(
+                            self, "_memory_gateway", None,
+                        ),
                     )
                     # Fire-and-forget — don't await, the next turn must
                     # not wait for hooks. Strong ref via add() / discard
@@ -2082,11 +2087,16 @@ class HopLoopMixin:
             # latency tanks UX. The trade-off is the put isn't visible
             # until the next turn — acceptable, the user already got
             # their answer.
+            # Phase 1 (CMP): background LLM extraction routes through
+            # CognitiveMemoryGateway when available.  The Gateway's
+            # stubbed THINK/DECIDE layer makes this a transparent
+            # passthrough in Phase 1; later phases will enable true
+            # cross-turn summarisation here.
+            _gateway = getattr(self, "_memory_gateway", None)
             mem_svc = getattr(self, "_memory_service", None)
             v2_extractor = getattr(self, "_memory_v2_llm_extractor", None)
             if (
-                mem_svc is not None
-                and hasattr(mem_svc, "remember")
+                (mem_svc is not None or _gateway is not None)
                 and v2_extractor is not None
                 and response.content
                 and user_message
@@ -2097,44 +2107,75 @@ class HopLoopMixin:
                             user_message=user_message,
                             assistant_response=response.content,
                         )
-                        # Phase 8 ⑨: route through the Mem0-style
-                        # write-time decision (ADD/UPDATE/DELETE/NOOP)
-                        # when enabled + available, else blind remember().
-                        _use_decision = (
-                            getattr(self, "_memory_write_decision", False)
-                            and hasattr(mem_svc, "remember_with_decision")
-                        )
-                        for cand in candidates:
-                            if _use_decision:
-                                result = await mem_svc.remember_with_decision(
-                                    text=cand.text,
-                                    kind=cand.kind,
-                                    scope=cand.scope,
-                                    confidence=cand.confidence,
-                                    source_event_id=session_id,
+                        if _gateway is not None:
+                            from xmclaw.memory.v2.gateway_models import Observation
+                            observations = [
+                                Observation(
+                                    source="post_sampling",
+                                    content=cand.text,
+                                    turn_id=session_id,
+                                    timestamp=time.time(),
+                                    metadata={
+                                        "kind_hint": cand.kind,
+                                        "scope_hint": cand.scope,
+                                        "confidence_hint": cand.confidence,
+                                    },
                                 )
-                                fact = result.get("fact")
-                                _action = result.get("action", "ADD")
-                            else:
-                                fact = await mem_svc.remember(
-                                    text=cand.text,
-                                    kind=cand.kind,
-                                    scope=cand.scope,
-                                    confidence=cand.confidence,
-                                    source_event_id=session_id,
-                                )
-                                _action = "ADD"
-                            if fact is None:
-                                continue
-                            await publish(EventType.MEMORY_PUT_AUTO, {
-                                "session_id": session_id,
-                                "id": fact.id,
-                                "text": fact.text[:300],
-                                "layer": fact.layer,
-                                "kind": fact.kind,
-                                "scope": fact.scope,
-                                "reason": f"llm_auto_extract:{_action.lower()}",
-                            })
+                                for cand in candidates
+                            ]
+                            written = await _gateway.ingest_batch(
+                                observations,
+                                context={"session_id": session_id},
+                            )
+                            for fact in written:
+                                if fact is None:
+                                    continue
+                                await publish(EventType.MEMORY_PUT_AUTO, {
+                                    "session_id": session_id,
+                                    "id": fact.id,
+                                    "text": fact.text[:300],
+                                    "layer": fact.layer,
+                                    "kind": fact.kind,
+                                    "scope": fact.scope,
+                                    "reason": "gateway_auto_extract:add",
+                                })
+                        else:
+                            # Legacy path: direct write to MemoryService.
+                            _use_decision = (
+                                getattr(self, "_memory_write_decision", False)
+                                and hasattr(mem_svc, "remember_with_decision")
+                            )
+                            for cand in candidates:
+                                if _use_decision:
+                                    result = await mem_svc.remember_with_decision(
+                                        text=cand.text,
+                                        kind=cand.kind,
+                                        scope=cand.scope,
+                                        confidence=cand.confidence,
+                                        source_event_id=session_id,
+                                    )
+                                    fact = result.get("fact")
+                                    _action = result.get("action", "ADD")
+                                else:
+                                    fact = await mem_svc.remember(
+                                        text=cand.text,
+                                        kind=cand.kind,
+                                        scope=cand.scope,
+                                        confidence=cand.confidence,
+                                        source_event_id=session_id,
+                                    )
+                                    _action = "ADD"
+                                if fact is None:
+                                    continue
+                                await publish(EventType.MEMORY_PUT_AUTO, {
+                                    "session_id": session_id,
+                                    "id": fact.id,
+                                    "text": fact.text[:300],
+                                    "layer": fact.layer,
+                                    "kind": fact.kind,
+                                    "scope": fact.scope,
+                                    "reason": f"llm_auto_extract:{_action.lower()}",
+                                })
                     except Exception as exc:  # noqa: BLE001
                         _log_memory_failure(exc)
 

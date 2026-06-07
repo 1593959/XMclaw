@@ -994,15 +994,35 @@ class BuiltinToolsMemoryMixin:
             effective_conf = (
                 max(0.95, confidence) if action == "pin" else confidence
             )
-            fact = await svc.remember(
-                text_to_store,
-                kind=effective_kind,
-                scope=scope,
-                confidence=effective_conf,
-                bucket=bdef.tag,
-                source_event_id=getattr(call, "id", None),
-                provenance="tool_invoked",
-            )
+            gateway = getattr(self, "_memory_gateway", None)
+            if gateway is not None:
+                from xmclaw.memory.v2.gateway_models import Observation
+                fact = await gateway.ingest(
+                    Observation(
+                        source="tool_invoked",
+                        content=text_to_store,
+                        turn_id=getattr(call, "id", "") or "tool",
+                        timestamp=time.time(),
+                        metadata={
+                            "kind_hint": effective_kind,
+                            "scope_hint": scope,
+                            "bucket_hint": bdef.tag,
+                            "confidence_hint": effective_conf,
+                            "source_event_id": getattr(call, "id", None),
+                        },
+                    ),
+                    context={"tool_call": True},
+                )
+            else:
+                fact = await svc.remember(
+                    text_to_store,
+                    kind=effective_kind,
+                    scope=scope,
+                    confidence=effective_conf,
+                    bucket=bdef.tag,
+                    source_event_id=getattr(call, "id", None),
+                    provenance="tool_invoked",
+                )
             cron_info: dict[str, Any] | None = None
             if action == "add" and bdef.tag == "commitment" and due_ts:
                 try:

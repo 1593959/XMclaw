@@ -695,6 +695,64 @@ _INTERPRETIVE_PATTERNS: frozenset[str] = frozenset({
 })
 
 
+def extract_keys_for_gateway(
+    message: str,
+    *,
+    source_event_id: str | None = None,
+    defer_interpretive: bool = False,
+    timestamp: float | None = None,
+) -> list[Any]:
+    """Extract keys and return them as Gateway Observations (no write).
+
+    Phase 1 (Cognitive Memory Gateway): this is the regex layer's
+    contribution to the unified pipeline.  Callers submit the returned
+    Observations to ``CognitiveMemoryGateway.ingest_batch()``.
+
+    The bucket / kind / scope / confidence mapping mirrors
+    ``extract_and_remember`` exactly so behaviour is byte-for-byte
+    identical once the Gateway's stubbed THINK step passthroughs.
+    """
+    import time as _time
+    from xmclaw.memory.v2.gateway_models import Observation
+
+    ts = timestamp if timestamp is not None else _time.time()
+    keys = extract_keys(message)
+    if defer_interpretive and keys:
+        keys = [k for k in keys if k.pattern_name not in _INTERPRETIVE_PATTERNS]
+    observations: list[Any] = []
+    for key in keys:
+        bucket = ""
+        if key.kind == "identity":
+            if key.scope == "session":
+                bucket = "agent_identity"
+            elif key.scope == "user":
+                bucket = "user_identity"
+        elif key.kind == "preference" and key.scope == "user":
+            bucket = "user_preference"
+        elif key.kind == "correction":
+            bucket = "rules"
+        elif key.kind == "commitment":
+            bucket = "commitment"
+        elif key.kind == "project":
+            bucket = "project_fact"
+        observations.append(
+            Observation(
+                source="user_msg",
+                content=key.text,
+                turn_id=source_event_id or "",
+                timestamp=ts,
+                metadata={
+                    "kind_hint": key.kind,
+                    "scope_hint": key.scope,
+                    "bucket_hint": bucket,
+                    "confidence_hint": key.confidence,
+                    "pattern_name": key.pattern_name,
+                },
+            )
+        )
+    return observations
+
+
 async def extract_and_remember(
     message: str,
     memory_service: Any,

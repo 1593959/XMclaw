@@ -136,6 +136,36 @@ async def status(request: Request) -> dict[str, Any]:
     }
 
 
+@router.get("/gateway/status")
+async def gateway_status(request: Request) -> dict[str, Any]:
+    """Phase 5: expose Gateway configuration + runtime metrics.
+
+    Returns 503 when Gateway is not wired; otherwise returns
+    feature flags + metrics snapshot.
+    """
+    agent = getattr(request.app.state, "agent", None)
+    gateway = getattr(agent, "_memory_gateway", None) if agent else None
+    if gateway is None:
+        return JSONResponse(
+            {"enabled": False, "reason": "gateway not wired"},
+            status_code=503,
+        )
+    metrics = {}
+    try:
+        metrics = gateway.get_metrics()
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "enabled": gateway.enabled,
+        "think_enabled": getattr(gateway, "_think_enabled", False),
+        "decide_enabled": getattr(gateway, "_decide_enabled", False),
+        "recall_gate": getattr(gateway, "_recall_gate", False),
+        "recall_classify": getattr(gateway, "_recall_classify", False),
+        "recall_hybrid": getattr(gateway, "_recall_hybrid", True),
+        "metrics": metrics,
+    }
+
+
 # ── Consolidated overview (Phase M2) ─────────────────────────────
 
 
@@ -887,11 +917,33 @@ async def create_fact(request: Request) -> Any:
         return JSONResponse(
             {"error": "invalid_layer", "layer": layer}, status_code=400,
         )
-    fact = await svc.remember(
-        text, kind=kind, scope=scope, layer=layer,
-        confidence=confidence, bucket=bucket,
-        provenance="manual_ui",
-    )
+    # Phase 5: route manual UI writes through Gateway when available.
+    agent = getattr(request.app.state, "agent", None)
+    gateway = getattr(agent, "_memory_gateway", None) if agent else None
+    if gateway is not None:
+        from xmclaw.memory.v2.gateway_models import Observation
+        fact = await gateway.ingest(
+            Observation(
+                source="manual_ui",
+                content=text,
+                turn_id="manual_ui",
+                timestamp=time.time(),
+                metadata={
+                    "kind_hint": kind,
+                    "scope_hint": scope,
+                    "bucket_hint": bucket,
+                    "confidence_hint": confidence,
+                    "layer_hint": layer,
+                },
+            ),
+            context={"manual_ui": True},
+        )
+    else:
+        fact = await svc.remember(
+            text, kind=kind, scope=scope, layer=layer,
+            confidence=confidence, bucket=bucket,
+            provenance="manual_ui",
+        )
     return {"created": fact.to_dict()}
 
 

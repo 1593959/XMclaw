@@ -116,6 +116,10 @@ class HookContext:
     # Legacy memory.db kind=lesson rows continue to land so the
     # persona MD render path stays unchanged.
     memory_v2_service: Any = None  # MemoryService | None
+    # Phase 1 (CMP): CognitiveMemoryGateway — unified write entrypoint.
+    # When wired, facts route through the Gateway instead of direct
+    # remember() calls.  Phase 1 is transparent passthrough.
+    memory_gateway: Any = None  # CognitiveMemoryGateway | None
 
 
 # 2026-06-06 记忆污染修复：内部会话（CognitiveDaemon 的 goal-from-percept
@@ -267,34 +271,63 @@ async def _write_facts_to_memory(
     if not facts:
         return
 
-    # Wave-27 follow-up: v2 facts write runs FIRST + independently so
-    # the legacy memory.db None-path doesn't short-circuit it. Lessons
-    # (workflow / tool_quirks / failure_modes / values / rules) and
-    # preferences flow here; the v2 fact id is deterministic on
-    # (kind, scope, text) so repeats merge into one row with bumped
-    # evidence_count via the write-time near-dup pipeline.
-    #
-    # Phase 2 (2026-05-16): pass ``bucket`` through to the v2 store
-    # so v2_renderer can find the right MD file for each lesson
-    # bucket (workflow → AGENTS.md, values → SOUL.md, etc.) — see
-    # xmclaw/core/persona/v2_renderer.py:BUCKET_TO_FILE for the
-    # full mapping. After the writes complete, fire the renderer
-    # once for the whole batch — re-renders only the MD files
-    # whose buckets are actually touched (idempotent, cheap).
+    # Phase 1 (CMP): route through CognitiveMemoryGateway when available.
+    # The Gateway becomes the single entrypoint for all v2 writes.
+    # When the Gateway is NOT wired, fall back to the legacy dual-write
+    # path (v2_svc direct + memory.db) for backward compatibility.
+    _gateway = getattr(ctx, "memory_gateway", None)
     v2_svc = getattr(ctx, "memory_v2_service", None)
     v2_written: list[Any] = []
-    if v2_svc is not None and kind in ("lesson", "preference"):
-        # Default scope. preference is user-scoped (matches the
-        # LLM extractor's contract); lessons stay project-scoped.
+
+    if _gateway is not None and kind in ("lesson", "preference"):
+        # Gateway path: convert facts to Observations and submit batch.
+        from xmclaw.memory.v2.gateway_models import Observation
         v2_scope = "user" if kind == "preference" else "project"
-        # Map the legacy ``bucket`` argument to the v2 bucket label.
-        # For preference writes the legacy code passed bucket=None,
-        # so we synthesise "user_preference" — same label the LLM
-        # extractor uses in Phase 1.
-        if kind == "preference":
-            v2_bucket = "user_preference"
-        else:
-            v2_bucket = bucket or ""
+        v2_bucket = "user_preference" if kind == "preference" else (bucket or "")
+        observations = [
+            Observation(
+                source="post_sampling",
+                content=fact,
+                turn_id=ctx.session_id,
+                timestamp=time.time(),
+                metadata={
+                    "kind_hint": kind,
+                    "scope_hint": v2_scope,
+                    "bucket_hint": v2_bucket,
+                    "confidence_hint": 0.7,
+                },
+            )
+            for fact in facts
+        ]
+        try:
+            written = await _gateway.ingest_batch(
+                observations,
+                context={"session_id": ctx.session_id},
+            )
+            v2_written = [w for w in written if w is not None]
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "post_sampling.gateway_write_failed kind=%s err=%s",
+                kind, exc,
+            )
+            try:
+                from xmclaw.utils.swallowed_exceptions import (
+                    record as _swallow,
+                )
+                _swallow("post_sampling.gateway_write", exc)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Gateway handles persona rendering via its underlying service.
+        # Skip legacy memory.db path entirely when Gateway is active.
+        return
+
+    # Legacy path (no Gateway): v2 direct write + memory.db fallback.
+    # Wave-27 follow-up: v2 facts write runs FIRST + independently so
+    # the legacy memory.db None-path doesn't short-circuit it.
+    if v2_svc is not None and kind in ("lesson", "preference"):
+        v2_scope = "user" if kind == "preference" else "project"
+        v2_bucket = "user_preference" if kind == "preference" else (bucket or "")
         for fact in facts:
             try:
                 f = await v2_svc.remember(
@@ -311,9 +344,6 @@ async def _write_facts_to_memory(
                     "post_sampling.v2_dual_write_failed kind=%s err=%s",
                     kind, exc,
                 )
-                # 2026-05-26 (audit A3): every fact write that gets
-                # swallowed here is a silently-lost user fact. Count
-                # so doctor can flag persistent failures.
                 try:
                     from xmclaw.utils.swallowed_exceptions import (
                         record as _swallow,
@@ -322,21 +352,6 @@ async def _write_facts_to_memory(
                 except Exception:  # noqa: BLE001
                     pass
 
-    # Phase 3a (2026-05-16): when v2 actually accepted writes for
-    # this batch, SKIP the legacy memory.db dual-write entirely.
-    # Pre-fix the two stores both held lessons → drift between
-    # them caused the user's "L1 has it, IDENTITY.md doesn't"
-    # complaint (resolved with v2_renderer in Phase 1/2), but it
-    # also left ``memory_search`` and ``Auto-Dream`` consuming
-    # stale memory.db rows when v2 had already deduped /
-    # superseded them. Single-source-of-truth wins: v2 holds the
-    # data, v2_renderer (fired below) writes the MD file, the
-    # legacy memory.db path stays only as a fallback for the
-    # "v2 not configured" install. ``kind not in (lesson,
-    # preference)`` is OUT OF SCOPE — Wave-27 fix-8 only routed
-    # those two kinds through v2; other kinds (preference,
-    # decision, file_chunk, code_chunk) still flow through
-    # memory.db as before.
     v2_handled_kind = (
         v2_svc is not None
         and v2_written
@@ -344,10 +359,6 @@ async def _write_facts_to_memory(
     )
 
     if v2_handled_kind:
-        # v2 absorbed the write — render persona files from v2 and
-        # return BEFORE the legacy memory.db path so we don't
-        # double-write the same MD file under two different
-        # formats.
         if ctx.persona_dir is not None:
             try:
                 from xmclaw.core.persona.v2_renderer import render_affected_files

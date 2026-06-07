@@ -316,7 +316,7 @@ async def test_consolidate_skips_when_no_memory() -> None:
 
 @pytest.mark.asyncio
 async def test_consolidate_v2_native_path() -> None:
-    """V2 MemoryService — dedupe + promote recent + archive stale."""
+    """V2 MemoryService — dedupe + promote recent (Phase 4)."""
     mem = _FakeMemService(
         recent_facts=[_FakeFact("fresh A"), _FakeFact("fresh B")],
         stale_facts=[_FakeFact("old C")],
@@ -326,17 +326,18 @@ async def test_consolidate_v2_native_path() -> None:
     rc = ReflectionCycle(memory_service=mem, bus=bus, consolidate_batch=25)
     out = await rc.consolidate_memory(tick=1)
     assert out.ran is True
-    # Promoted = recent count, archived = stale count, merged = dedupe.
+    # Phase 4: merged = dedupe, promoted = recent (no LLM → no synthesis).
     assert out.summary["promoted"] == 2
     assert out.summary["merged"] == 4
-    assert out.summary["archived"] == 1
-    # Three remember() calls happened (2 promoted + 1 archived), all
-    # at layer=long_term.
+    assert out.summary["synthesized"] == 0
+    assert out.summary["superseded"] == 0
+    assert out.summary["stale_marked"] == 0
+    # Two remember() calls (2 promoted), all at layer=long_term.
     layers = [layer for _, layer in mem.remembered]
-    assert layers == ["long_term", "long_term", "long_term"]
-    # Recall fired twice (recent + stale windows).
+    assert layers == ["long_term", "long_term"]
+    # Recall fired once (recent window only; no LLM → synthesize skipped).
     recall_calls = [c for c in mem.calls if c[0] == "recall"]
-    assert len(recall_calls) == 2
+    assert len(recall_calls) == 1
     # Event published.
     types = [(e.type.value if hasattr(e.type, "value") else e.type)
              for e in bus.published]
@@ -354,7 +355,199 @@ async def test_consolidate_falls_back_when_v2_methods_missing() -> None:
     assert out.ran is True
     assert out.summary["promoted"] == 0
     assert out.summary["merged"] == 0
-    assert out.summary["archived"] == 0
+    assert out.summary["synthesized"] == 0
+    assert out.summary["superseded"] == 0
+    assert out.summary["stale_marked"] == 0
+
+
+# ── Phase 4: LLM synthesis + stale detection ─────────────────────
+
+
+@dataclass
+class _FakeFactV4:
+    """Fact stand-in with Phase 4 fields (id, bucket, layer, ts_last,
+    confidence, superseded_by, invalid_at)."""
+    text: str
+    id: str = ""
+    kind: str = "lesson"
+    scope: str = "project"
+    bucket: str = "misc"
+    layer: str = "working"
+    ts_last: float = 0.0
+    confidence: float = 0.8
+    superseded_by: str | None = None
+    invalid_at: float | None = None
+
+
+@dataclass
+class _FakeHitV4:
+    """RecallHit stand-in with distance."""
+    fact: _FakeFactV4
+    distance: float = 0.0
+
+
+@dataclass
+class _FakeMemServiceV4:
+    """MemoryService stand-in for Phase 4 tests."""
+    working_facts: list[_FakeFactV4] = field(default_factory=list)
+    long_term_facts: list[_FakeFactV4] = field(default_factory=list)
+    calls: list[tuple[str, dict]] = field(default_factory=list)
+    superseded: list[tuple[str, str]] = field(default_factory=list)
+    upserted: list[_FakeFactV4] = field(default_factory=list)
+
+    async def deduplicate(self) -> int:
+        self.calls.append(("deduplicate", {}))
+        return 0
+
+    async def recall(
+        self, text: str | None = None, **kwargs: Any,
+    ) -> list[_FakeHitV4]:
+        self.calls.append(("recall", dict(kwargs, text=text)))
+        only_layer = kwargs.get("only_layer")
+        include_superseded = kwargs.get("include_superseded", True)
+        if only_layer == "working":
+            facts = self.working_facts
+        elif only_layer == "long_term":
+            facts = self.long_term_facts
+        else:
+            # Text-based recall (for stale detection).
+            query = text or ""
+            # Return neighbours from both layers.
+            all_facts = self.working_facts + self.long_term_facts
+            # Simple heuristic: return facts sharing the first 2 chars.
+            matches = [
+                f for f in all_facts
+                if f.text[:2] == query[:2] and f.text != query
+            ]
+            return [_FakeHitV4(f, distance=0.1) for f in matches[:3]]
+        out = []
+        for f in facts:
+            if not include_superseded and f.superseded_by:
+                continue
+            out.append(_FakeHitV4(f))
+        return out
+
+    async def remember(self, text: str, **kwargs: Any) -> _FakeFactV4:
+        self.calls.append(("remember", dict(kwargs, text=text)))
+        f = _FakeFactV4(
+            text=text,
+            id=f"fact-{len(self.calls)}",
+            kind=kwargs.get("kind", "lesson"),
+            scope=kwargs.get("scope", "project"),
+            bucket=kwargs.get("bucket", "misc"),
+            layer=kwargs.get("layer", "working"),
+            confidence=kwargs.get("confidence", 0.8),
+        )
+        return f
+
+    async def supersede(self, old_fact_id: str, new_fact_id: str) -> None:
+        self.superseded.append((old_fact_id, new_fact_id))
+        for f in self.working_facts + self.long_term_facts:
+            if f.id == old_fact_id:
+                f.superseded_by = new_fact_id
+
+    @property
+    def _vec(self):
+        return self
+
+    async def upsert(self, facts: list[Any]) -> None:
+        self.upserted.extend(facts)
+
+    async def get(self, fact_id: str) -> _FakeFactV4 | None:
+        for f in self.working_facts + self.long_term_facts:
+            if f.id == fact_id:
+                return f
+        return None
+
+
+class _SynthesizeLLM:
+    """LLM that returns a JSON array of synthesized statements."""
+    def __init__(self, statements: list[str] | None = None) -> None:
+        self.statements = statements or ["合成后的陈述"]
+        self.calls = 0
+        self.last_prompt = ""
+
+    async def complete(self, messages: list, tools: Any = None) -> Any:
+        self.calls += 1
+        self.last_prompt = messages[-1].content if messages else ""
+        import json
+        return _FakeLLMResp(content=json.dumps({"statements": self.statements}))
+
+
+@pytest.mark.asyncio
+async def test_consolidate_synthesizes_fragments() -> None:
+    """When LLM is wired, working facts are clustered by bucket and
+    synthesized into long_term facts."""
+    facts = [
+        _FakeFactV4("用户喜欢 Python", id="w1", bucket="user_preference"),
+        _FakeFactV4("用户偏好简洁的代码", id="w2", bucket="user_preference"),
+        _FakeFactV4("用户讨厌冗余注释", id="w3", bucket="user_preference"),
+        _FakeFactV4("项目使用 FastAPI", id="w4", bucket="project_fact"),
+    ]
+    mem = _FakeMemServiceV4(working_facts=facts)
+    llm = _SynthesizeLLM(statements=["用户偏好简洁的 Python 代码，讨厌冗余注释"])
+    rc = ReflectionCycle(
+        llm=llm,
+        memory_service=mem,
+        bus=_CapturingBus(),
+    )
+    out = await rc.consolidate_memory(tick=1)
+    assert out.ran is True
+    # user_preference bucket has 3 facts → 1 synthesis + 3 superseded.
+    assert out.summary["synthesized"] == 1
+    assert out.summary["superseded"] == 3
+    # project_fact bucket has <3 facts → skipped.
+    # LLM called once for the user_preference cluster.
+    assert llm.calls == 1
+    # The synthesized fact was written via remember() (no gateway).
+    # + 1 promote call for the unsynthesized project_fact entry.
+    remember_calls = [c for c in mem.calls if c[0] == "remember"]
+    assert len(remember_calls) == 2
+    layers = [c[1]["layer"] for c in remember_calls]
+    assert all(l == "long_term" for l in layers)
+
+
+@pytest.mark.asyncio
+async def test_consolidate_stale_detection() -> None:
+    """Long_term facts with close newer working neighbours get
+    invalid_at stamped."""
+    old = _FakeFactV4(
+        "项目用 Flask", id="lt1", layer="long_term",
+        ts_last=time.time() - 7200, bucket="project_fact",
+    )
+    new = _FakeFactV4(
+        "项目已迁移到 FastAPI", id="w1", layer="working",
+        ts_last=time.time(), bucket="project_fact",
+    )
+    mem = _FakeMemServiceV4(
+        long_term_facts=[old],
+        working_facts=[new],
+    )
+    rc = ReflectionCycle(
+        llm=_SynthesizeLLM(),  # any LLM; stale_detect doesn't call it
+        memory_service=mem,
+        bus=_CapturingBus(),
+    )
+    out = await rc.consolidate_memory(tick=1)
+    assert out.ran is True
+    # stale_detect found lt1 as stale because w1 is close + newer.
+    assert out.summary["stale_marked"] == 1
+    assert old.invalid_at is not None
+    assert old.confidence <= 0.3
+
+
+@pytest.mark.asyncio
+async def test_llm_synthesize_bucket_fallback_on_parse_error() -> None:
+    """If LLM returns garbage JSON, fallback to the first fact's text."""
+    facts = [
+        _FakeFactV4("碎片 A", id="w1", bucket="misc"),
+        _FakeFactV4("碎片 B", id="w2", bucket="misc"),
+        _FakeFactV4("碎片 C", id="w3", bucket="misc"),
+    ]
+    llm = _FakeLLM(next_content="这不是 JSON")
+    rc = ReflectionCycle(llm=llm, memory_service=None)
+    result = await rc._llm_synthesize_bucket("misc", facts)
+    assert result == ["碎片 A"]
 
 
 # ── Scope 3: groom_goals ──────────────────────────────────────────

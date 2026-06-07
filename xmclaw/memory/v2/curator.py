@@ -140,8 +140,10 @@ class MemoryCurator:
         service: Any,
         *,
         llm: Any | None = None,
+        memory_gateway: Any | None = None,
     ) -> None:
         self._svc = service
+        self._memory_gateway = memory_gateway
         # LLM is optional; the dedup/prune passes are pure-Python.
         # Contradiction + crystallization passes (next commit) use it.
         self._llm = llm or getattr(service, "_llm", None)
@@ -713,15 +715,35 @@ class MemoryCurator:
                     member_facts,
                     key=lambda f: (f.confidence, f.evidence_count),
                 )
-                new_fact = await self._svc.remember(
-                    canonical_text,
-                    kind=anchor.kind,
-                    scope=anchor.scope,
-                    bucket=anchor.bucket or "misc",
-                    confidence=min(0.9, max(
-                        f.confidence for f in member_facts
-                    )),
-                )
+                if self._memory_gateway is not None:
+                    from xmclaw.memory.v2.gateway_models import Observation
+                    new_fact = await self._memory_gateway.ingest(
+                        Observation(
+                            source="curator",
+                            content=canonical_text,
+                            turn_id=f"crystallize:{int(time.time())}",
+                            timestamp=time.time(),
+                            metadata={
+                                "kind_hint": anchor.kind,
+                                "scope_hint": anchor.scope,
+                                "bucket_hint": anchor.bucket or "misc",
+                                "confidence_hint": min(
+                                    0.9, max(f.confidence for f in member_facts),
+                                ),
+                            },
+                        ),
+                        context={"crystallize": True},
+                    )
+                else:
+                    new_fact = await self._svc.remember(
+                        canonical_text,
+                        kind=anchor.kind,
+                        scope=anchor.scope,
+                        bucket=anchor.bucket or "misc",
+                        confidence=min(0.9, max(
+                            f.confidence for f in member_facts
+                        )),
+                    )
                 for mf in member_facts:
                     if mf.id == new_fact.id:
                         continue

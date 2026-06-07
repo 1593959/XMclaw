@@ -302,6 +302,7 @@ class BuiltinTools(
         # provider. Wired post-construction via
         # ``set_memory_v2_service``.
         self._memory_v2_service: "object | None" = None
+        self._memory_gateway: "object | None" = None
         # B-388: voice provider handles. Each is advertised on
         # list_tools when wired, so a daemon without faster-whisper /
         # edge-tts installed simply doesn't expose those tools.
@@ -354,6 +355,15 @@ class BuiltinTools(
         return less than the user expects.
         """
         self._memory_v2_service = svc
+
+    def set_memory_gateway(self, gateway: "object | None") -> None:
+        """Phase 5 (2026-06-08): wire (or clear) the
+        CognitiveMemoryGateway post-construction.
+
+        When set, ``memory`` tool add/pin actions route through the
+        Gateway instead of calling ``remember()`` directly.
+        """
+        self._memory_gateway = gateway
 
     def list_tools(self) -> list[ToolSpec]:
         specs = [

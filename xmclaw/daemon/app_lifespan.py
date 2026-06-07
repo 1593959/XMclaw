@@ -2445,6 +2445,41 @@ def make_lifespan(
                         agent._memory_service = memory_v2_service
                     except Exception:  # noqa: BLE001
                         pass
+                    # Phase 1 (CMP): wire CognitiveMemoryGateway.
+                    # The Gateway becomes the unified entrypoint for all
+                    # memory writes.  Phase 1 is a transparent passthrough
+                    # (THINK/DECIDE stubbed) — behaviour is identical to
+                    # pre-Gateway, but the architecture is unified.
+                    try:
+                        from xmclaw.memory.v2.gateway import (
+                            CognitiveMemoryGateway,
+                        )
+                        _gateway_cfg = (
+                            memory_v2_cfg.get("gateway", {})
+                            if isinstance(memory_v2_cfg, dict) else {}
+                        )
+                        _gateway_llm = getattr(agent, "_llm", None)
+                        agent._memory_gateway = CognitiveMemoryGateway(
+                            memory_service=memory_v2_service,
+                            llm=_gateway_llm,
+                            cfg=_gateway_cfg,
+                        )
+                        log.info(
+                            "memory_gateway.wired enabled=%s think=%s "
+                            "decide=%s",
+                            agent._memory_gateway.enabled,
+                            agent._memory_gateway._think_enabled,
+                            agent._memory_gateway._decide_enabled,
+                        )
+                        # Phase 4 (2026-06-04): wire gateway into
+                        # ReflectionCycle so consolidate_memory can
+                        # route synthesized facts through the Gateway.
+                        if _reflection_cycle is not None:
+                            _reflection_cycle._memory_gateway = (
+                                agent._memory_gateway
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("memory_gateway.wire_failed err=%s", exc)
                     # Wave-27 Phase 3c (2026-05-16): plumb v2 service
                     # into every BuiltinTools instance so memory_search
                     # can fan its query across L1 facts too. Without
@@ -2478,6 +2513,12 @@ def make_lifespan(
                             for bt in _walk_for_builtin(tools_provider):
                                 try:
                                     bt.set_memory_v2_service(memory_v2_service)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                try:
+                                    bt.set_memory_gateway(
+                                        getattr(agent, "_memory_gateway", None),
+                                    )
                                 except Exception:  # noqa: BLE001
                                     pass
                     except Exception as exc:  # noqa: BLE001
@@ -2795,7 +2836,14 @@ def make_lifespan(
                         # The DECISION to curate is wall-clock based
                         # (persisted ts), not poll-count based, so it's
                         # restart-proof. Loop never raises.
-                        curator = MemoryCurator(memory_v2_service)
+                        _curator_gateway = getattr(
+                            getattr(_app.state, "agent", None),
+                            "_memory_gateway", None,
+                        )
+                        curator = MemoryCurator(
+                            memory_v2_service,
+                            memory_gateway=_curator_gateway,
+                        )
                         try:
                             await asyncio.sleep(_cur_warmup)
                             while True:

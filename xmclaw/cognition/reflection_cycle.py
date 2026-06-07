@@ -155,13 +155,17 @@ class ReflectionCycle:
 
     Args:
         llm: any object exposing ``async complete(messages, tools=None)``
-            with ``LLMResponse.content``. Used by reflect_recent;
-            consolidate_memory and groom_goals are LLM-free.
+            with ``LLMResponse.content``. Used by reflect_recent and
+            consolidate_memory (Phase 4 LLM synthesis); groom_goals
+            remains LLM-free.
         memory_service: optional ``MemoryService`` (V2) for the 1h
             consolidate cycle. None disables consolidation. Phase 7
             replaced the legacy ``unified_memory`` parameter; callers
             still passing the old keyword get a TypeError — update to
             pass a ``MemoryService`` instance.
+        memory_gateway: optional ``CognitiveMemoryGateway`` (Phase 4).
+            When wired, consolidate_memory routes synthesized facts
+            through the Gateway instead of direct remember() calls.
         cognitive_state: optional ``CognitiveState`` for goal grooming.
             None disables groom.
         bus: event bus to publish INNER_MONOLOGUE / REFLECTION_CYCLE_RAN
@@ -180,6 +184,7 @@ class ReflectionCycle:
         *,
         llm: Any | None = None,
         memory_service: Any | None = None,
+        memory_gateway: Any | None = None,
         cognitive_state: Any | None = None,
         bus: Any | None = None,
         recent_events_fn: Callable[[int], Awaitable[list[Any]]] | None = None,
@@ -201,6 +206,7 @@ class ReflectionCycle:
     ) -> None:
         self._llm = llm
         self._memory_service = memory_service
+        self._memory_gateway = memory_gateway
         self._cognitive_state = cognitive_state
         self._bus = bus
         self._recent_events_fn = recent_events_fn
@@ -317,59 +323,63 @@ class ReflectionCycle:
     # ── Scope 2: consolidate_memory (1-h) ────────────────────────
 
     async def consolidate_memory(self, *, tick: int) -> CycleResult:
-        """Compress working-layer memory: promote durable entries to
-        long_term, merge near-duplicates, archive stale ones.
+        """Cognitive memory consolidation (Phase 4).
 
-        V2-native implementation (Phase 7, 2026-05-23). Replaces the
-        former duck-typed lookup of UnifiedMemorySystem's
-        ``promote_durable_short_to_long`` / ``merge_near_duplicates``
-        / ``archive_stale_short`` rich-API hooks with three direct
-        MemoryService calls:
+        Replaces the mechanical "promote/archive" with an LLM-driven
+        synthesis pipeline:
 
-          * ``merged``   = ``memory_service.deduplicate(...)``
-          * ``promoted`` = walk recent high-confidence working facts
-                           (last 1h, conf >= 0.7) → call
-                           ``remember(..., layer="long_term")``
-                           which bumps evidence + sets the layer.
-          * ``archived`` = walk very-stale working facts (older than
-                           1h) → ``remember(..., layer="long_term")``
-                           so they survive any working-layer TTL
-                           sweep but stop crowding fresh recall.
+          1. ``deduplicate``  — V2 built-in near-dup merge (kept).
+          2. ``synthesize``   — NEW. Cluster working facts by bucket,
+             ask the LLM to condense each cluster into 1-3 coherent
+             statements, write the synthesized facts to long_term,
+             and supersede the fragment facts.
+          3. ``promote``      — remaining high-confidence working facts
+             that were NOT covered by synthesis → long_term.
+          4. ``stale_detect`` — NEW. Scan long_term for facts that may
+             have been contradicted by newer working facts; mark
+             invalid so they stop surfacing in recall.
 
         Any per-step failure is logged + suppressed — consolidate is
         best-effort and never fails the cycle.
         """
         t0 = time.perf_counter()
         svc = self._memory_service
+        gateway = getattr(self, "_memory_gateway", None)
         if svc is None:
             return CycleResult(scope="consolidate", ran=False)
 
-        promoted = 0
         merged = 0
-        archived = 0
+        synthesized = 0
+        superseded = 0
+        promoted = 0
+        stale_marked = 0
         now = time.time()
         recent_cutoff = now - 3600.0   # 1 hour
-        stale_cutoff = recent_cutoff   # same threshold — recent =
-                                       # "recently active working
-                                       # fact" vs stale = "old
-                                       # working fact" relative to it.
 
-        # Step 1 — merge near-duplicates via V2's built-in pass.
+        # ── Step 1: deduplicate ──────────────────────────────────
         try:
             merged_result = await svc.deduplicate()
-            # V2 deduplicate returns either an int or a dict; handle
-            # both shapes defensively.
             if isinstance(merged_result, dict):
                 merged = int(merged_result.get("merged", 0))
             else:
                 merged = int(merged_result or 0)
         except AttributeError:
-            # MemoryService instance missing deduplicate — older snapshot.
             logger.warning("consolidate.deduplicate_missing")
         except Exception as exc:  # noqa: BLE001
             logger.warning("consolidate.deduplicate_failed err=%s", exc)
 
-        # Step 2 — promote recent high-confidence working facts.
+        # ── Step 2: LLM synthesis of fragment clusters ────────────
+        if self._llm is not None:
+            try:
+                syn_count, sup_count = await self._synthesize_clusters(svc, gateway)
+                synthesized = syn_count
+                superseded = sup_count
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("consolidate.synthesize_failed err=%s", exc)
+        else:
+            logger.debug("consolidate.synthesize_skipped (no llm)")
+
+        # ── Step 3: promote remaining recent high-confidence ──────
         try:
             recent_working = await svc.recall(
                 only_layer="working",
@@ -381,49 +391,52 @@ class ReflectionCycle:
             )
             for hit in recent_working:
                 try:
-                    await svc.remember(
-                        text=hit.fact.text,
-                        kind=hit.fact.kind,
-                        scope=hit.fact.scope,
-                        layer="long_term",
-                    )
+                    if getattr(hit.fact, "superseded_by", None):
+                        continue
+                    if gateway is not None:
+                        from xmclaw.memory.v2.gateway_models import Observation
+                        await gateway.ingest(
+                            Observation(
+                                source="cognition",
+                                content=hit.fact.text,
+                                turn_id=f"consolidate:{tick}",
+                                timestamp=now,
+                                metadata={
+                                    "kind_hint": hit.fact.kind,
+                                    "scope_hint": hit.fact.scope,
+                                    "bucket_hint": getattr(hit.fact, "bucket", ""),
+                                    "confidence_hint": hit.fact.confidence,
+                                },
+                            ),
+                            context={"consolidate": True},
+                        )
+                    else:
+                        await svc.remember(
+                            text=hit.fact.text,
+                            kind=hit.fact.kind,
+                            scope=hit.fact.scope,
+                            layer="long_term",
+                        )
                     promoted += 1
                 except Exception:  # noqa: BLE001
                     pass
         except Exception as exc:  # noqa: BLE001
             logger.warning("consolidate.promote_failed err=%s", exc)
 
-        # Step 3 — archive stale working facts (older than cutoff)
-        # by moving them to long_term so they survive any future
-        # working-layer TTL sweep.
-        try:
-            stale_working = await svc.recall(
-                only_layer="working",
-                time_range=(None, stale_cutoff),
-                k=self._consolidate_batch,
-                keyword_only=True,
-                min_confidence=0.0,
-                include_relations=False,
-            )
-            for hit in stale_working:
-                try:
-                    await svc.remember(
-                        text=hit.fact.text,
-                        kind=hit.fact.kind,
-                        scope=hit.fact.scope,
-                        layer="long_term",
-                    )
-                    archived += 1
-                except Exception:  # noqa: BLE001
-                    pass
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("consolidate.archive_failed err=%s", exc)
+        # ── Step 4: stale detection on long_term ──────────────────
+        if self._llm is not None:
+            try:
+                stale_marked = await self._detect_stale_long_term(svc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("consolidate.stale_detect_failed err=%s", exc)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         summary = {
-            "promoted": promoted,
             "merged": merged,
-            "archived": archived,
+            "synthesized": synthesized,
+            "superseded": superseded,
+            "promoted": promoted,
+            "stale_marked": stale_marked,
             "elapsed_ms": round(elapsed_ms, 2),
         }
         await self._publish_event("memory_consolidated", summary)
@@ -431,6 +444,196 @@ class ReflectionCycle:
             scope="consolidate", ran=True,
             summary=summary, elapsed_ms=elapsed_ms,
         )
+
+    # ── Phase 4 helpers ────────────────────────────────────────────
+
+    async def _synthesize_clusters(
+        self,
+        svc: Any,
+        gateway: Any | None,
+    ) -> tuple[int, int]:
+        """Cluster working facts by bucket, ask LLM to synthesize each
+        cluster, write synthesized facts to long_term, supersede the
+        old fragments.
+
+        Returns (synthesized_count, superseded_count).
+        """
+        try:
+            all_working = await svc.recall(
+                only_layer="working",
+                k=200,
+                keyword_only=True,
+                min_confidence=0.0,
+                include_relations=False,
+                include_superseded=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("consolidate.fetch_working_failed err=%s", exc)
+            return 0, 0
+
+        if len(all_working) < 3:
+            return 0, 0
+
+        from collections import defaultdict
+        by_bucket: dict[str, list[Any]] = defaultdict(list)
+        for h in all_working:
+            bucket = getattr(h.fact, "bucket", "") or "misc"
+            by_bucket[bucket].append(h.fact)
+
+        synthesized_count = 0
+        superseded_count = 0
+
+        for bucket, facts in by_bucket.items():
+            if len(facts) < 3:
+                continue
+            try:
+                syn_texts = await self._llm_synthesize_bucket(bucket, facts)
+                for syn_text in syn_texts:
+                    representative = facts[0]
+                    if gateway is not None:
+                        from xmclaw.memory.v2.gateway_models import Observation
+                        new_fact = await gateway.ingest(
+                            Observation(
+                                source="cognition",
+                                content=syn_text,
+                                turn_id=f"synthesize:{int(time.time())}",
+                                timestamp=time.time(),
+                                metadata={
+                                    "kind_hint": representative.kind,
+                                    "scope_hint": representative.scope,
+                                    "bucket_hint": bucket,
+                                    "confidence_hint": 0.85,
+                                },
+                            ),
+                            context={"synthesize": True},
+                        )
+                    else:
+                        new_fact = await svc.remember(
+                            syn_text,
+                            kind=representative.kind,
+                            scope=representative.scope,
+                            confidence=0.85,
+                            layer="long_term",
+                            bucket=bucket,
+                        )
+                    if new_fact is not None:
+                        synthesized_count += 1
+                        for old in facts:
+                            if old.id == new_fact.id:
+                                continue
+                            try:
+                                if hasattr(svc, "supersede"):
+                                    await svc.supersede(
+                                        old_fact_id=old.id,
+                                        new_fact_id=new_fact.id,
+                                    )
+                                    superseded_count += 1
+                            except Exception:  # noqa: BLE001
+                                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "consolidate.synthesize_bucket_failed bucket=%s err=%s",
+                    bucket, exc,
+                )
+
+        return synthesized_count, superseded_count
+
+    async def _llm_synthesize_bucket(
+        self,
+        bucket: str,
+        facts: list[Any],
+    ) -> list[str]:
+        """Ask the LLM to condense a cluster of fragment facts into
+        1-3 coherent statements.
+        """
+        subset = facts[:15]
+        numbered = "\n".join(
+            f"{i+1}. {f.text}" for i, f in enumerate(subset)
+        )
+        prompt = (
+            f"你是记忆整理助手。下面是一组关于「{bucket}」的记忆碎片，"
+            f"共 {len(subset)} 条。请将它们合并、归纳为 1-3 条完整、"
+            f"规范的陈述句。\n\n"
+            f"要求：\n"
+            f"1. 合并重复或近义的内容\n"
+            f"2. 保留最重要的信息，删除次要细节\n"
+            f"3. 如果碎片之间有矛盾，以最新/最具体的为准\n"
+            f"4. 输出 JSON 数组格式：{{\"statements\": [\"...\", \"...\"]}}\n"
+            f"5. 如果碎片已经够简洁且互不重复，可以原样保留（但优先合并）\n\n"
+            f"碎片：\n{numbered}\n\n"
+            f"输出（纯 JSON，不要 markdown）："
+        )
+        try:
+            from xmclaw.core.ir import Message
+            resp = await self._llm.complete(
+                [Message(role="user", content=prompt)],
+                tools=None,
+            )
+            raw = (resp.content or "").strip()
+            if raw.startswith("```"):
+                raw = raw.removeprefix("```json").removeprefix("```")
+                raw = raw.removesuffix("```").strip()
+            data = json.loads(raw)
+            statements = data.get("statements") if isinstance(data, dict) else None
+            if isinstance(statements, list):
+                return [str(s).strip() for s in statements if str(s).strip()]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("consolidate.llm_synthesize_parse_failed err=%s", exc)
+        return [facts[0].text] if facts else []
+
+    async def _detect_stale_long_term(
+        self,
+        svc: Any,
+    ) -> int:
+        """Scan long_term facts and detect potentially stale ones.
+
+        Heuristic: for each long_term fact, search for newer working
+        facts in the same bucket that are vector-close. If found, stamp
+        ``invalid_at`` on the old fact so it stops surfacing.
+        """
+        try:
+            old_facts = await svc.recall(
+                only_layer="long_term",
+                k=100,
+                keyword_only=True,
+                min_confidence=0.0,
+                include_relations=False,
+                include_superseded=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("consolidate.fetch_long_term_failed err=%s", exc)
+            return 0
+
+        stale_marked = 0
+        now = time.time()
+        for hit in old_facts:
+            f = hit.fact
+            try:
+                neighbours = await svc.recall(
+                    f.text,
+                    k=3,
+                    min_confidence=0.0,
+                    include_relations=False,
+                    include_superseded=False,
+                )
+                for nb in neighbours:
+                    if (
+                        nb.fact.id != f.id
+                        and getattr(nb.fact, "layer", "") == "working"
+                        and getattr(nb.fact, "ts_last", 0) > getattr(f, "ts_last", 0)
+                    ):
+                        d = float(getattr(nb, "distance", 1.0))
+                        if d < 0.25:
+                            if getattr(f, "invalid_at", None) is None:
+                                f.invalid_at = now
+                                f.confidence = min(getattr(f, "confidence", 1.0), 0.3)
+                                await svc._vec.upsert([f])
+                                stale_marked += 1
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+
+        return stale_marked
 
     # ── Scope 3: groom_goals (1-day) ─────────────────────────────
 

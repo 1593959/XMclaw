@@ -352,6 +352,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # ``unified_recall_top_k`` deprecated aliases. Callers must
         # pass the new keyword names.
         memory_service: Any = None,
+        memory_gateway: Any = None,
         memory_recall_top_k: int = 5,
         # 2026-05-10 Phase B: optional MemoryExtractor for auto-put.
         # Duck-typed: any object exposing
@@ -549,6 +550,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # attaches the V2 MemoryService to ``agent._memory_service``
         # post-factory.
         self._memory_service = memory_service
+        self._memory_gateway = memory_gateway
         self._memory_recall_top_k = max(1, int(memory_recall_top_k))
         # 动态召回调参（cognition.memory_v2.recall.*，缺省走模块常量）。
         _rc = {}
@@ -1318,37 +1320,56 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 cog_cfg, dict,
             ) else {}
             ar_enabled = bool(ar_cfg.get("enabled", False))  # default OFF
-            mem_svc = getattr(self, "_memory_service", None)
-            if ar_enabled and mem_svc is not None and user_message:
-                from xmclaw.daemon.auto_recall import (
-                    _DEFAULT_EXCLUDE_BUCKETS as _AR_DEFAULTS,
-                    _DEFAULT_TIMEOUT_S as _AR_DEFAULT_TIMEOUT,
-                    prepend_recalled_block as _prepend_recalled,
-                    recall_for_message as _recall_for_message,
-                )
-                excludes = set(_AR_DEFAULTS) | set(
-                    ar_cfg.get("exclude_buckets") or [],
-                )
-                hits = await _recall_for_message(
-                    mem_svc, user_message,
-                    k=int(ar_cfg.get("k", 8)),
-                    min_similarity=float(
-                        ar_cfg.get("min_similarity", 0.65),
-                    ),
-                    exclude_buckets=excludes,
-                    use_hybrid=bool(ar_cfg.get("use_hybrid", False)),
-                    timeout_s=float(
-                        ar_cfg.get("timeout_s", _AR_DEFAULT_TIMEOUT),
-                    ),
-                    query_embedding=_shared_query_emb,
-                )
-                if hits:
-                    user_message = _prepend_recalled(user_message, hits)
-                    from xmclaw.utils.log import get_logger
-                    get_logger(__name__).info(
-                        "auto_recall.injected k=%d top_sim=%.2f",
-                        len(hits), hits[0].similarity,
+            _gateway = getattr(self, "_memory_gateway", None)
+            if ar_enabled and user_message:
+                if _gateway is not None:
+                    # Phase 1: route through CognitiveMemoryGateway.
+                    # The Gateway delegates to the existing auto_recall
+                    # pipeline (transparent passthrough).
+                    _recall_block = await _gateway.recall_for_turn(
+                        user_message,
+                        turn_context={"session_id": session_id},
                     )
+                    if _recall_block:
+                        user_message = f"{_recall_block}\n\n{user_message}"
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).info(
+                            "gateway.recall.injected session=%s",
+                            session_id[:8],
+                        )
+                else:
+                    # Legacy path: direct auto_recall (no Gateway).
+                    mem_svc = getattr(self, "_memory_service", None)
+                    if mem_svc is not None:
+                        from xmclaw.daemon.auto_recall import (
+                            _DEFAULT_EXCLUDE_BUCKETS as _AR_DEFAULTS,
+                            _DEFAULT_TIMEOUT_S as _AR_DEFAULT_TIMEOUT,
+                            prepend_recalled_block as _prepend_recalled,
+                            recall_for_message as _recall_for_message,
+                        )
+                        excludes = set(_AR_DEFAULTS) | set(
+                            ar_cfg.get("exclude_buckets") or [],
+                        )
+                        hits = await _recall_for_message(
+                            mem_svc, user_message,
+                            k=int(ar_cfg.get("k", 8)),
+                            min_similarity=float(
+                                ar_cfg.get("min_similarity", 0.65),
+                            ),
+                            exclude_buckets=excludes,
+                            use_hybrid=bool(ar_cfg.get("use_hybrid", False)),
+                            timeout_s=float(
+                                ar_cfg.get("timeout_s", _AR_DEFAULT_TIMEOUT),
+                            ),
+                            query_embedding=_shared_query_emb,
+                        )
+                        if hits:
+                            user_message = _prepend_recalled(user_message, hits)
+                            from xmclaw.utils.log import get_logger
+                            get_logger(__name__).info(
+                                "auto_recall.injected k=%d top_sim=%.2f",
+                                len(hits), hits[0].similarity,
+                            )
         except Exception as _exc:  # noqa: BLE001
             from xmclaw.utils.log import get_logger
             get_logger(__name__).warning(
@@ -1491,8 +1512,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # ``cognition.memory_v2.enabled`` config flag, off by default
         # until the operator opts in. CAUSED_BY edge links each fact
         # back to the L0 user_message event for audit trail.
+        _gateway = getattr(self, "_memory_gateway", None)
         memory_v2 = getattr(self, "_memory_service", None)
-        if memory_v2 is not None and user_message:
+        if (memory_v2 is not None or _gateway is not None) and user_message:
             # B-LATENCY-prep: this regex extractor + L1 write + persona
             # re-render used to be awaited on the user-turn critical
             # path. Cold cache it was 800ms-3s. THIS turn's recall
@@ -1510,20 +1532,40 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 _status = "ok"
                 _written_count = 0
                 try:
-                    from xmclaw.memory.v2 import extract_and_remember
+                    from xmclaw.memory.v2.key_info_extractor import (
+                        extract_keys_for_gateway,
+                    )
                     # LLM 提取器可用时，regex 层让出主观/解释性类（目标/偏好/
                     # 纠正/组织名）给 LLM 语义判断，只强写客观/显式类，减少污染。
                     _has_llm_extractor = getattr(
                         self, "_memory_v2_llm_extractor", None,
                     ) is not None
-                    written = await extract_and_remember(
-                        user_message, memory_v2,
+                    observations = extract_keys_for_gateway(
+                        user_message,
                         source_event_id=src_event,
                         defer_interpretive=_has_llm_extractor,
                     )
-                    _written_count = len(written) if written else 0
-                    if written:
-                        await self._render_persona_after_writes(written)
+                    if observations:
+                        if _gateway is not None:
+                            # Phase 1: route through CognitiveMemoryGateway.
+                            written = await _gateway.ingest_batch(
+                                observations,
+                                context={"session_id": session_id},
+                            )
+                            _written_count = len([w for w in written if w is not None])
+                            # Persona rendering is handled by the Gateway's
+                            # underlying memory service automatically.
+                        else:
+                            # Legacy path: direct extract_and_remember.
+                            from xmclaw.memory.v2 import extract_and_remember
+                            written = await extract_and_remember(
+                                user_message, memory_v2,
+                                source_event_id=src_event,
+                                defer_interpretive=_has_llm_extractor,
+                            )
+                            _written_count = len(written) if written else 0
+                            if written:
+                                await self._render_persona_after_writes(written)
                 except Exception as exc:  # noqa: BLE001
                     _status = "error"
                     from xmclaw.utils.log import get_logger

@@ -249,6 +249,29 @@
       "_comment_write_decision": "Phase 8 ⑨ (2026-05-30): Mem0-style write-time memory decision (arXiv:2504.19413). When enabled, the BACKGROUND fact extractor routes each candidate fact through remember_with_decision(): it fetches the nearest existing memories and asks the LLM to choose ADD (new info) / UPDATE (merge into a more complete existing fact) / DELETE (new fact contradicts an old one → old is time-failed via invalid_at, kept for history) / NOOP (already known → evidence-vote). This is the head-of-field approach (vs cleaning up duplicates in an offline sweep afterwards) and is the real fix for the store accumulating duplicates. Cost-bounded: the LLM is consulted ONLY when a candidate has a genuinely close neighbour (cosine distance ≤ 0.40); a fact with no close neighbour is a pure ADD with no extra LLM call. Falls back to plain remember() when no LLM/embedder is wired, so it's always safe. Runs in the background extractor path only (NOT the synchronous KeyInfoExtractor regex path), so it never adds latency to a user turn. Set enabled=false to revert to blind remember()+offline curator. See docs/audit/MEMORY_SYSTEMS_SOTA_RESEARCH_2026.md §⑨.",
       "write_decision": {
         "enabled": true
+      },
+      "_comment_gateway": "Phase 1-5 (2026-06-04): CognitiveMemoryGateway — unified write/read pipeline. All memory writes (regex extractor, LLM extractor, post-sampling hooks, consolidate, curator, builtin tools, HTTP API) route through here. THINK = LLM cross-turn summarisation + contradiction detection. DECIDE = Mem0-style ADD/UPDATE/DELETE/NOOP. RECALL = three-layer intelligent recall (gate + classify + hybrid). Metrics exposed at GET /api/v2/memory/v2/gateway/status.",
+      "gateway": {
+        "enabled": true,
+        "think": {
+          "enabled": true,
+          "model_tier": "fast",
+          "max_observations_per_batch": 5,
+          "cache_ttl_s": 300
+        },
+        "decide": {
+          "enabled": true,
+          "use_remember_with_decision": true,
+          "max_neighbors": 16
+        },
+        "recall": {
+          "gate_enabled": true,
+          "classify_enabled": true,
+          "hybrid_enabled": true,
+          "timeout_s": 3.0,
+          "k": 4,
+          "min_similarity": 0.72
+        }
       }
     },
     "_comment_auto_recall": "Memory v3 phase 2 (2026-05-28): per-turn similarity recall against the LanceDB store. Runs BEFORE the LLM call on the user-turn critical path, so it's **OFF by default** — turning it on adds an embedding call + LanceDB query (~100–500ms typical) to every turn. When enabled, results are prepended to the user message itself (NOT the system prompt) as a ``<recalled>`` block, so prompt-cache hits stay intact. Hard-bounded by ``timeout_s`` (default 1.0s) — if recall stalls, the turn proceeds without it. ``use_hybrid=true`` fuses BM25 + vector via ``MemoryService.recall_hybrid`` (requires ``pip install 'xmclaw[memory-bm25]'``); defaults to vector-only because the current Python-side BM25 rebuild is per-query (LanceDB native FTS lands in Phase 5). The agent can also call ``memory_search`` explicitly any time.",

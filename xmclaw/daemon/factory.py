@@ -2178,6 +2178,7 @@ def build_agent_from_config(
         # silently skips the V2 recall + auto-extract paths until
         # the post-construction wire-up runs.
         memory_service=None,
+        memory_gateway=None,
         memory_recall_top_k=_recall_top_k,
         memory_extractor=None,
         perception_bus=perception_bus,
