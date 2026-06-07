@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Any
 from urllib.parse import urlparse
 
 from xmclaw.core.ir import ToolCall, ToolResult
@@ -19,6 +20,7 @@ from xmclaw.providers.tool._helpers import (
 )
 
 _BASH_DEFAULT_TIMEOUT = 30.0
+_PWSH_DEFAULT_TIMEOUT = 300.0
 _BASH_MAX_OUTPUT = 100_000
 _MAX_WEB_BYTES = 50_000
 
@@ -103,6 +105,17 @@ class BuiltinToolsShellMixin:
     _search_config_getter: Any | None = None
 
     async def _bash(self, call: ToolCall, t0: float) -> ToolResult:
+        return await self._run_shell(call, t0, default_timeout=_BASH_DEFAULT_TIMEOUT)
+
+    async def _pwsh(self, call: ToolCall, t0: float) -> ToolResult:
+        """PowerShell-native entry point — same runtime as _bash but
+        advertises a PowerShell-first schema so the LLM emits native
+        syntax instead of bash-isms that fail on Windows."""
+        return await self._run_shell(call, t0, default_timeout=_PWSH_DEFAULT_TIMEOUT)
+
+    async def _run_shell(
+        self, call: ToolCall, t0: float, *, default_timeout: float,
+    ) -> ToolResult:
         command = call.args.get("command")
         if not isinstance(command, str) or not command.strip():
             return _fail(call, t0, "missing or empty 'command' argument")
@@ -143,11 +156,11 @@ class BuiltinToolsShellMixin:
                     cwd = str(resolved)
             except Exception:  # noqa: BLE001
                 cwd = None
-        timeout = call.args.get("timeout_seconds", _BASH_DEFAULT_TIMEOUT)
+        timeout = call.args.get("timeout_seconds", default_timeout)
         try:
             timeout = float(timeout)
         except (TypeError, ValueError):
-            timeout = _BASH_DEFAULT_TIMEOUT
+            timeout = default_timeout
 
         # Shell selection. On Windows, cmd.exe doesn't understand
         # POSIX commands like ``ls``, ``cat``, ``grep``. LLMs typically
@@ -172,6 +185,19 @@ class BuiltinToolsShellMixin:
             "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
         ):
             _clean_env.pop(_dangerous, None)
+
+        # pip / npm resilience: long timeouts + local caches so
+        # installs don't die on slow networks or rate-limited registries.
+        _cache_root = os.path.expanduser("~/.xmclaw/cache")
+        _clean_env.setdefault("PIP_TIMEOUT", "300")
+        _clean_env.setdefault("PIP_CACHE_DIR", os.path.join(_cache_root, "pip"))
+        _clean_env.setdefault("npm_config_fetch_timeout", "300000")
+        _clean_env.setdefault("npm_config_cache", os.path.join(_cache_root, "npm"))
+        try:
+            os.makedirs(os.path.join(_cache_root, "pip"), exist_ok=True)
+            os.makedirs(os.path.join(_cache_root, "npm"), exist_ok=True)
+        except OSError:
+            pass
 
         # Wave 23 fix: keep child shells windowless on Windows so
         # users don't see a black cmd.exe / bash.exe blink per tool
@@ -734,7 +760,6 @@ class BuiltinToolsShellMixin:
         same SERP HTML.
         """
         import httpx
-        import re
         from urllib.parse import quote_plus
         endpoint = (
             f"https://cn.bing.com/search?q={quote_plus(query)}&form=QBLH"

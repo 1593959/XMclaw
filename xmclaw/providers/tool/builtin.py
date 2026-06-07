@@ -26,6 +26,7 @@ tool-message content so the LLM sees the real reason instead of "None".
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 
@@ -55,6 +56,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _APPLY_PATCH_SPEC as _APPLY_PATCH_SPEC,
     _ASK_USER_QUESTION_SPEC as _ASK_USER_QUESTION_SPEC,
     _BASH_SPEC as _BASH_SPEC,
+    _PWSH_SPEC as _PWSH_SPEC,
     _CURRICULUM_LIST_SPEC as _CURRICULUM_LIST_SPEC,
     _ENTER_PLAN_MODE_SPEC as _ENTER_PLAN_MODE_SPEC,
     _ENTER_WORKTREE_SPEC as _ENTER_WORKTREE_SPEC,
@@ -367,6 +369,8 @@ class BuiltinTools(
             specs.extend([_UNDO_LIST_SPEC, _UNDO_RECENT_SPEC])
         if self._enable_bash:
             specs.append(_BASH_SPEC)
+        if self._enable_bash and sys.platform == "win32":
+            specs.append(_PWSH_SPEC)
         if self._enable_web:
             specs.extend([
                 _WEB_FETCH_SPEC, _WEB_SEARCH_SPEC,
@@ -525,6 +529,12 @@ class BuiltinTools(
                 if not self._enable_bash:
                     return _fail(call, t0, "bash tool is disabled in config")
                 return await self._bash(call, t0)
+            if call.name == "pwsh":
+                if not self._enable_bash:
+                    return _fail(call, t0, "pwsh tool is disabled in config")
+                if sys.platform != "win32":
+                    return _fail(call, t0, "pwsh is only available on Windows")
+                return await self._pwsh(call, t0)
             if call.name == "web_fetch":
                 if not self._enable_web:
                     return _fail(call, t0, "web tools are disabled in config")
