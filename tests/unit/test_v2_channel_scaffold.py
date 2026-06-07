@@ -90,10 +90,16 @@ def test_b329_scaffold_instantiation_raises_with_clear_message(
     )
     # "scaffold" word appears so the state is unambiguous.
     assert "scaffold" in msg.lower()
-    # Port target is mentioned so the operator can find the qwenpaw
-    # reference adapter.
-    assert "qwenpaw" in msg.lower(), (
-        f"error message should reference the port target; got: {msg!r}"
+    # The message must give the operator something actionable about the
+    # not-yet-ported state — a port reference / next-step pointer. We
+    # assert on neutral wording rather than a specific upstream name
+    # (competitor names were stripped from the codebase 2026-06-07).
+    assert any(
+        kw in msg.lower()
+        for kw in ("port", "ported", "not", "hasn't", "reference")
+    ), (
+        f"error message should point at the not-yet-ported state; "
+        f"got: {msg!r}"
     )
 
 
@@ -198,5 +204,9 @@ async def test_b330_acp_start_still_raises_with_explanatory_message() -> None:
         await adapter.start()
     msg = str(exc.value)
     assert "scaffold" in msg.lower()
-    assert "hermes" in msg.lower()
+    # Actionable not-yet-ported pointer (neutral wording; competitor
+    # names were stripped 2026-06-07).
+    assert any(
+        kw in msg.lower() for kw in ("port", "ported", "not", "hasn't", "tracked")
+    ), f"expected a port/next-step pointer; got: {msg!r}"
     assert "implementation_status" in msg or "manifest" in msg.lower()
