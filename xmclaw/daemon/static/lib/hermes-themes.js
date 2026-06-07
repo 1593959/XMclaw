@@ -1,4 +1,4 @@
-// XMclaw — Hermes themes compatibility shim
+// XMclaw — the themes compatibility shim
 //
 // DEPRECATED: Use `lib/theme-engine.js` directly. This file re-exports
 // the new theme engine so legacy imports continue to work during the

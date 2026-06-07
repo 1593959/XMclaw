@@ -1,7 +1,7 @@
-"""ContextVar plumbing — convention #2 of QwenPaw's 4-piece multi-agent
+"""ContextVar plumbing — convention #2 of the reference's 4-piece multi-agent
 infrastructure.
 
-Direct port of ``qwenpaw/src/qwenpaw/app/agent_context.py``. A
+Direct port of ``the upstream agent/src/the upstream agent/app/agent_context.py``. A
 ``ContextVar`` is the right Python primitive here because it's
 asyncio-aware: setting it on one task's stack doesn't leak into
 another concurrent task's stack, even when they share an event loop.

@@ -1,4 +1,4 @@
-// XMclaw — Backdrop 1:1 port of hermes-agent/web/src/components/Backdrop.tsx
+// XMclaw — Backdrop port of the reference web UI
 //
 // Replicates the visual layer stack of `<Overlays dark />` from
 // `@nous-research/ui` with no leva/gsap/three peer deps.

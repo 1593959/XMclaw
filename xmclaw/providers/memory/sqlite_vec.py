@@ -59,7 +59,7 @@ class SqliteVecMemory(MemoryProvider):
     ``name="sqlite_vec"`` distinguishes from
     :class:`BuiltinFileMemoryProvider` inside the
     :class:`MemoryManager` — it counts as the "external" provider per
-    Hermes semantics (only one external allowed at a time).
+    the upstream agent semantics (only one external allowed at a time).
 
     Parameters
     ----------

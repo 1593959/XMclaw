@@ -1,6 +1,6 @@
 """Channel manifest registry — discover available channel plugins.
 
-Mirrors OpenClaw's ``getChannelPlugin`` (``src/agents/channels/plugins/
+Follows the reference's ``getChannelPlugin`` (``src/agents/channels/plugins/
 index.ts``). Each channel package exposes a module-level ``MANIFEST:
 PluginManifest``; this module enumerates them so the daemon can:
 

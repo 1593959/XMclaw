@@ -1,7 +1,7 @@
 """ContentTools — desktop / clipboard / document-reader tools.
 
 B-135. The user kept asking the agent to take a screenshot or read a
-PDF and got "I don't have that tool". OpenClaw / Hermes / CoPaw all
+PDF and got "I don't have that tool". comparable agents all
 ship these as built-ins; XMclaw's tool surface ended at file_read +
 bash, which made the agent feel narrower than it actually is.
 

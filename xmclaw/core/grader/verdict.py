@@ -7,7 +7,7 @@ weakness: 70-80% of every score came from "tool didn't crash"
 True when no expected type was declared; ``check_side_effect`` only
 checked fs writes), and the LLM self-rating was capped at 0.20 but
 still gameable. Net effect: every "evolution" was just "tool returned
-non-error", leading to spurious promotions. Hermes died on exactly
+non-error", leading to spurious promotions. a naive implementation failed on exactly
 this pattern (single-signal echo chamber, 107 Reddit upvotes for "It
 always thinks it did a good job. ALWAYS").
 

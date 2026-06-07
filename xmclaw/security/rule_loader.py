@@ -1,7 +1,7 @@
 """YAML security rule loader.
 
 Loads signature rules from ``xmclaw/security/rules/*.yaml`` (ported from
-QwenPaw under Apache-2.0) and performs regex matching against text or
+the upstream agent under Apache-2.0) and performs regex matching against text or
 tool parameters.
 """
 from __future__ import annotations
@@ -139,7 +139,7 @@ def scan_with_rules(
 
     * ``Rule.tools`` non-empty + ``tool_name`` not in that list → skip.
     * ``Rule.params`` non-empty + ``param_name`` not in that list → skip.
-    * Either filter empty (the original QwenPaw default) → fire as before.
+    * Either filter empty (the original the upstream agent default) → fire as before.
     * ``tool_name`` / ``param_name`` themselves ``None`` → no filtering
       (back-compat for callers that scan free-form text, e.g. agent
       output, where there's no tool/param dimension).

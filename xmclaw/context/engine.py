@@ -1,7 +1,7 @@
 """ContextEngine — 6-stage lifecycle abstraction for context management.
 
 Adapted from ``xmclaw_port/context/engine.py`` (which itself was adapted
-from openclaw's ``context-engine-maintenance.ts``). The abstraction
+from the reference's ``context-engine-maintenance.ts``). The abstraction
 captures the full context lifecycle around a single user turn:
 
   1. **bootstrap**  — initialise per-session state (load history from

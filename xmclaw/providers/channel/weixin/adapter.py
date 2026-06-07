@@ -11,9 +11,9 @@ from xmclaw.providers.channel._scaffold import ScaffoldChannelAdapter
 
 class WeChatAdapter(ScaffoldChannelAdapter):
     CHANNEL_NAME = "Personal WeChat (个人微信)"
-    PORT_TARGET = "qwenpaw/src/qwenpaw/app/channels/weixin/"
+    PORT_TARGET = "channels/weixin/"
     EXTRA_NOTE = (
-        "No official API for personal accounts. QwenPaw uses a "
+        "No official API for personal accounts. The reference uses a "
         "3rd-party relay (wxauto / wechatferry); concrete adapter "
         "lands once the user picks a relay + provides credentials."
     )

@@ -1,9 +1,9 @@
 """MemoryFileIndexer — auto-index persona files into the vector store.
 
-B-41 (CoPaw parity). XMclaw had a vector backend (``SqliteVecMemory``)
+B-41 (the upstream agent parity). XMclaw had a vector backend (``SqliteVecMemory``)
 and storage tables, but nothing was actually pumping content INTO the
 vector index — semantic search silently degraded to keyword scan.
-CoPaw / QwenPaw solves this by file-watching ``MEMORY.md`` +
+comparable agents solves this by file-watching ``MEMORY.md`` +
 ``memory/*.md`` and incrementally embedding chunks. This indexer is
 the XMclaw counterpart, minus the ``reme-ai`` black-box dependency.
 

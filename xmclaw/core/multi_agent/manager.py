@@ -1,13 +1,13 @@
 """MultiAgentManager — convention #3: lazy-locked agent dict + dedup.
 
-Direct port of ``qwenpaw/src/qwenpaw/app/multi_agent_manager.py:22-130``.
+Direct port of ``the upstream agent/src/the upstream agent/app/multi_agent_manager.py:22-130``.
 The dedup pattern (``_pending_starts: dict[str, asyncio.Event]``) is
-the part that makes QwenPaw's multi-agent actually robust under
+the part that makes the reference's multi-agent actually robust under
 concurrent load — two simultaneous requests for the same agent_id
 share one start, the second waits on the first's Event rather than
 trying to construct a duplicate.
 
-This is intentionally a thin port that mirrors the QwenPaw shape line-
+This is intentionally a thin port that mirrors the upstream agent shape line-
 for-line (modulo Python idioms vs Python-from-TS). The XMclaw-specific
 cleverness goes elsewhere (in factory.build_agent_from_config and the
 inter-agent tools); this class just owns the dict.
@@ -22,7 +22,7 @@ T = TypeVar("T")
 
 class AgentNotFound(KeyError):
     """Raised when ``get(agent_id)`` is called for an unknown agent and
-    no factory was supplied to mint one. Mirrors QwenPaw's behaviour at
+    no factory was supplied to mint one. Follows the reference's behaviour at
     ``multi_agent_manager.py:62``."""
 
 

@@ -49,8 +49,8 @@ import { openLightbox } from "../../lib/lightbox.js";
 
 // B-218: per-block Thinking row. One row per continuous thinking
 // segment (terminated by a tool call or text emission). Collapses
-// the body by default like the ToolCard does — match peer (CoPaw /
-// OpenClaw / Hermes) layout where 💡 Thinking shows as a compact
+// the body by default like the ToolCard does — match peer (comparable agents /
+// comparable agents) layout where 💡 Thinking shows as a compact
 // row alongside 🔧 tool rows.
 function ThinkingRow({ ev }) {
   const body = (ev && ev.content) || "";
@@ -145,7 +145,7 @@ export function MessageBubble({ message, onAnswerQuestion }) {
   }
 
   // B-220: tool_use is a top-level sibling row (peer pattern from
-  // OpenClaw chat-log.ts). The reducer emits each tool invocation
+  // the standard chat-log). The reducer emits each tool invocation
   // as its own message keyed by callId; we just render ToolCard
   // directly. Wrapping <article> keeps it on the same vertical
   // flow as user / assistant bubbles.
@@ -367,7 +367,7 @@ export function MessageBubble({ message, onAnswerQuestion }) {
             <!-- B-218: linear event-stream rendering. Each thinking
                  block + each tool call + each text segment renders
                  as its own row in chronological order, matching the
-                 layout in CoPaw / OpenClaw / Hermes screenshots. -->
+                 layout in comparable agents screenshots. -->
             ${(message.events || []).map((ev) => {
               if (ev.type === "thinking") {
                 return html`<${ThinkingRow} key=${ev.id} ev=${ev} />`;

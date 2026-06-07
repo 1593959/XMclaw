@@ -1726,7 +1726,7 @@ def build_agent_from_config(
             policy_raw = None
     policy = PolicyMode.parse(policy_raw, default=PolicyMode.DETECT_ONLY)
     # Persona system: assemble system prompt from the 7-file SOUL pack
-    # (xmclaw/core/persona). Mirrors OpenClaw / Hermes / QwenPaw layout.
+    # (xmclaw/core/persona). Mirrors comparable agents layout.
     # The DEFAULT_IDENTITY_LINE is always slot 0 so identity survives
     # third-party endpoints that compress long system prompts.
     from xmclaw.core.persona import (
@@ -1772,7 +1772,7 @@ def build_agent_from_config(
     # Cross-session memory: B-26 builds a MemoryManager with two
     # providers — the BuiltinFileMemoryProvider (always-on, wraps
     # MEMORY.md / USER.md) plus an external SqliteVecMemory when one
-    # builds successfully. Hermes-style: only ONE external provider
+    # builds successfully. the standard: only ONE external provider
     # at a time, builtin is non-removable. Both are best-effort: if
     # init fails the agent stays usable without long-term recall.
     from xmclaw.providers.memory.manager import MemoryManager

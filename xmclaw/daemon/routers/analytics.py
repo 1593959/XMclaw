@@ -2,7 +2,7 @@
 
 Mounted at ``/api/v2/analytics``. Aggregates LLM_RESPONSE events from
 ``~/.xmclaw/v2/events.db`` into daily / per-model totals for the
-chart panels Hermes's AnalyticsPage renders.
+chart panels the reference's AnalyticsPage renders.
 
 Response shape::
 

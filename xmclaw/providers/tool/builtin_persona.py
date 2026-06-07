@@ -591,7 +591,7 @@ class BuiltinToolsPersonaMixin:
                     bullet=bullet,
                     placeholder_title=placeholder_title,
                 )
-                # B-25: enforce char cap (LRU eviction) — Hermes parity.
+                # B-25: enforce char cap (LRU eviction) — the upstream agent parity.
                 cap = PERSONA_CHAR_CAPS.get(basename)
                 if cap is not None and len(new_text) > cap:
                     before_len = len(new_text)

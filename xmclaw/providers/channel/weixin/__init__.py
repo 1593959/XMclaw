@@ -1,8 +1,8 @@
 """Personal WeChat (个人微信) channel adapter — manifest + scaffolding.
 
-Direct port target: ``qwenpaw/src/qwenpaw/app/channels/weixin/``.
+Direct port target: ``the upstream agent/src/the upstream agent/app/channels/weixin/``.
 Personal WeChat is the trickiest of the four Chinese channels — there
-is no official API for personal accounts, so QwenPaw uses a 3rd-party
+is no official API for personal accounts, so the reference uses a 3rd-party
 relay (typically wechatferry or wxauto). Concrete adapter lands once
 the user picks a relay and provides credentials.
 """

@@ -1,6 +1,6 @@
 """Cron API — list / create / delete scheduled jobs.
 
-Mounted at ``/api/v2/cron``. Backs the Hermes-style CronPage.
+Mounted at ``/api/v2/cron``. Backs the standard CronPage.
 Persists via :class:`xmclaw.core.scheduler.cron.CronStore` (jobs.json
 under ``~/.xmclaw/cron/``).
 """

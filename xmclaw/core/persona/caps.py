@@ -19,8 +19,8 @@ from __future__ import annotations
 import re
 
 
-# B-25 (Hermes parity): char-level cap on persona files. The
-# defaults follow Hermes' MemoryStore (MEMORY.md=2200, USER.md=1375)
+# B-25 (the upstream agent parity): char-level cap on persona files. The
+# defaults follow the upstream agent' MemoryStore (MEMORY.md=2200, USER.md=1375)
 # — bigger than that is a sign of bloat, not insight density. Eviction
 # is LRU by ENTRY (lines starting with "-"): drop the oldest bullets
 # in the largest section first, keep the file's frontmatter + section

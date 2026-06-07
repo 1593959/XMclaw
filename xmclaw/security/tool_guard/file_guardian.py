@@ -63,7 +63,7 @@ class FilePathToolGuardian(BaseToolGuardian):
                     )
         # 2. Shell commands — extract paths from the command string.
         # B-340 (audit pass-2 #4): canonical name is ``bash``;
-        # ``execute_shell_command`` was the QwenPaw-import name, never
+        # ``execute_shell_command`` was the upstream agent-import name, never
         # actually dispatched by XMclaw → shell-path scan was dead.
         if tool_name == "bash":
             cmd = params.get("command", "")

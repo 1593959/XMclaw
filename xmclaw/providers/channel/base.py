@@ -1,4 +1,4 @@
-"""ChannelAdapter ABC + plugin-manifest shape (OpenClaw port)."""
+"""ChannelAdapter ABC + plugin-manifest shape (the upstream agent port)."""
 from __future__ import annotations
 
 import abc
@@ -52,10 +52,10 @@ class ChannelAdapter(abc.ABC):
 
 @dataclass(frozen=True, slots=True)
 class PluginManifest:
-    """OpenClaw-style bundled-channel plugin descriptor.
+    """the standard bundled-channel plugin descriptor.
 
     Direct port of ``defineBundledChannelEntry`` shape from
-    ``openclaw/extensions/<channel>/index.ts:4-24``. Each Python channel
+    ``the upstream agent/extensions/<channel>/index.ts:4-24``. Each Python channel
     package exposes a module-level ``MANIFEST: PluginManifest`` so the
     daemon can discover + introspect available channels without
     importing the full adapter (which may pull heavy SDKs like
@@ -65,7 +65,7 @@ class PluginManifest:
 
     * **Outbound**: ``send(target, payload) -> message_id``
     * **Inbound**: ``subscribe(handler)`` with at-least-once delivery
-    * **Allowlist**: per-sender authorization gate (port of OpenClaw's
+    * **Allowlist**: per-sender authorization gate (port of a reference design
       ``security-contract-api`` — keeps multi-tenant agents from
       accepting commands from any random group-chat member). Each
       adapter implements its own allowlist using vendor-native ids;
@@ -85,7 +85,7 @@ class PluginManifest:
       the actual adapter class. ``"xmclaw.providers.channel.feishu:FeishuAdapter"``
     * ``requires`` — pip extras name(s) the user needs (``["lark-oapi"]``)
     * ``needs_tunnel`` — when True, daemon auto-starts cloudflared
-      (mirrors QwenPaw's tunnel/cloudflare.py wiring)
+      (follows the reference's tunnel/cloudflare.py wiring)
     * ``config_schema`` — JSON-shape for required config keys (e.g.
       ``{"app_id": "string", "app_secret": "secret"}``)
     * ``implementation_status`` — B-38 honesty flag. ``"ready"`` =

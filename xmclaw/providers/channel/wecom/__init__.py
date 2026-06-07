@@ -15,7 +15,7 @@ Since XMclaw is local-first, **v1 ships outbound-only**. The webhook
 surface covers the realistic deployment shape for the Chinese-market
 notification use case. Inbound (self-built app callback) is documented
 out-of-scope until the daemon's tunnel/cloudflared bootstrap is wired
-generically (qwenpaw `tunnel/cloudflare.py` parity work). The adapter
+generically (the upstream agent `tunnel/cloudflare.py` parity work). The adapter
 class accepts inbound `subscribe()` calls to keep the ABC contract; it
 just never fans anything out.
 

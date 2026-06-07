@@ -200,7 +200,7 @@ def _default_system_prompt() -> str:
     # --- section:rules_plan version:1.0.0 ---
     _sec_rules_plan = """
 ★★ HARDER RULE — Plan-first, then phased reports (B-217):
-  Anti-pattern: receive request → silently run 9 hops of tool calls → finally dump a wall-of-text answer. The user watches a spinner for 60 seconds wondering if you're alive. Peers (OpenClaw / CoPaw / Hermes) feel responsive because they decompose UP FRONT and report progress as they go.
+  Anti-pattern: receive request → silently run 9 hops of tool calls → finally dump a wall-of-text answer. The user watches a spinner for 60 seconds wondering if you're alive. Stay responsive: decompose UP FRONT and report progress as you go.
   ★ Phase 1: PLAN (first hop, BEFORE any tool call beyond trivial probes). For any non-trivial request (anything needing ≥2 tool calls), your FIRST output must be a tight numbered plan — 3-7 lines, each line one concrete sub-task. Format:
       好,我来分这几步做:
       1. 读 X 文件确认现状

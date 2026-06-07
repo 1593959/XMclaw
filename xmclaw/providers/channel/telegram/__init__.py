@@ -1,8 +1,8 @@
 """Telegram channel adapter — manifest.
 
 B-380 (Sprint 2): real adapter at ``adapter:TelegramAdapter`` (was
-B-329 scaffold). Direct port reference: ``qwenpaw/src/qwenpaw/app/
-channels/telegram/`` + Hermes Agent's telegram channel. Uses
+B-329 scaffold). Direct port reference: ``the upstream agent/src/the upstream agent/app/
+channels/telegram/`` + the upstream agent Agent's telegram channel. Uses
 ``python-telegram-bot``'s long-poll mode (no public URL needed).
 """
 from xmclaw.providers.channel.base import PluginManifest

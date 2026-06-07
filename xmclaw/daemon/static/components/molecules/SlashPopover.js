@@ -1,13 +1,13 @@
-// XMclaw — SlashPopover 1:1 port of hermes-agent SlashPopover.tsx
+// XMclaw — SlashPopover port of the reference web UI SlashPopover.tsx
 //
 // Slash-command autocomplete that floats above the chat composer.
 // Type '/' → see matching commands → ↑/↓/Click to highlight, Tab to
 // apply, Esc to dismiss, Enter falls through to the composer.
 //
-// Hermes pulls items from gw.request("complete.slash", ...). We don't
+// the reference pulls items from gw.request("complete.slash", ...). We don't
 // have a backend completion route yet (Phase B-9.1 hookup), so this
 // version uses a static SLASH_COMMANDS table for the canonical agent-
-// runtime verbs. The keyboard surface and visual layout match Hermes
+// runtime verbs. The keyboard surface and visual layout match the reference
 // SlashPopover.tsx:131-172.
 
 const { h } = window.__xmc.preact;
@@ -15,7 +15,7 @@ const { useState, useEffect, useMemo } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
 // Default command set — covers the verbs the Ink TUI ships with plus
-// XMclaw additions. Each entry mirrors Hermes CompletionItem shape +
+// XMclaw additions. Each entry mirrors the CompletionItem shape +
 // adds an `action` so applying actually does something instead of
 // just stuffing text into the composer.
 //
@@ -109,7 +109,7 @@ function ChevIcon({ active }) {
  *     hook returns true if the popover consumed the key (caller skips
  *     its own send/newline handling).
  *
- * The Preact equivalent of Hermes's forwardRef + useImperativeHandle
+ * The Preact equivalent of the reference's forwardRef + useImperativeHandle
  * is a `usePopoverApi` hook returning `{ render, handleKey }` so the
  * Composer can call handleKey from its onKeyDown without lifting state.
  */
@@ -167,7 +167,7 @@ export function usePopoverApi({ input, onApply, store, token: _token }) {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      // Clear the slash by replacing input with empty — Hermes hides
+      // Clear the slash by replacing input with empty — the reference hides
       // via state but we don't own the input, so signalling via
       // onApply("") matches the visible behaviour (popover disappears
       // on next render because items=[]).

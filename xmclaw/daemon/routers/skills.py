@@ -2,7 +2,7 @@
 
 Mounted at ``/api/v2/skills``. Backs the web-UI Skills page so it can
 show "built-in vs user-installed" tagging (the categorization the
-peers — Hermes especially — use to gate trust + display).
+peers — the upstream agent especially — use to gate trust + display).
 
 Reads :class:`xmclaw.skills.registry.SkillRegistry` via the orchestrator
 on ``app.state.orchestrator``. Returns one row per ``(skill_id, version)``

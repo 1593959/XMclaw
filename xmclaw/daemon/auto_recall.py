@@ -21,8 +21,8 @@ Why both? The structural axis handles "always-relevant" knowledge
 (who the user is, agent's values, fixed project facts). The
 similarity axis handles "relevant right now" knowledge (the
 specific episode / commitment / lesson that matches what the user
-is asking about this turn). Together they cover OpenClaw's
-auto-recall and Hermes's frozen-bootstrap injection patterns
+is asking about this turn). Together they cover the reference's
+auto-recall and the reference's frozen-bootstrap injection patterns
 without either path interfering with prompt cache.
 
 This module is **pure** — no agent_loop / hop_loop / hook engine
@@ -67,11 +67,11 @@ _DEFAULT_MIN_USER_MESSAGE_CHARS = 4   # 1-3 char turns ("ok", "?") → skip
 # 5K LanceDB rows + rebuild a Python BM25 index per query. The
 # whole class of failure goes away once recall is async-bounded.
 #
-# Hermes ([memory-providers](https://github.com/NousResearch/hermes-agent))
+# the upstream agent ([memory-providers](https://github.com/NousResearch/the upstream agent-agent))
 # avoids the same pitfall by running recall as a **background
 # prefetch** between turns — results are cached before the user's
 # next message arrives, so the LLM call never waits on recall.
-# OpenClaw's memory-lancedb-hybrid plugin uses LanceDB's native
+# the reference's memory-lancedb-hybrid plugin uses LanceDB's native
 # FTS index (C++ side) instead of a per-query Python BM25 rebuild,
 # so the keyword path is O(log N) instead of O(N).
 #
@@ -242,7 +242,7 @@ async def recall_for_message(
 def render_recalled_block(hits: Sequence[RecalledFact]) -> str:
     """Format hits as a ``<recalled>`` XML-ish block for the LLM.
 
-    The block format echoes how Hermes / OpenClaw surface auxiliary
+    The block format echoes how comparable agents surface auxiliary
     context — leading tag + one bullet per fact + closing tag. The
     fid in each bullet lets the agent quote-back / forget / replace
     a recalled fact without a separate ``memory_search`` round-trip.

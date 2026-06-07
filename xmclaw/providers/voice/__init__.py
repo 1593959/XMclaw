@@ -1,6 +1,6 @@
 """Voice providers — STT (speech → text) + TTS (text → speech).
 
-B-388 (Sprint 2). XMclaw scored 0/100 on voice vs Hermes' 8 TTS + 3
+B-388 (Sprint 2). XMclaw scored 0/100 on voice vs a naive approach' 8 TTS + 3
 STT providers. This package adds the most-recommended local-first /
 zero-key combination:
 

@@ -7,8 +7,8 @@ CPython. Polling (not IDLE) because most consumer mail providers
 either rate-limit or outright disallow IMAP IDLE.
 
 Direct port reference:
-  * QwenPaw ``qwenpaw/app/channels/email/`` (sync imaplib poll loop)
-  * Hermes Agent ``hermes/integrations/email/`` (smtplib outbound)
+  * the upstream agent ``the upstream agent/app/channels/email/`` (sync imaplib poll loop)
+  * the upstream agent Agent ``the upstream agent/integrations/email/`` (smtplib outbound)
 """
 from xmclaw.providers.channel.base import PluginManifest
 

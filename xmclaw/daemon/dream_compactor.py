@@ -1,13 +1,13 @@
 """DreamCompactor — periodic LLM-driven MEMORY.md compaction.
 
-B-51 (CoPaw "Auto-Dream" parity, ours-from-scratch). MEMORY.md grows
+B-51 (the upstream agent "Auto-Dream" parity, ours-from-scratch). MEMORY.md grows
 forever as the agent appends bullets via remember / update_persona.
 Char-cap LRU eviction (B-25) drops the oldest line by date prefix —
 fine for old facts, terrible for facts the agent legitimately keeps
 re-asserting (each repeat resets the LRU clock for that line, but
 nothing dedupes the redundant prose).
 
-CoPaw's solution: a daily cron spawns a sub-agent named
+the reference's solution: a daily cron spawns a sub-agent named
 "DreamOptimizer" that reads MEMORY.md + recent daily logs and
 rewrites MEMORY.md per a hand-crafted prompt (合并去冗 / 状态覆写 /
 归纳整合 / 废弃剔除). Backs up the old version first.

@@ -1,8 +1,8 @@
 """Intake-time image routing for chat attachments.
 
-Design lifted from Hermes-agent (`agent/image_routing.py` +
+Design lifted from the upstream agent-agent (`agent/image_routing.py` +
 `tui_gateway/server.py::_enrich_with_attached_images`, see
-https://github.com/NousResearch/hermes-agent). The principle:
+https://github.com/NousResearch/the upstream agent-agent). The principle:
 
   **Resolve the image-vs-text-only mismatch ONCE at intake**
   (the moment the WS user-frame lands), persist the result into
@@ -10,7 +10,7 @@ https://github.com/NousResearch/hermes-agent). The principle:
   loops stay completely unaware of "is this model vision-capable".
 
 The alternative — having the LLM translator strip / OCR per-hop —
-produces the OpenClaw #29290 failure mode (images in failed turns
+produces the a known upstream bug #29290 failure mode (images in failed turns
 poison the session, can't be pruned because no following assistant
 reply) AND the "every hop re-OCRs every history image" perf
 disaster we hit on 2026-05-28.
@@ -216,7 +216,7 @@ def ocr_local(path: str) -> str | None:
 # ─── Auxiliary vision-model fallback (stub — future hook) ──────────
 
 def _describe_via_aux_vision(path: str, config: dict[str, Any] | None) -> str | None:
-    """Hook for a future cloud-vision describe-image path (Hermes's
+    """Hook for a future cloud-vision describe-image path (the reference's
     ``auxiliary.vision`` pattern). Today we lean on local OCR; this
     seam exists so when a user wants richer scene description than
     "text in the image", we can wire a vision-capable model here

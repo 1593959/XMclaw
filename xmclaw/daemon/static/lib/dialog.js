@@ -5,7 +5,7 @@
 // labelled "127.0.0.1:8766 显示 …") is OS-themed (light backdrop on
 // dark XMclaw shell) and gives no styling control. This module
 // provides a Promise-based ``confirmDialog({...})`` that renders a
-// themed in-page modal matching the rest of the Hermes-style chrome.
+// themed in-page modal matching the rest of the standard chrome.
 //
 // Usage:
 //

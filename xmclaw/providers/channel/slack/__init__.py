@@ -6,9 +6,9 @@ doesn't need a public webhook — Slack's app-level token opens the
 WS from our side.
 
 Direct port reference:
-  * OpenClaw ``extensions/slack/`` (Slack Bolt JS, same Socket Mode
+  * the upstream agent ``extensions/slack/`` (Slack Bolt JS, same Socket Mode
     posture)
-  * Hermes Agent ``hermes/integrations/slack/`` (Bolt Python, the
+  * the upstream agent Agent ``the upstream agent/integrations/slack/`` (Bolt Python, the
     library this adapter uses)
 """
 from xmclaw.providers.channel.base import PluginManifest

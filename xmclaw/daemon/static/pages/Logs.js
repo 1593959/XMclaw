@@ -1,6 +1,6 @@
-// XMclaw — LogsPage 1:1 port of hermes-agent LogsPage.tsx
+// XMclaw — LogsPage port of the reference web UI LogsPage.tsx
 //
-// Hermes layout (LogsPage.tsx:143-222):
+// the reference layout (LogsPage.tsx:143-222):
 //   - Filter toolbar row: Segmented controls for File / Level /
 //     Component / Lines + auto-refresh switch + Refresh button
 //   - Card with file name title + monospace log viewer (color-coded

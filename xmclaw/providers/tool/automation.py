@@ -3,7 +3,7 @@
 B-136. Closes more peer-feature-parity gaps the user flagged:
 
   * cron_create / cron_list / cron_pause / cron_resume / cron_remove /
-    cron_run_now — agent-callable scheduling. Hermes ships full cron
+    cron_run_now — agent-callable scheduling. the upstream agent ships full cron
     CRUD as builtins; we had ``schedule_followup`` (one-shot only) plus
     a ``/api/v2/cron`` HTTP surface, but the LLM had no tool to manage
     its OWN recurring jobs. Now it does.
@@ -15,7 +15,7 @@ B-136. Closes more peer-feature-parity gaps the user flagged:
       - no shell-quoting trap
 
   * process_list / process_kill — psutil-backed observability tools.
-    OpenClaw / Hermes both expose process introspection; agent_status
+    comparable agents both expose process introspection; agent_status
     only knows about the daemon's own process tree.
 
 Each tool returns ``ToolResult(ok=False, error="install ...")`` when

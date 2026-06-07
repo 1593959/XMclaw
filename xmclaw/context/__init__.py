@@ -4,7 +4,7 @@ Public API:
   * ``ContextCompressor`` — 5-phase pipeline that prunes old tool
     results, summarises middle turns via an LLM, and protects the
     head + tail of the conversation. Ported from
-    ``hermes-agent/agent/context_compressor.py``.
+    ``a reference module context_compressor.py``.
 
 The compressor is owned by the AgentLoop (one instance per process,
 shared across sessions). Per-session state (previous summary,

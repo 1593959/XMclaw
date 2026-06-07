@@ -376,7 +376,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # try/except in run_turn enforces that.
         self._perception_bus = perception_bus
         self._cognitive_daemon = cognitive_daemon
-        # B-25 Hermes parity: per-session frozen snapshot of the
+        # B-25 the upstream agent parity: per-session frozen snapshot of the
         # static system-prompt portion (= base prompt + persona, NO
         # time). Time is appended fresh on every turn; the rest is
         # stable across a session, which is what the LLM provider's
@@ -1290,16 +1290,16 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # top-K most-related LanceDB facts that AREN'T already in the
         # .md system prompt (structural axis), and prepend them as a
         # <recalled> block. The block rides on the USER MESSAGE so
-        # we don't bust the system prompt cache — peers' (Hermes /
-        # OpenClaw) pattern.
+        # we don't bust the system prompt cache — peers' (the upstream agent /
+        # the upstream agent) pattern.
         #
         # 2026-05-29 incident (chat-b09a3ad4): the first version put
         # this on the critical path with no timeout and called
         # ``recall_hybrid`` (which rebuilds a Python BM25 index per
         # query over the full corpus). A 5K-fact store took 6245s
-        # per turn. Hermes avoids this by running recall as a
+        # per turn. the upstream agent avoids this by running recall as a
         # **background prefetch between turns** and caching the
-        # result before the next user message arrives; OpenClaw's
+        # result before the next user message arrives; the reference's
         # hybrid plugin uses LanceDB's native FTS index (C++) so the
         # keyword leg stays O(log N). We have neither yet, so this
         # path now:
@@ -1307,7 +1307,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         #   - **never blocks** longer than ``timeout_s`` (1.0s default)
         #   - **never calls recall_hybrid** unless ``use_hybrid``
         #     is explicitly set (pure vector by default)
-        # The proper Hermes-style background prefetch lands in
+        # The proper the standard background prefetch lands in
         # Phase 5; this is the safety net.
         try:
             cog_cfg = (
@@ -1821,7 +1821,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
         # Cross-session memory prefetch + inject. Mirrors open-webui
         # chat_memory_handler (middleware.py:1473-1505) wrapped in
-        # Hermes's <memory-context> fence (memory_manager.py:66-81). The
+        # the reference's <memory-context> fence (memory_manager.py:66-81). The
         # injection rides on the current user message — NOT prepended to
         # the system prompt — so we don't pollute the cached system
         # prompt and so memory is fresh per turn. Excluded items: same
@@ -2884,7 +2884,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # hop shares a correlation_id. The chat reducer keys the assistant
         # bubble by correlation_id; without this, each chunk would land in
         # its own bubble. Includes the hop number so multi-hop turns get
-        # one bubble per hop (which is what users see in OpenClaw too).
+        # one bubble per hop (which is what users see in the upstream agent too).
         import uuid as _uuid
         turn_uuid = _uuid.uuid4().hex
 

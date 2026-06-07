@@ -1,4 +1,4 @@
-"""MemoryProvider ABC + extended Hermes-parity hooks (B-26)."""
+"""MemoryProvider ABC + extended the upstream agent-parity hooks (B-26)."""
 from __future__ import annotations
 
 import abc
@@ -23,7 +23,7 @@ class MemoryProvider(abc.ABC):
 
     Required: ``put`` / ``query`` / ``forget``.
 
-    Optional Hermes-parity hooks (override to opt in):
+    Optional the upstream agent-parity hooks (override to opt in):
 
       ``prefetch(query, *, session_id) -> str``
           Return cached prefetch result for the upcoming turn. Should

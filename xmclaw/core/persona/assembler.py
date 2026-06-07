@@ -1,8 +1,8 @@
-"""System-prompt assembler — slot-based, mirrors Hermes ``_build_system_prompt``.
+"""System-prompt assembler — slot-based, follows the reference ``_build_system_prompt``.
 
-Direct port of Hermes ``run_agent.py:4463-4582`` slot ordering, OpenClaw
+Adapted from a reference ``run_agent.py:4463-4582`` slot ordering, the upstream agent
 ``buildProjectContextSection`` (``system-prompt.ts:95-125``) for the
-"these context files are loaded" framing, and QwenPaw
+"these context files are loaded" framing, and the upstream agent
 ``build_bootstrap_guidance`` for the first-run prefix.
 
 Slot layout (lower slot = earlier in prompt = harder to drop on
@@ -11,7 +11,7 @@ truncation by 3rd-party endpoints with weak system-prompt support):
   0. **DEFAULT_IDENTITY_LINE** — always-on, hardcoded "You are XMclaw…"
   1. **Bootstrap prefix** — when BOOTSTRAP.md is present (rare)
   2. **Persona files** — SOUL/IDENTITY/USER/AGENTS/TOOLS/MEMORY in the
-     OpenClaw priority order. Each file is sanitized for prompt-injection
+     the upstream agent priority order. Each file is sanitized for prompt-injection
      markers before being concatenated.
   3. **Platform / shell hint** — OS-aware, picked up from the existing
      :func:`xmclaw.daemon.agent_loop._default_system_prompt` shell hint.
@@ -101,13 +101,13 @@ def _tools_digest(tool_names: Iterable[str] | None) -> str:
 
 
 def _persona_section(files: list[PersonaFile]) -> str:
-    """Render the persona file block — OpenClaw `buildProjectContextSection` shape."""
+    """Render the persona file block — the upstream agent `buildProjectContextSection` shape."""
     if not files:
         return ""
     has_soul = any(f.basename == "SOUL.md" for f in files)
     lines: list[str] = ["## 工作区上下文文件（按优先级载入）", ""]
     if has_soul:
-        # OpenClaw `system-prompt.ts:115-118` — explicit instruction so
+        # the upstream agent `system-prompt.ts:115-118` — explicit instruction so
         # third-party endpoints don't drop persona on long-prompt
         # compression. The next sentence is the literal SOUL-respect line.
         lines.append(

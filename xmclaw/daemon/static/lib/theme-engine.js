@@ -1,12 +1,12 @@
 // XMclaw — Theme Engine v2
 //
-// Unifies Hermes legacy themes with the new ds-* semantic token system.
+// Unifies legacy themes with the new ds-* semantic token system.
 //
 // Switching themes updates BOTH:
 //   1. data-theme attribute on <html>  → drives --ds-* via CSS selectors
-//   2. Inline Hermes CSS variables      → keeps existing components working
+//   2. Inline the reference CSS variables      → keeps existing components working
 //
-// The 6 Hermes themes (default/midnight/ember/mono/cyberpunk/rose)
+// The 6 the themes (default/midnight/ember/mono/cyberpunk/rose)
 // continue to work exactly as before. The 3 new ds themes (dark/light/teal)
 // add data-theme coverage so the new token layer responds automatically.
 
@@ -64,7 +64,7 @@ export const THEMES = {
   teal: {
     name: "teal",
     label: "Teal",
-    description: "Classic Hermes dark teal — the original look",
+    description: "Classic dark teal — the original look",
     palette: {
       background: { hex: "#041c1c", alpha: 1 },
       midground:  { hex: "#ffe6cb", alpha: 1 },
@@ -116,11 +116,11 @@ export const THEMES = {
     layout: { radius: "0.75rem", density: "comfortable" },
   },
 
-  /* -- Legacy Hermes themes (inline vars only, no data-theme) -- */
+  /* -- Legacy themes (inline vars only, no data-theme) -- */
   default: {
     name: "default",
-    label: "Hermes Teal",
-    description: "Classic dark teal — the canonical Hermes look",
+    label: "Classic Teal",
+    description: "Classic dark teal — the canonical look",
     palette: {
       background: { hex: "#041c1c", alpha: 1 },
       midground:  { hex: "#ffe6cb", alpha: 1 },
@@ -270,7 +270,7 @@ function _injectFont(url) {
 
 /**
  * Apply a theme. Sets data-theme for ds-aware themes AND writes
- * Hermes inline CSS variables for backwards compatibility.
+ * the reference inline CSS variables for backwards compatibility.
  */
 export function applyTheme(themeName) {
   const t = THEMES[themeName] || THEMES.teal;
@@ -281,7 +281,7 @@ export function applyTheme(themeName) {
   if (DS_THEME_NAMES.has(themeName)) {
     root.dataset.theme = themeName;
   } else {
-    // Legacy Hermes themes have no CSS selector coverage in design-system.css;
+    // Legacy themes have no CSS selector coverage in design-system.css;
     // clear data-theme so the inline vars below take full effect.
     delete root.dataset.theme;
   }

@@ -1,6 +1,6 @@
-"""Multi-agent runtime — port of QwenPaw's 4 conventions.
+"""Multi-agent runtime — port of a reference design 4 conventions.
 
-QwenPaw's working multi-agent rests on exactly four pieces (see
+a robust multi-agent design rests on exactly four pieces (see
 ``docs/DEV_PLAN.md`` §1.5 + appendix A):
 
   1. **`X-Agent-Id` header** on every HTTP / WS request — the identity
@@ -14,14 +14,14 @@ QwenPaw's working multi-agent rests on exactly four pieces (see
      synthesized message gets a `[Agent X requesting]` prefix so the
      receiver can't be tricked into calling back the source.
 
-Source files in the QwenPaw repo (paths under
-``.claude/scratch/competitor-code/qwenpaw/``):
+Source files in the upstream agent repo (paths under
+``.claude/scratch/competitor-code/the upstream agent/``):
 
-* ``src/qwenpaw/app/agent_context.py`` — ContextVar pattern
-* ``src/qwenpaw/app/multi_agent_manager.py:22-130`` — manager + dedup
-* ``src/qwenpaw/agents/tools/agent_management.py:18-200, 107-121`` —
+* ``src/the upstream agent/app/agent_context.py`` — ContextVar pattern
+* ``src/the upstream agent/app/multi_agent_manager.py:22-130`` — manager + dedup
+* ``src/the upstream agent/agents/tools/agent_management.py:18-200, 107-121`` —
   4-tool inter-agent surface + identity-prefix
-* ``src/qwenpaw/app/routers/agent_scoped.py`` — middleware
+* ``src/the upstream agent/app/routers/agent_scoped.py`` — middleware
 
 For Phase 3 we land the Python infra; existing primary-AgentLoop wiring
 stays as-is (the daemon still hands out one agent today). Phase 3.5

@@ -6,7 +6,7 @@ Pre-B-173 every fresh skill install (``npx skills add``,
 ``git clone <url> ~/.xmclaw/skills_user/<name>``, manual
 ``cp SKILL.md ~/.agents/skills/<name>/``) required a full
 ``xmclaw restart`` for the boot-time UserSkillsLoader to pick it
-up. Competitors (Claude Code per-session, Hermes fs watcher,
+up. Competitors (Claude Code per-session, the upstream agent fs watcher,
 skills.sh on-demand) all manage hot-reload one way or another;
 forcing a daemon restart on us was a known papercut.
 
@@ -488,7 +488,7 @@ class SkillsWatcher:
                 # that path fails (syntax error in the new file, or
                 # the skill wasn't previously registered so there's
                 # nothing to replace). Pre-fix Python skills ALWAYS
-                # needed a daemon restart; peers (Claude Code / Hermes
+                # needed a daemon restart; peers (Claude Code / the upstream agent
                 # / Cline) sidestep this by being markdown-only —
                 # XMclaw's hot-reload lets Python skills compete on
                 # the same UX.

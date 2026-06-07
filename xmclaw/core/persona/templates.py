@@ -3,22 +3,22 @@
 Bundled Chinese-first persona for first-install. Written to
 ``~/.xmclaw/persona/profiles/default/`` by :func:`ensure_default_profile`.
 The user (or the agent itself, via the BOOTSTRAP.md interview pattern from
-OpenClaw / QwenPaw) edits these in place once they're on disk.
+comparable agents) edits these in place once they're on disk.
 
 Templates merge:
-* OpenClaw ``docs/reference/templates/{SOUL,IDENTITY,USER,AGENTS,BOOTSTRAP}.md``
-  for shape and tone (OpenClaw's "you're not a chatbot, you're becoming
+* the upstream agent ``docs/reference/templates/{SOUL,IDENTITY,USER,AGENTS,BOOTSTRAP}.md``
+  for shape and tone (the reference's "you're not a chatbot, you're becoming
   someone" framing is good).
 * XMclaw-specific identity lines so the underlying model (MiniMax / Qwen /
   DeepSeek via Anthropic-compat shim) cannot drift to "I'm Claude / I'm a
-  generic AI" — this is the hard guarantee Hermes lacks.
+  generic AI" — this is the hard guarantee a naive approach lacks.
 """
 from __future__ import annotations
 
 # ──────────────────────────────────────────────────────────────────────
 # DEFAULT_IDENTITY_LINE — always slot 1 of the system prompt.
 #
-# Hermes's `DEFAULT_AGENT_IDENTITY` (`agent/prompt_builder.py:134`) is the
+# the reference's `DEFAULT_AGENT_IDENTITY` (`agent/prompt_builder.py:134`) is the
 # closest peer pattern. We make ours stricter because XMclaw runs on
 # whatever 3rd-party endpoint the user pointed at (MiniMax /
 # DeepSeek / Qwen via the /anthropic compat shim).

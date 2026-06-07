@@ -109,7 +109,7 @@ class MemoryToolBridge(ToolProvider):
                 error=f"{type(exc).__name__}: {exc}",
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
-        # Provider returned either a string (Hermes contract) or a
+        # Provider returned either a string (the upstream agent contract) or a
         # dict / structured value. Normalise to string for ToolResult
         # content; clients can still parse JSON if needed.
         if isinstance(raw, str):

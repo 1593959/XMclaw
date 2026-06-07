@@ -1,4 +1,4 @@
-"""B-226 + P0-1 Phase-1: tool-result pruning, ported from Hermes
+"""B-226 + P0-1 Phase-1: tool-result pruning, adapted from a reference
 ``context_compressor.py``.
 
 Pre-B-226 XMclaw's _persist_history just dropped old turns when over
@@ -10,7 +10,7 @@ needs the full file content from 30 turns ago — a 1-line summary
 
 This module preserves the most recent N tokens worth of tool results
 intact, and replaces older ones with informative 1-line summaries.
-Same algorithm as Hermes ``_prune_old_tool_results`` — just adapted
+Same algorithm as the upstream agent ``_prune_old_tool_results`` — just adapted
 to XMclaw's Message + ToolCall dataclasses.
 
 Three passes:
@@ -24,7 +24,7 @@ Three passes:
      are clipped to 200 chars while the JSON shape stays valid. Without
      this a 50KB file_write call survives pruning entirely.
 
-Hermes source: ``hermes-agent/agent/context_compressor.py:113-522``.
+the upstream agent source: ``a reference module context_compressor.py:113-522``.
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def _get_semantic_summarizer() -> Any:
         _semantic_summarizer = summarize_tool_result
     return _semantic_summarizer
 
-# Same default chars/4 ≈ token estimate as Hermes + agent_loop.
+# Same default chars/4 ≈ token estimate as the upstream agent + agent_loop.
 _CHARS_PER_TOKEN = 4
 
 # Pass 3: tool_call argument truncation. Args longer than this get
@@ -82,7 +82,7 @@ def _shrink_long_strings(obj: Any, head_chars: int = _TOOL_ARGS_LEAF_HEAD) -> An
 def _truncate_tool_call_args(args: Any) -> tuple[Any, bool]:
     """Shrink long string values inside a tool-call args structure.
 
-    Hermes ``_truncate_tool_call_args_json`` operates on a JSON string
+    the upstream agent ``_truncate_tool_call_args_json`` operates on a JSON string
     (OpenAI-style ``function.arguments``). XMclaw's ``ToolCall.args``
     is already a parsed dict, so we shrink the parsed structure
     directly. JSON-string args (rare) are parsed first.
@@ -105,7 +105,7 @@ def _truncate_tool_call_args(args: Any) -> tuple[Any, bool]:
                 return args[:_TOOL_ARGS_LEAF_HEAD] + "...[truncated]", True
             return args, False
         # Round-trip via JSON so we serialise back as a string of the
-        # same shape Hermes uses for the OpenAI tool-call format.
+        # same shape the reference uses for the OpenAI tool-call format.
         original_str = args
     elif isinstance(args, (dict, list)):
         parsed = args

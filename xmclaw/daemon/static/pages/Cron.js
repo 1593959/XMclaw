@@ -1,4 +1,4 @@
-// XMclaw — CronPage 1:1 port of hermes-agent CronPage.tsx
+// XMclaw — CronPage port of the reference web UI CronPage.tsx
 //
 // Layout (CronPage.tsx:151-353):
 //   1. Top "New job" Card with Name / Prompt / Schedule / Deliver +
@@ -9,10 +9,10 @@
 //      (pause-resume + trigger + delete) — port of :269-349
 //
 // Data: backed by /api/v2/cron (POST/DELETE/GET) wired to CronStore.
-// XMclaw schema differences vs Hermes:
+// XMclaw schema differences:
 //   - state="paused" → we use the `enabled: bool` flag; the visual
 //     state badge maps enabled→success, disabled→warning, error→destructive
-//   - deliver — Hermes routes by channel (local/telegram/discord/slack/
+//   - deliver — the reference routes by channel (local/telegram/discord/slack/
 //     email); our jobs carry `agent_id` instead. UI mirrors the dropdown
 //     anyway so the visual surface is 1:1.
 //   - trigger-now — wired through POST /api/v2/cron/<id>/trigger (see

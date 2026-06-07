@@ -298,7 +298,7 @@ export function applyEvent(chat, envelope) {
 
     case "tool_call_emitted": {
       // B-220: tool_use is now its OWN top-level sibling message —
-      // matches OpenClaw chat-log.ts (each tool execution is its own
+      // matches the standard chat-log (each tool execution is its own
       // child of the linear chat container). The previous bubble's
       // toolCalls aggregator is gone; tool_invocation_finished still
       // finds the entry by callId because we use callId as message.id.

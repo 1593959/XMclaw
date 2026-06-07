@@ -12,7 +12,7 @@ This provider closes that loop by:
   2. Reading credentials from ``config.integrations.<service>.*`` so
      the user configures once and every tool just works.
   3. Adding 3 universals (webhook_send / email_send / rss_fetch)
-     because peers (Hermes / OpenClaw) all ship them and they're
+     because peers (comparable agents) all ship them and they're
      the catch-all path when the user's target service has no
      dedicated tool.
 

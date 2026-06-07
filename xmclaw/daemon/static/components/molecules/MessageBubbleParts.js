@@ -66,7 +66,7 @@ function _resultSummary(call) {
 }
 
 export function ToolCard({ call }) {
-  // Hermes ToolCall.tsx pattern: status-tinted card with bullet ●
+  // the reference ToolCall.tsx pattern: status-tinted card with bullet ●
   // (running/done/error tones), auto-expand on error, user can override.
   // Nebula v2: flat .nb-toolcard with shimmer on running state.
   const _st = call.status || "running";

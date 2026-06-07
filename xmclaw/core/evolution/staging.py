@@ -21,7 +21,7 @@ Out of scope on purpose (deferred to controller-integration follow-up):
 * On-disk staging directories (today this is purely in-memory mechanics).
 
 The four gates correspond to the four anti-bloat checks the
-Hermes-style mutator validators perform, restated in Iron Rule #2
+the standard mutator validators perform, restated in Iron Rule #2
 terms so the controller can reason about them as a uniform bundle.
 
 Public API:
@@ -138,7 +138,7 @@ def gate_size_limit(c: Candidate, max_kb: int = _DEFAULT_MAX_KB) -> GateResult:
     """Reject candidates whose body exceeds ``max_kb`` kilobytes.
 
     Measured on UTF-8 bytes (1 KB = 1024 bytes), matching how the
-    bus serialiser counts size. Hermes uses 60 KB; we default higher
+    bus serialiser counts size. the reference uses 60 KB; we default higher
     (100 KB) to leave room for skills that include long examples,
     on the assumption that the structure gate catches genuine bloat.
     """

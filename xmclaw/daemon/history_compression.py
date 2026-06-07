@@ -696,7 +696,7 @@ class HistoryCompressionMixin:
         # must NOT survive into history, or every subsequent turn
         # would see the prefetched recall as part of the user's
         # actual words (and the model would echo it back as if the
-        # user had said it). Hermes does this in its memory_manager.
+        # user had said it). the upstream agent does this in its memory_manager.
         import dataclasses as _dc
         cleaned_history: list[Message] = []
         # Sprint 3 #6: extend the predicate to ALSO catch

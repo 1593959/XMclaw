@@ -1,13 +1,13 @@
 """ASGI middleware — convention #1: ``X-Agent-Id`` header → ContextVar.
 
-Direct port of ``qwenpaw/src/qwenpaw/app/routers/agent_scoped.py``
+Direct port of ``the upstream agent/src/the upstream agent/app/routers/agent_scoped.py``
 ``AgentContextMiddleware``. Reads the ``X-Agent-Id`` header (or
 ``agent_id`` query param) on every HTTP request, sets the
 :func:`xmclaw.core.multi_agent.set_current_agent_id` ContextVar for the
 duration of the request, then resets on response.
 
 Default value when no header is present is ``"main"`` — matches
-QwenPaw's "default agent" semantics so existing single-agent flows
+the reference's "default agent" semantics so existing single-agent flows
 keep working.
 """
 from __future__ import annotations
@@ -41,6 +41,6 @@ class AgentScopeMiddleware(BaseHTTPMiddleware):
             reset_current_agent_id(token)
 
         # Echo back the resolved id so curl users can see what stuck —
-        # QwenPaw does the same for debuggability.
+        # the upstream agent does the same for debuggability.
         response.headers.setdefault("X-Agent-Id", agent_id)
         return response

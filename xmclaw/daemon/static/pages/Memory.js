@@ -57,7 +57,7 @@ const TAB_LABELS = [
   { id: "journal", label: "日记", hint: "按日期归档的对话/事件记录" },
   { id: "activity", label: "记忆活动", hint: "Agent 自动读/写 UnifiedMemorySystem 的实时时间线" },
   { id: "unified", label: "统一查询 (调试)", hint: "手填多轴检索 — 仅供开发者验证 agent 内部存了什么；正常使用请看 \"记忆活动\"" },
-  { id: "providers", label: "Providers", hint: "已挂载的记忆 provider（B-26 Hermes-style 抽象）" },
+  { id: "providers", label: "Providers", hint: "已挂载的记忆 provider（B-26 可插拔抽象）" },
 ];
 
 // Phase M1：把 7 个扁平标签收成 3 段式分组 —— 人写的记忆 / agent 自己的记忆 /

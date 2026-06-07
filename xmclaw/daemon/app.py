@@ -624,7 +624,7 @@ def create_app(
     app.include_router(_sync_router.router)  # Sprint 2 Wave 13
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
-    # (QwenPaw multi-agent convention #1). Stays a no-op for the
+    # (the upstream agent multi-agent convention #1). Stays a no-op for the
     # default "main" agent id, so existing single-agent flows aren't
     # affected.
     from xmclaw.daemon.middleware import AgentScopeMiddleware
@@ -937,7 +937,7 @@ def create_app(
         })
 
     # ── PUT /api/v2/config ───────────────────────────────────────
-    # Generic config writer used by the Hermes-style ConfigPage form.
+    # Generic config writer used by the standard ConfigPage form.
     # Validates the body is a dict, then atomically writes it to the
     # on-disk config.json (preserving secrets the front-end can't see —
     # api_key / bot_token / password fields).
@@ -1886,7 +1886,7 @@ def create_app(
     @app.websocket("/agent/v2/{session_id}")
     async def agent_ws(ws: WebSocket, session_id: str) -> None:
         # B-355 (Sprint 1): Origin check. Defense-in-depth against
-        # the OpenClaw "ClawJacked" CVE family — a malicious page on
+        # the upstream agent "ClawJacked" CVE family — a malicious page on
         # http://evil.com running in the user's browser does
         # ``new WebSocket("ws://127.0.0.1:8766/agent/v2/foo")``.
         # Without the Origin check the daemon would happily upgrade
@@ -2222,14 +2222,14 @@ def create_app(
                         frame.get("images"),
                         _data_dir() / "v2" / "uploads",
                     )
-                    # 2026-05-28: intake-time image routing (Hermes
+                    # 2026-05-28: intake-time image routing (the upstream agent
                     # pattern). If the target LLM profile lacks
                     # vision, OCR the images locally NOW and fold
                     # the text into ``content`` — so history,
                     # translators, and hop loops never have to know
                     # about "is this model vision-capable". See
                     # xmclaw/daemon/image_routing.py for the design
-                    # rationale and OpenClaw #29290 lessons.
+                    # rationale and a known upstream bug #29290 lessons.
                     if user_image_paths:
                         try:
                             from xmclaw.daemon.image_routing import (

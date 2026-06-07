@@ -140,7 +140,7 @@ _BROWSER_OPEN_SPEC = ToolSpec(
         "Playwright instance, NOT the user's normal browser; "
         "bookmarks/extensions/cookies are empty fresh state by default "
         "(combine with ``persistent_profile=true`` to retain them).\n\n"
-        "★ PERSISTENT PROFILE mode (Wave-27 fix-LAT14, OpenClaw-style): "
+        "★ PERSISTENT PROFILE mode (Wave-27 fix-LAT14, persistent-profile): "
         "set ``persistent_profile=true`` + ``profile_name=<name>`` to "
         "spin a real Chrome profile under "
         "``~/.xmclaw/v2/browser_profiles/<name>/user-data``. The FIRST "
@@ -150,7 +150,7 @@ _BROWSER_OPEN_SPEC = ToolSpec(
         "Chrome profile, NOT just storage_state JSON) for all future "
         "sessions on the same profile_name. Combine with "
         "``visible=true`` for the standard 'user watches + agent "
-        "operates + already-logged-in' workflow that OpenClaw / "
+        "operates + already-logged-in' workflow that comparable agents / "
         "Manus / Comet ship by default. Combine with "
         "``use_system_chrome=true`` to drive the user's installed "
         "Chrome.exe instead of Playwright's bundled Chromium.\n\n"
@@ -470,7 +470,7 @@ _BROWSER_NETWORK_LOG_SPEC = ToolSpec(
         "the response body bytes are returned for matching entries "
         "— the canonical way to scrape an API response WITHOUT "
         "re-issuing the request via browser_eval(fetch(...)).\n\n"
-        "★ 2026-05-28 P3.5: mirrors OpenClaw 'responsebody' tool.\n"
+        "★ 2026-05-28 P3.5: response-body capture tool.\n"
         "Filtering: ``url_glob`` accepts shell-glob patterns (e.g. "
         "``**/api/login`` or ``*.json``). Default: return all "
         "entries in the buffer.\n"
@@ -768,7 +768,7 @@ _BROWSER_WAIT_FOR_SPEC = ToolSpec(
         "supplied conditions must be satisfied before this returns "
         "(logical AND). Specify at least one — selector / url_glob / "
         "load_state / js_predicate.\n\n"
-        "★ 2026-05-28 P3.7: composite wait (OpenClaw-style). One "
+        "★ 2026-05-28 P3.7: composite wait. One "
         "call can replace 'wait for selector → wait for URL change "
         "→ wait for network idle → wait for JS flag' chains.\n\n"
         "Conditions:\n"
@@ -1029,7 +1029,7 @@ class BrowserTools(ToolProvider):
         self._allowed = set(allowed_hosts) if allowed_hosts else None
         # 2026-05-28 P2.8: gate on arbitrary JS execution. When False,
         # browser_eval returns a structured refusal instead of running
-        # the agent's expression. Matches OpenClaw's
+        # the agent's expression. Matches the reference's
         # ``evaluateEnabled=true`` config flag — useful for audit /
         # untrusted-skill scenarios where the agent driving the
         # browser shouldn't have arbitrary-JS reach.
@@ -1063,8 +1063,8 @@ class BrowserTools(ToolProvider):
         # Wave-27 fix-LAT14 (2026-05-17): per-profile-name persistent
         # browser context, opened via Playwright's
         # ``launch_persistent_context(user_data_dir=...)``. Mirrors
-        # OpenClaw's design (extensions/browser/src/browser/chrome.ts
-        # in openclaw/openclaw): one independent Chrome profile per
+        # the reference's design (extensions/browser/src/browser/chrome.ts
+        # in comparable agents): one independent Chrome profile per
         # ``profile_name`` under
         # ~/.xmclaw/v2/browser_profiles/<name>/user-data. Persists
         # cookies / localStorage / Chrome-side extensions / saved
@@ -1102,7 +1102,7 @@ class BrowserTools(ToolProvider):
         # stores ``{selector, bbox, kind, label}`` per ref here. The
         # next browser_click_ref(n) / browser_type_ref(n, text) call
         # resolves via this map — agent never has to handcraft CSS
-        # selectors. Mirrors OpenClaw's ``aria-ref`` system + Hermes's
+        # selectors. Follows the reference's ``aria-ref`` system + the reference's
         # element-numbering snapshot. Refs are scoped to the page
         # current at snapshot time; ``_open`` clears the map (new
         # page = new refs) and each snapshot rebuilds it.
@@ -1443,7 +1443,7 @@ class BrowserTools(ToolProvider):
         self, profile_name: str, *, headless: bool, session_id: str,
     ) -> Any:
         """Wave-27 fix-LAT14: lazy-launch a persistent BrowserContext
-        keyed on ``profile_name``. Mirrors OpenClaw's chrome.ts launch
+        keyed on ``profile_name``. Follows the reference's chrome.ts launch
         pattern (spawn Chromium with persistent user-data-dir + CDP
         debug port), but uses Playwright's
         ``launch_persistent_context()`` which encapsulates that.
@@ -1735,7 +1735,7 @@ class BrowserTools(ToolProvider):
           2. Append a record to ``_session_dialogs_pending`` so
              ``browser_snapshot`` surfaces it to the agent.
           3. Do NOT auto-accept/dismiss — the policy is "agent must
-             respond" (matches Hermes ``must_respond``). The page
+             respond" (matches the upstream agent ``must_respond``). The page
              stays blocked until ``browser_dialog`` resolves it.
         """
         pending = self._session_dialogs_pending.setdefault(session_id, [])
@@ -1792,7 +1792,7 @@ class BrowserTools(ToolProvider):
                 self._dialog_handles[(session_id, did)] = dialog
                 # Safety timeout: if the agent never resolves this
                 # within 5min, auto-dismiss so the page isn't blocked
-                # forever. Matches Hermes's 300s safety net.
+                # forever. Matches the reference's 300s safety net.
                 loop = asyncio.get_event_loop()
                 loop.call_later(
                     300.0,
@@ -2194,7 +2194,7 @@ class BrowserTools(ToolProvider):
         # through launch_persistent_context(user_data_dir=...) so
         # Chrome's own profile machinery (cookies + extensions +
         # autofill + history + saved passwords) survives across
-        # daemon restarts. Mirrors openclaw/openclaw's
+        # daemon restarts. Mirrors comparable agents's
         # extensions/browser/src/browser/chrome.ts mechanism.
         persistent_profile = bool(call.args.get("persistent_profile", False))
         profile_name = call.args.get("profile_name") or "default"

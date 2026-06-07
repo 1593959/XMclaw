@@ -1,7 +1,7 @@
 """Sessions API — list / search / delete persisted conversation sessions.
 
 Mounted at ``/api/v2/sessions``. Backs the Web UI Sessions page (the
-default route in the Hermes layout). Wraps :class:`xmclaw.daemon.
+default route in the upstream agent layout). Wraps :class:`xmclaw.daemon.
 session_store.SessionStore` which persists per-session message lists
 to ``~/.xmclaw/v2/sessions.db``.
 

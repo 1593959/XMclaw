@@ -104,7 +104,7 @@ class SkillManifest:
     # mistake declarative permissions for runtime guarantees.
     permissions_enforced: bool = False
     # Epic #27 P1 G-10 (2026-05-19) — frontmatter expansion to match
-    # the Claude Code / Hermes / Cline skill conventions so XMclaw
+    # the Claude Code / the upstream agent / Cline skill conventions so XMclaw
     # skills can round-trip with the broader ecosystem AND lay the
     # data groundwork for G-04/G-05/G-06 (which need these fields):
     #

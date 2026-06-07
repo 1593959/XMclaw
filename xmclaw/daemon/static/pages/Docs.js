@@ -1,6 +1,6 @@
 // XMclaw — DocsPage v2: local docs/ index + markdown render.
 //
-// We started with an iframe-to-GitHub /docs port (1:1 with Hermes
+// We started with an iframe-to-GitHub /docs port (1:1 with the reference
 // DocsPage.tsx), but GitHub serves X-Frame-Options:DENY so the iframe
 // loads blank. Solution: serve the same docs we have on disk via
 // /api/v2/docs and render them with our marked.lexer pipeline.
@@ -10,7 +10,7 @@
 //   Right pane: rendered markdown of selected doc + "open on GitHub"
 //   external link.
 //
-// This is the layout Hermes Docs.tsx would have if their docs lived
+// This is the layout the reference Docs.tsx would have if their docs lived
 // in the repo instead of behind a public URL.
 
 const { h } = window.__xmc.preact;

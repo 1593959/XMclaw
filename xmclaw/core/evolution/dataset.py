@@ -1,17 +1,17 @@
 """Dataset construction for skill mutation — train/val/holdout split.
 
-Direct port of ``hermes-self-evolution/evolution/datasets/dataset_builder.py:
+Direct port of ``a reference module evolution/datasets/dataset_builder.py:
 20-86, 96-201`` (schema + 50/25/25 split). Adapted for XMclaw's
 ``BehavioralEvent`` substrate: instead of mining external Claude Code
 session logs, we source examples from the live event bus's persisted log
 (``~/.xmclaw/v2/events.db``), which already records every ``GRADER_VERDICT``
 event that the Honest Grader produced.
 
-Key advantage over Hermes's approach: the dataset is **self-grading** —
+Key advantage over the reference's approach: the dataset is **self-grading** —
 every (user_msg, response) pair already has a XMclaw HonestGrader score
 attached, so the mutator's fitness function uses the same ground-truth
 checks the runtime uses. No LLM-on-LLM rubric, no keyword-overlap proxy.
-This is the structural difference between our evolution and Hermes's.
+This is the structural difference between our evolution and the reference's.
 
 Public API:
     * :class:`EvalExample` — one (input, expected, score) tuple
@@ -31,7 +31,7 @@ from pathlib import Path
 class EvalExample:
     """One labelled example for the mutator's fitness function.
 
-    Mirrors hermes ``dataset_builder.py:20-36`` ``EvalExample`` shape.
+    Follows the reference ``dataset_builder.py:20-36`` ``EvalExample`` shape.
     """
     task_input: str
     expected_behavior: str
@@ -43,11 +43,11 @@ class EvalExample:
 
 @dataclass
 class EvalDataset:
-    """Train / val / holdout split per hermes ``evolve_skill.py:208-227``.
+    """Train / val / holdout split per the upstream agent ``evolve_skill.py:208-227``.
 
     The 50/25/25 ratio is the default; callers can override via
     :meth:`split` if a smaller dataset would leave validation empty.
-    Hermes's ratio was chosen so val is large enough to early-stop GEPA
+    the reference's ratio was chosen so val is large enough to early-stop GEPA
     and holdout is large enough to detect over-fit. Don't change without
     a reason.
     """
@@ -105,7 +105,7 @@ def build_dataset_from_history(
 
     We pivot those into ``EvalExample`` rows so DSPy's GEPA can learn
     "what high-score behaviour looks like" without requiring an external
-    LLM-judge. Hermes's importer mines arbitrary Claude Code sessions
+    LLM-judge. the reference's importer mines arbitrary Claude Code sessions
     (``external_importers.py:157-416``); ours mines our own bus, which
     is structurally cleaner.
 

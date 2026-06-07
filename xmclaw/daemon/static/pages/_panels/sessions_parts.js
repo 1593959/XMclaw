@@ -17,7 +17,7 @@ import { apiGet } from "../../lib/api.js";
 import { lex, renderTokenHtml } from "../../lib/markdown.js";
 
 
-// ── Inline icon SVGs (lucide-react equivalents used by Hermes) ──
+// ── Inline icon SVGs (lucide-react equivalents used by the reference) ──
 
 export function Icon({ d, className }) {
   return html`

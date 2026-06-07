@@ -34,7 +34,7 @@ import time
 from xmclaw.core.ir import ToolCall, ToolResult
 
 
-# B-25 (Hermes parity): legacy on-disk file basenames the agent / Web
+# B-25 (the upstream agent parity): legacy on-disk file basenames the agent / Web
 # UI may pass to the ``update_persona`` tool in any case. Used for
 # canonical resolution. Defined here (not in builtin.py) so the same
 # name table is available to the helpers below + any module that

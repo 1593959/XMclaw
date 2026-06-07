@@ -5,7 +5,7 @@ produces a bounded-[0,1] quality score. The OnlineScheduler consumes the
 combined structural-honest + domain-quality signal as its reward.
 
 Domain graders are OPT-IN per task: a caller selects which grader to apply
-given the task type. This mirrors Hermes Agent's skills-grader design but
+given the task type. This follows the reference Agent's skills-grader design but
 enforces honesty (see HonestGrader docstring) — the domain grader's output
 is a numeric score, never an LLM self-judgement.
 """

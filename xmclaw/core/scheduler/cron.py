@@ -1,11 +1,11 @@
 """Cron scheduler — time-driven recurring jobs.
 
-Direct port of Hermes ``cron/scheduler.py:1-9`` (60-second tick) +
+Adapted from a reference ``cron/scheduler.py:1-9`` (60-second tick) +
 ``cron/jobs.py:25-29`` (croniter integration). Per-job
 ``enabled_toolsets`` controls which tools the agent can use during a
-scheduled run, capping cost (Hermes ``cron/scheduler.py:60-72``); the
+scheduled run, capping cost (the upstream agent ``cron/scheduler.py:60-72``); the
 ``wakeAgent`` gate skips agent invocation entirely for pure-script
-jobs (Hermes ``RELEASE_v0.11.0.md:261``).
+jobs (the upstream agent ``RELEASE_v0.11.0.md:261``).
 
 Persistence:
 * ``~/.xmclaw/cron/jobs.json`` — JSON array of job definitions
@@ -118,7 +118,7 @@ def parse_schedule(expr: str, *, now: float) -> float:
 
 @dataclass(frozen=True, slots=True)
 class CronJob:
-    """One scheduled job. Fields mirror Hermes cron/jobs.py:25-29."""
+    """One scheduled job. Fields mirror the upstream agent cron/jobs.py:25-29."""
     id: str
     name: str
     schedule: str            # "every 5m" | full cron string
@@ -373,13 +373,13 @@ JobRunner = Callable[[CronJob], Awaitable[str]]
 
 
 class CronTickTask:
-    """Background tick. Mirrors Hermes cron/scheduler.py:1-9 polling shape.
+    """Background tick. Follows the reference cron/scheduler.py:1-9 polling shape.
 
     Args:
         store: CronStore to read/update
         runner: async callable to actually execute a due job
         tick_interval_s: how often to scan for due jobs (default 60s
-            to match Hermes; tests use 0.05 for fast iteration)
+            to match the upstream agent; tests use 0.05 for fast iteration)
     """
 
     def __init__(

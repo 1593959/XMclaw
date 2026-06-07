@@ -8,7 +8,7 @@ const html = window.__xmc.htm.bind(h);
 export function ProviderListSection({ data }) {
   return html`
     <p class="xmc-datapage__subtitle" style="margin:.6rem 0 1rem">
-      XMclaw 的内存层是 Hermes-style 可插拔架构（B-25/B-26 完成）：
+      XMclaw 的内存层是可插拔架构（B-25/B-26 完成）：
       <strong>1 个内置 provider + 至多 1 个外部 provider</strong>。
       外部 provider 优先（active recall），内置 provider 永远在底（fallback）。
     </p>

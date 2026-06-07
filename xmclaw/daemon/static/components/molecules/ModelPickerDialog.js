@@ -1,11 +1,11 @@
-// XMclaw — ModelPickerDialog 1:1 port of hermes-agent ModelPickerDialog.tsx
+// XMclaw — ModelPickerDialog port of the reference web UI ModelPickerDialog.tsx
 //
 // Two-stage modal:
 //   Stage 1: pick a provider (left column)
 //   Stage 2: pick a model within that provider (right column)
 // Footer: persist-globally checkbox + Cancel + Switch buttons
 //
-// Hermes wires through gw.request("model.options"). XMclaw uses
+// the reference wires through gw.request("model.options"). XMclaw uses
 // /api/v2/llm/profiles which already returns LLMProfile objects with
 // {id, label, provider, model}. We group those by
 // provider into the same {providers: [{slug, name, models[],

@@ -1,6 +1,6 @@
 """Cost tracker with hard budget circuit-breaker — anti-req #6.
 
-Runaway cost is unacceptable: the OpenClaw issue log alone shows users
+Runaway cost is unacceptable: the upstream agent issue log alone shows users
 burning $200 in a day to an infinite LLM loop. v2's posture is that
 any session has a HARD cap; crossing it raises ``BudgetExceeded``
 which the orchestrator catches and turns into a clean abort + an

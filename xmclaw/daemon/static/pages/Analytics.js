@@ -1,6 +1,6 @@
-// XMclaw — AnalyticsPage 1:1 layout port of hermes-agent AnalyticsPage.tsx
+// XMclaw — AnalyticsPage port of the reference web UI AnalyticsPage.tsx
 //
-// Hermes layout (AnalyticsPage.tsx:1-417):
+// the reference layout (AnalyticsPage.tsx:1-417):
 //   1. Top action row: 7d/30d/90d Segmented + Refresh button
 //   2. 4 Summary cards (calls / input tokens / output tokens / models used)
 //   3. Daily token bar chart (input + output stacked bars)

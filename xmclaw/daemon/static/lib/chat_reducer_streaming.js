@@ -25,7 +25,7 @@ export function isStreamingEventType(t) {
 
 // B-218: per-row event timeline helpers. Each message can carry an
 // ``events: []`` ordered list — chat-bubble UIs that prefer linear
-// per-block rendering (CoPaw / OpenClaw style) read this; the legacy
+// per-block rendering (comparable agents style) read this; the legacy
 // ``message.toolCalls`` + ``message.thinking`` aggregates stay as
 // they are for back-compat with components that still rely on them.
 //
@@ -127,7 +127,7 @@ export function applyStreamingEvent(chat, envelope, helpers) {
             toolCalls: [],
             // B-218: chronological event timeline. Each entry =
             // one rendered row in MessageBubble. Mirrors what
-            // OpenClaw / CoPaw / Hermes show: thinking-row →
+            // comparable agents show: thinking-row →
             // tool-row → text-row in the order events arrived.
             events: [{ type: "text", id: id + ":t0", content: delta }],
           }),
@@ -157,7 +157,7 @@ export function applyStreamingEvent(chat, envelope, helpers) {
       // appended into ``message.events`` so MessageBubble can show
       // each thinking BLOCK as its own collapsible row inline with
       // the tool calls — matches the per-row layout users see in
-      // CoPaw / OpenClaw screenshots.
+      // comparable agents screenshots.
       const id = corr;
       // B-269: same cancel guard as llm_chunk — provider's reasoning
       // stream also buffers, drop late thinking-deltas for cancelled

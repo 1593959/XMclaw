@@ -1,6 +1,6 @@
 """Platform-specific rendering guidance — channel-aware prompt injection.
 
-OpenClaw parity: each IM channel has distinct formatting limits, mention
+the upstream agent parity: each IM channel has distinct formatting limits, mention
 syntax, and rich-content capabilities. A short platform-hint section lets
 the model tailor its output (e.g. use Slack block-kit JSON, split long
 replies for Telegram's 4096-char limit, or emit Feishu card payloads)

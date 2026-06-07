@@ -1,7 +1,7 @@
-"""B-227 + P0-2: API error classification — full Hermes port.
+"""B-227 + P0-2: API error classification — full pipeline port.
 
 Replaces the simplified 5-reason classifier with the 12-reason +
-7-stage pipeline from ``hermes-agent/agent/error_classifier.py``.
+7-stage pipeline from ``a reference module error_classifier.py``.
 
 Why upgrade:
   * Pre-P0-2: every 402/billing was misclassified as ``unknown`` and
@@ -33,7 +33,7 @@ The hints don't all need to be wired today; ``should_rotate_credential``
 is set so the future credential-pool work can read it directly. XMclaw
 just acts on ``retryable`` + ``should_compress`` for now.
 
-Differences from Hermes:
+Differences from the upstream agent:
   * No credential pool integration (XMclaw doesn't have one yet).
   * CN-language patterns retained (上下文长度 / 请稍后再试 / 超过最大长度).
   * Drop-in compatible with the B-227 public API: same enum names for

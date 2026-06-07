@@ -2,7 +2,7 @@
 
 B-332. Closes the cron ``enabled_toolsets`` enforcement gap (audit
 finding #7): the field has lived in :class:`~xmclaw.core.scheduler.cron.CronJob`
-since the Hermes port, gets persisted to ``~/.xmclaw/cron/jobs.json``,
+since the upstream agent port, gets persisted to ``~/.xmclaw/cron/jobs.json``,
 shown in the UI, but no code path actually filtered tools when a
 job fired. A scheduled job with ``enabled_toolsets=["web_fetch"]``
 got the agent's full tool stack at runtime — the constraint was a

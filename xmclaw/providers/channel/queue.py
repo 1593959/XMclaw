@@ -1,6 +1,6 @@
 """UnifiedInboundQueue — fan-in across all enabled channels.
 
-Direct port of QwenPaw's ``app/channels/unified_queue_manager.py`` shape:
+Direct port of a reference design ``app/channels/unified_queue_manager.py`` shape:
 every channel adapter publishes into one queue, the AgentLoop consumer
 pulls from the same queue regardless of source channel. This decouples
 adapters from the dispatch logic — adding a new channel = registering

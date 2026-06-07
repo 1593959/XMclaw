@@ -1,7 +1,7 @@
 """Docs API — list and read XMclaw markdown docs from the repo.
 
 GitHub blocks iframe embed via X-Frame-Options:DENY, so the original
-Hermes pattern (iframe to docs URL) is dead-on-arrival for our docs.
+the upstream agent pattern (iframe to docs URL) is dead-on-arrival for our docs.
 This router serves ``docs/*.md`` directly as text + lists the
 available files; the frontend Markdown pipeline renders them.
 

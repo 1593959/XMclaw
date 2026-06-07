@@ -1,6 +1,6 @@
 """Code chunking — split source files into indexable units.
 
-Dual strategy per file (inspired by codebase-indexer and QwenPaw):
+Dual strategy per file (inspired by codebase-indexer and the upstream agent):
 
 1. **Symbol-aware**: if ``extract_symbols`` covers ≥ 50 % of the file's
    non-blank lines, emit one chunk per top-level symbol (function / class /

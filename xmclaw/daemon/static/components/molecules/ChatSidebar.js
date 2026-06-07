@@ -1,6 +1,6 @@
-// XMclaw — ChatSidebar (Hermes ChatPage right-rail)
+// XMclaw — ChatSidebar (the chat page right-rail)
 //
-// Hermes ChatSidebar is gateway-heavy because it doubles as the
+// the sidebar is gateway-heavy because it doubles as the
 // session-info panel for an embedded TUI. Our equivalent surfaces:
 //   1. Active session metadata (sid + ws state + tool count)
 //   2. Recent sessions list (last 10) — click resume / delete

@@ -1,12 +1,12 @@
 """Skill mutator — DSPy/GEPA wrapper with XMclaw's HonestGrader as fitness.
 
-This is the **core differentiator vs Hermes**. The shape of the mutator
-is ported directly from ``hermes-self-evolution/evolution/skills/
+This is the **core differentiator vs a naive approach**. The shape of the mutator
+is ported directly from ``a reference module evolution/skills/
 evolve_skill.py:36-294`` — single SKILL.md body as the optimization
 parameter, ``dspy.ChainOfThought`` wrap, ``dspy.GEPA().compile()`` runs
 the genetic-pareto search.
 
-The fitness function is **NOT** ported from Hermes. Hermes's fitness is
+The fitness function is **NOT** adapted from a reference. the reference's fitness is
 LLM-on-LLM rubric + keyword overlap (``fitness.py:107-136``) — that's
 exactly the "agent always thinks it performed well" failure mode we
 exist to fix. Our fitness is :func:`xmclaw_fitness`, which calls the
@@ -92,9 +92,9 @@ class SkillMutator:
         fitness_fn: callable ``(example, prediction_text) -> float``.
             Default uses :func:`xmclaw_fitness` which delegates to
             :class:`xmclaw.core.grader.verdict.HonestGrader` — the
-            structural difference vs Hermes.
+            structural difference vs a naive approach.
         iterations: how many GEPA steps per call (default 10, mirrors
-            hermes ``config.py:18``). Cost scales linearly.
+            the upstream agent ``config.py:18``). Cost scales linearly.
     """
 
     def __init__(
@@ -207,14 +207,14 @@ class SkillMutator:
     ) -> str:
         """Call ``dspy.GEPA().compile()`` with our fitness, return new body.
 
-        Mirrors hermes ``evolve_skill.py:157-177`` shape, but the metric
+        Follows the reference ``evolve_skill.py:157-177`` shape, but the metric
         is our HonestGrader-backed fitness, not their keyword-overlap
         proxy. Falls back to ``MIPROv2`` when GEPA isn't bundled (mirrors
-        hermes line 168-177).
+        the upstream agent line 168-177).
         """
         dspy = self._dspy
         # Build the 1-field optimization module: skill body in,
-        # response out. Same shape as hermes skill_module.py:84-114.
+        # response out. Same shape as the upstream agent skill_module.py:84-114.
         signature = dspy.Signature("user_msg -> response")
         module = dspy.ChainOfThought(signature)
         module.predict.signature = module.predict.signature.with_instructions(
@@ -246,7 +246,7 @@ class SkillMutator:
             return self._fitness_fn(ex, str(text))
 
         # Try GEPA first; fall back to MIPROv2 on ImportError /
-        # AttributeError (mirrors hermes ``evolve_skill.py:168-177``).
+        # AttributeError (follows the reference ``evolve_skill.py:168-177``).
         optimizer = None
         for cls_name in ("GEPA", "MIPROv2", "BootstrapFewShot"):
             cls = getattr(dspy, cls_name, None)

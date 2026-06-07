@@ -1,6 +1,6 @@
-"""ACP (Agent Client Protocol) channel adapter — Hermes integration shim.
+"""ACP (Agent Client Protocol) channel adapter — the upstream agent integration shim.
 
-Direct port target: ``hermes-agent/acp_adapter/server.py:13-47`` and the
+Direct port target: ``a reference module acp_adapter/server.py:13-47`` and the
 companion ``acp_registry/agent.json`` 9-line manifest. ACP is Zed
 editor's open agent-spec — implementing it gets XMclaw plugged into
 Zed, VSCode (via the ACP extension), and JetBrains' agent panel for
@@ -11,7 +11,7 @@ Wire format imports come from the upstream ``acp`` Python package
 don't need the dep.
 
 Phase 6 ships the manifest + adapter shape; concrete request handling
-lands in Phase 6.1 once we have the full Hermes acp_adapter file
+lands in Phase 6.1 once we have the full the upstream agent acp_adapter file
 mapped to our event-bus contract. The interesting work is the
 translator: ACP's ``PromptResponse`` ↔ XMclaw's ``LLM_RESPONSE`` event.
 
@@ -37,7 +37,7 @@ _log = logging.getLogger(__name__)
 
 
 # 9-line agent manifest that Zed / VSCode / JetBrains read to learn
-# how to invoke us. Mirrors hermes acp_registry/agent.json shape.
+# how to invoke us. Follows the reference acp_registry/agent.json shape.
 AGENT_MANIFEST: dict[str, Any] = {
     "name": "xmclaw",
     "displayName": "XMclaw",
@@ -62,7 +62,7 @@ MANIFEST = PluginManifest(
     # B-330: marked scaffold to match the 4 IM channels
     # (telegram / dingtalk / wecom / weixin) and the ACPAdapter's
     # actual state — start() / send() raise NotImplementedError
-    # because the hermes acp_adapter/server.py port hasn't landed
+    # because the upstream agent acp_adapter/server.py port hasn't landed
     # yet (Phase 6.1). Pre-B-330 the manifest's default
     # ``implementation_status="ready"`` meant the dispatcher would
     # try to instantiate + start ACP whenever a user enabled it in
@@ -79,7 +79,7 @@ MANIFEST = PluginManifest(
 class ACPAdapter(ChannelAdapter):
     """ACP server adapter — sketch, full handler in Phase 6.1.
 
-    The hermes ``acp_adapter/server.py:73`` ThreadPoolExecutor pattern
+    The upstream agent ``acp_adapter/server.py:73`` ThreadPoolExecutor pattern
     is the right model: each ACP session pins a thread; XMclaw runs
     the actual ``AgentLoop.run_turn`` on that thread via asyncio.
 
@@ -87,7 +87,7 @@ class ACPAdapter(ChannelAdapter):
     manifest so the UI shows ACP as available; ``start()`` raises
     ``NotImplementedError`` if the user actually enables it. The full
     port follows the same shape as the other channels — once
-    ``hermes-agent/acp_adapter/server.py`` is line-by-line ported into
+    ``a reference module acp_adapter/server.py`` is line-by-line ported into
     this file, the channel becomes usable.
     """
 
@@ -107,8 +107,7 @@ class ACPAdapter(ChannelAdapter):
             # is missing or the scaffold hasn't been ported yet.
             raise NotImplementedError(
                 "ACPAdapter is a scaffold — the request handler hasn't "
-                "been ported yet. Port reference: "
-                "hermes-agent/acp_adapter/server.py. Tracked at "
+                "been ported yet. Tracked at "
                 "docs/DEV_ROADMAP.md §2.1. The dispatcher's default "
                 "include_scaffolds=False filter normally hides this; "
                 "drop implementation_status from the manifest when the "
@@ -116,7 +115,7 @@ class ACPAdapter(ChannelAdapter):
                 "(Also: the 'acp' package is not installed: "
                 "pip install acp (or skip enabling this channel).)"
             ) from exc
-        # Phase 6.1: port hermes acp_adapter/server.py:13-150 into here.
+        # Phase 6.1: port the upstream agent acp_adapter/server.py:13-150 into here.
         # The InitializeResponse / PromptResponse / SessionInfo types
         # come from the imported acp module above.
         # B-330: kept this raise for the rare case someone bypasses the
@@ -126,8 +125,7 @@ class ACPAdapter(ChannelAdapter):
         # production config can't reach this path.
         raise NotImplementedError(
             "ACPAdapter is a scaffold — the request handler hasn't "
-            "been ported yet. Port reference: "
-            "hermes-agent/acp_adapter/server.py. Tracked at "
+            "been ported yet. Tracked at "
             "docs/DEV_ROADMAP.md §2.1. The dispatcher's default "
             "include_scaffolds=False filter normally hides this; "
             "drop implementation_status from the manifest when the "
@@ -142,7 +140,7 @@ class ACPAdapter(ChannelAdapter):
     ) -> str:
         raise NotImplementedError(
             "ACPAdapter.send is a scaffold — pending Phase 6.1 port "
-            "of hermes-agent/acp_adapter/server.py. The MANIFEST is "
+            "of the ACP server handler. The MANIFEST is "
             "scaffold-flagged so normal dispatch never reaches here."
         )
 

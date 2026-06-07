@@ -1,6 +1,6 @@
 """Provider-family operational guidance — model-specific prompt injection.
 
-Hermes parity: each backend family (GPT / Claude / Google) has distinct
+the upstream agent parity: each backend family (GPT / Claude / Google) has distinct
 behavioural quirks that are best corrected with a short operational-hint
 section rather than polluting the generic persona files.
 

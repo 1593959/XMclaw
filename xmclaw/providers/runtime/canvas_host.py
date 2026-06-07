@@ -1,6 +1,6 @@
 """Canvas host — HTTP+WS render server for live UI artifacts.
 
-Direct port of OpenClaw's ``src/canvas-host/server.ts:1-39``. Canvas
+Direct port of a reference design ``src/canvas-host/server.ts:1-39``. Canvas
 is the "agent renders to a separate device" feature: the daemon can
 serve an HTML page on a dedicated port (default 18793) and push
 incremental updates over WebSocket so external apps (Mac / iOS /
@@ -33,7 +33,7 @@ _log = logging.getLogger(__name__)
 
 def default_canvas_port() -> int:
     """Resolve the Canvas port. Env var ``XMC_CANVAS_PORT`` overrides;
-    else 18793 (matches OpenClaw's default)."""
+    else 18793 (matches the reference's default)."""
     raw = os.environ.get("XMC_CANVAS_PORT", "18793")
     try:
         return int(raw)
@@ -55,7 +55,7 @@ class CanvasHost:
 
     The HTML is the single rendered page; calling ``publish`` again
     replaces its contents and notifies all connected WS clients.
-    Live-reload pattern mirrors OpenClaw's chokidar-based file watcher.
+    Live-reload pattern follows the reference's chokidar-based file watcher.
     """
 
     def __init__(

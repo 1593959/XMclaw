@@ -2180,7 +2180,7 @@ class MemoryService:
         Fusion strategy: vector RANK score (1.0 for top hit,
         decreasing linearly) plus BM25 normalised score, weighted
         ``vec_weight`` / ``bm25_weight``. Defaults 0.6 / 0.4 mirror
-        OpenClaw's LanceDB-Pro plugin's published numbers.
+        the reference's LanceDB-Pro plugin's published numbers.
 
         2026-05-29 (chat-b09a3ad4 incident): hard caps tightened to
         avoid stalling the user-turn critical path.

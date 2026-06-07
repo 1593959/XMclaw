@@ -13,7 +13,7 @@ class RuleBasedToolGuardian(BaseToolGuardian):
     """Loads YAML signature rules and applies them to tool parameters.
 
     Rules are loaded from ``xmclaw/security/rules/*.yaml`` (ported from
-    QwenPaw under Apache-2.0).  Each rule carries regex *patterns* and
+    the upstream agent under Apache-2.0).  Each rule carries regex *patterns* and
     optional *exclude_patterns*; when a pattern hits we emit a
     :class:`GuardFinding` with the severity declared in the rule.
     """

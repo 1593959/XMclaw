@@ -1,6 +1,6 @@
-// XMclaw — App shell 1:1 port of hermes-agent/web/src/App.tsx
+// XMclaw — App shell port of the reference web UI
 //
-// Hermes-spec layout:
+// the reference layout:
 //   - Outer flex column, h-dvh, overflow-hidden, bg-black, uppercase,
 //     text-midground, antialiased
 //   - <Backdrop /> + <PluginSlot name="backdrop" /> as z-1..z-101 layers
@@ -9,7 +9,7 @@
 //     backdrop-blur-sm, border-r border-current/20, slides in/out on
 //     mobile, sticky on desktop (lg:sticky lg:translate-x-0)
 //   - Sidebar contents (top→bottom):
-//       - Brand block (h-14, "Hermes / Agent" two-line title)
+//       - Brand block (h-14, "the reference / Agent" two-line title)
 //       - <PluginSlot name="header-left" />
 //       - <nav> with ul of NavLink items
 //       - <SidebarSystemActions /> (restart / update gateway)
@@ -48,7 +48,7 @@ import { CommPanel } from "../molecules/CommPanel.js";
 import { NotificationPanel } from "../molecules/NotificationPanel.js";
 
 // Lucide-style inline SVG icons. Each takes className for sizing.
-// Direct shape ports of the Hermes nav-icon set so visual size + stroke
+// Direct shape ports of the nav-icon set so visual size + stroke
 // match. Width / height come from CSS (h-3.5 w-3.5 = 14×14 in the nav).
 const ICONS = {
   Terminal:      "M4 17l6-6-6-6M12 19h8",
@@ -105,7 +105,7 @@ export function Icon({ name, className }) {
   `;
 }
 
-// Built-in nav (mirrors Hermes BUILTIN_NAV_REST + CHAT_NAV_ITEM).
+// Built-in nav (mirrors the standard nav set + CHAT_NAV_ITEM).
 // Phase F: nav 4 分组 + 折叠 — 从 21 项合并到 14 项，减少认知负担。
 //
 //   💬 核心       对话 / 会话
@@ -255,7 +255,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand, token, tokenU
     };
   }, [commOpen, notifOpen]);
 
-  // Close on Escape (Hermes parity).
+  // Close on Escape (parity).
   useEffect(() => {
     if (!mobileOpen) return;
     const onKey = (e) => { if (e.key === "Escape") setMobileOpen(false); };
@@ -268,7 +268,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand, token, tokenU
     };
   }, [mobileOpen]);
 
-  // Auto-close on viewport ≥ 1024 (lg breakpoint, Hermes parity).
+  // Auto-close on viewport ≥ 1024 (lg breakpoint, parity).
   useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
     const onChange = (e) => { if (e.matches) setMobileOpen(false); };

@@ -1,7 +1,7 @@
-"""P0-1: ContextCompressor — full Hermes port (5-phase pipeline).
+"""P0-1: ContextCompressor — full pipeline port (5-phase pipeline).
 
-Adapted from ``hermes-agent/agent/context_compressor.py`` (1230 LOC).
-The XMclaw version drops Hermes-specific dependencies (auxiliary_client,
+Adapted from ``a reference module context_compressor.py`` (1230 LOC).
+The XMclaw version drops upstream-specific dependencies (auxiliary_client,
 ContextEngine ABC, model_metadata.get_model_context_length) and binds
 to XMclaw's ``Message`` / ``ToolCall`` dataclasses. The algorithm is
 unchanged.
@@ -67,7 +67,7 @@ SUMMARY_PREFIX = (
 
 _LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
-# Tunables (unchanged from Hermes)
+# Tunables (unchanged from the upstream agent)
 _CHARS_PER_TOKEN = 4
 _MIN_SUMMARY_TOKENS = 2_000
 _SUMMARY_RATIO = 0.20
@@ -87,7 +87,7 @@ _TOOL_ARGS_HEAD = 1_200
 
 # B-233: CJK-aware density. Modern tokenisers (Anthropic / OpenAI / Kimi
 # / Qwen / GLM) all tokenise Han characters and full-width punctuation at
-# roughly 1.5 chars/token — vs ~4 chars/token for ASCII. Hermes's
+# roughly 1.5 chars/token — vs ~4 chars/token for ASCII. the reference's
 # original chars/4 estimate ported directly was the right call for an
 # English-only codebase but DRASTICALLY undercounts XMclaw's real load
 # (Chinese-heavy conversations + Chinese commit messages + Chinese
@@ -215,7 +215,7 @@ def _estimate_args_tokens_cjk(args: Any) -> int:
 def _estimate_args_chars(args: Any) -> int:
     """Walk a parsed JSON value, summing string-leaf lengths.
 
-    Cheaper than ``json.dumps`` + ``len`` — and matches the Hermes
+    Cheaper than ``json.dumps`` + ``len`` — and matches the upstream agent
     arg-token heuristic since dicts/lists have small structural
     overhead vs the string content.
     """
@@ -663,7 +663,7 @@ class ContextCompressor:
         a user message — the summariser then writes it into "Pending User
         Asks", but ``SUMMARY_PREFIX`` tells the next model to respond
         only to user messages AFTER the summary, so the active task
-        silently disappears (Hermes #10896).
+        silently disappears (a known upstream bug #10896).
         """
         last_user = self._find_last_user_message_idx(messages, head_end)
         if last_user < 0 or last_user >= cut_idx:

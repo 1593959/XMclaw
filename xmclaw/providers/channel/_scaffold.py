@@ -16,7 +16,7 @@ package can ship a tiny ``adapter.py`` that:
 * exists (so ``__import__`` succeeds — the manifest's
   ``adapter_factory_path`` resolves),
 * surfaces a clear, actionable ``NotImplementedError`` on
-  instantiation that names the channel + the qwenpaw port target.
+  instantiation that names the channel + the upstream agent port target.
 
 Manifest discovery is unaffected — the ``__init__.py`` files import
 nothing from here.
@@ -29,7 +29,7 @@ from typing import Any
 class ScaffoldChannelAdapter:
     """Drop-in adapter stub for scaffolded channels. Raises
     ``NotImplementedError`` on construction with a message that
-    points at the qwenpaw port target + tells the operator how to
+    points at the upstream agent port target + tells the operator how to
     contribute or ask.
 
     Subclasses set ``CHANNEL_NAME`` and ``PORT_TARGET`` so the error
@@ -38,7 +38,7 @@ class ScaffoldChannelAdapter:
 
     #: Human-readable channel name shown in the error (e.g. "Telegram").
     CHANNEL_NAME: str = "<unknown>"
-    #: Path to the qwenpaw reference adapter to port.
+    #: Path to the upstream agent reference adapter to port.
     PORT_TARGET: str = "<not specified>"
     #: Optional one-line note about credentials / mode.
     EXTRA_NOTE: str = ""

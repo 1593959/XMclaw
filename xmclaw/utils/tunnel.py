@@ -1,6 +1,6 @@
 """Cloudflared tunnel auto-start.
 
-Direct port of QwenPaw's ``src/qwenpaw/tunnel/cloudflare.py``. When a
+Direct port of a reference design ``src/the upstream agent/tunnel/cloudflare.py``. When a
 webhook-driven channel (Feishu / DingTalk / WeCom / Telegram) is
 enabled, the daemon needs a public URL to receive callbacks. Cloudflare
 Tunnel via ``cloudflared`` binary is the simplest no-config-required
@@ -16,7 +16,7 @@ Public API:
 The manager is best-effort: if the binary is missing or the tunnel
 fails to bring up, the channel adapters that asked for a tunnel get
 ``None`` and should surface a clear "configure cloudflared or set
-``QWENPAW_PUBLIC_URL`` manually" error to the user.
+``the upstream agent_PUBLIC_URL`` manually" error to the user.
 """
 from __future__ import annotations
 

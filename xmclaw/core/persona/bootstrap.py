@@ -1,7 +1,7 @@
 """Bootstrap prefix — first-run interview pattern.
 
-Direct port of QwenPaw ``src/qwenpaw/agents/prompt.py:323-372``
-``build_bootstrap_guidance`` + OpenClaw ``system-prompt.ts:206-214``
+Adapted from a reference ``src/the upstream agent/agents/prompt.py:323-372``
+``build_bootstrap_guidance`` + the upstream agent ``system-prompt.ts:206-214``
 ``[Bootstrap pending]`` prefix. When ``BOOTSTRAP.md`` is present, the
 agent's first reply must follow the bootstrap dialogue — interview the
 user, write IDENTITY.md / USER.md, then delete BOOTSTRAP.md.
@@ -37,7 +37,7 @@ def bootstrap_prefix(*, profile_dir: Path, workspace_dir: Path | None) -> str:
 
     Always falls back to ``""`` so callers can unconditionally concatenate
     it with the system prompt without a None-guard. Mirrors
-    ``buildAgentUserPromptPrefix`` in OpenClaw — but we put it at the head
+    ``buildAgentUserPromptPrefix`` in the upstream agent — but we put it at the head
     of the system prompt (slot 1) rather than at the head of the user
     message, because we want it stable across hops; the bootstrap
     interview is a session-level mode, not a per-turn mode.

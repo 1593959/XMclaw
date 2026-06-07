@@ -75,10 +75,10 @@ import { DialogViewport } from "./lib/dialog.js";
 import { LightboxViewport } from "./lib/lightbox.js";
 // B-105: prompt history helper lives in Composer module.
 import { appendPromptHistory } from "./components/molecules/Composer.js";
-// Hermes 1:1 port — IS the shell. No legacy fallback.
+// the reference 1:1 port — IS the shell. No legacy fallback.
 import { AppShell as HermesAppShell } from "./components/organisms/AppShell.js";
-// Side-effect: applies the persisted Hermes theme (or LENS_0 default)
-// to :root before the first paint. Mirrors Hermes ThemeProvider.
+// Side-effect: applies the persisted the reference theme (or LENS_0 default)
+// to :root before the first paint. Mirrors the theme provider.
 import "./lib/theme-engine.js";
 import { ChatPage } from "./pages/Chat.js";
 import { SettingsPage } from "./pages/Settings.js";
@@ -521,7 +521,7 @@ const routes = {
 
 // ── Shell ─────────────────────────────────────────────────────────────
 //
-// Phase B 1:1 port of Hermes web/src/App.tsx. The Hermes shell IS the
+// Phase B port of the reference web/src/App.tsx. The reference shell IS the
 // shell — no toggles, no legacy fallback. Pages render into the main
 // pane. Theme + language switch lives inside the sidebar footer.
 

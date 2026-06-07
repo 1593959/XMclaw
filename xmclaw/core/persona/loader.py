@@ -1,6 +1,6 @@
 """Persona file loader — read 7-file SOUL pack with project overlay.
 
-Direct port of OpenClaw's ``src/agents/system-prompt.ts:44-93`` priority
+Direct port of a reference design ``src/agents/system-prompt.ts:44-93`` priority
 ordering and ``src/agents/workspace.ts:19-86`` cache-by-mtime pattern,
 specialized for Python's pathlib.
 
@@ -12,7 +12,7 @@ Resolution layers (highest precedence first per basename):
 
 We intentionally do NOT merge file contents from multiple layers — the
 highest-precedence layer wins for a given basename, mirroring how
-OpenClaw / Hermes treat workspace-overlay vs. global rules.
+comparable agents treat workspace-overlay vs. global rules.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from xmclaw.core.persona import templates as _templates
 
-# Same priority as OpenClaw `system-prompt.ts:44-52`. Lower number = earlier
+# Same priority as the upstream agent `system-prompt.ts:44-52`. Lower number = earlier
 # in the assembled prompt. ``bootstrap.md`` sits between tools.md and
 # memory.md so the bootstrap dialogue runs after the agent has read who it
 # is and which tools are available.
@@ -76,8 +76,8 @@ def _read_text(p: Path) -> str | None:
 def _strip_yaml_frontmatter(text: str) -> str:
     """Strip a leading ``---\\n...\\n---\\n`` block.
 
-    OpenClaw / Hermes / QwenPaw all do this — frontmatter is for the loader,
-    not for the LLM. Mirrors hermes ``prompt_builder.py:113-127``.
+    comparable agents all do this — frontmatter is for the loader,
+    not for the LLM. Follows the reference ``prompt_builder.py:113-127``.
     """
     if not text.startswith("---\n"):
         return text
@@ -234,7 +234,7 @@ def ensure_bootstrap_marker(profile_dir: Path) -> Path | None:
 
     The agent reads BOOTSTRAP.md, runs the interview dialogue, writes
     IDENTITY.md / USER.md, then deletes BOOTSTRAP.md — same flow as
-    OpenClaw and QwenPaw.
+    the upstream agent and the upstream agent.
 
     Wave-27 fix-12 follow-up (2026-05-19): a previous fix attempt
     added a ``_has_identity_facts()`` short-circuit here so BOOTSTRAP

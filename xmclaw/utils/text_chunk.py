@@ -1,4 +1,4 @@
-"""Markdown chunker — line-based split with overlap, per CoPaw/ReMe.
+"""Markdown chunker — line-based split with overlap, per the upstream agent/ReMe.
 
 B-41. Splits markdown text into overlapping line ranges sized for
 embedding models. Each chunk carries its line range so the indexer
@@ -75,7 +75,7 @@ def chunk_markdown(
     Two boundary triggers, whichever fires first:
 
     1. Size — adding the current line would push the chunk over
-       ``chunk_chars``. Standard CoPaw / ReMe behaviour.
+       ``chunk_chars``. Standard the upstream agent / ReMe behaviour.
     2. Section heading — a fresh ``## `` or ``### `` line starts
        a new logical section. We force a split here even when
        size-budget hasn't been hit. Without this, a small file

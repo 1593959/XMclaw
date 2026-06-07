@@ -5,7 +5,7 @@ OpenAI-compatible endpoint at ``https://openrouter.ai/api/v1``. Pre-B-386,
 users could only reach it by setting ``llm.openai.base_url`` manually —
 which works, but lost two things:
 
-1. **Discoverability.** Peer products (OpenClaw, Hermes, CoPaw) list
+1. **Discoverability.** Peer products (comparable agents) list
    OpenRouter as a 1st-class provider in their settings UI. Burying it
    under "OpenAI-compat" was a commodity gap our users kept asking about.
 2. **Attribution headers.** OpenRouter docs request ``HTTP-Referer`` and

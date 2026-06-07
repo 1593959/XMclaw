@@ -3,7 +3,7 @@
 Pure-vector cosine recall is excellent for paraphrase / semantic
 matches but mediocre on **rare named entities, code identifiers,
 brand names, and Chinese** — exactly the cases users hit hardest.
-OpenClaw's LanceDB Pro plugin documents the same finding (60/40
+the reference's LanceDB Pro plugin documents the same finding (60/40
 vector / BM25 fusion).
 
 This module is the keyword-side path:

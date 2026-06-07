@@ -1,6 +1,6 @@
 """MemoryManager — orchestrates multiple MemoryProviders.
 
-B-25 (Hermes parity). Hermes' ``agent/memory_manager.py`` ships a
+B-25 (the upstream agent parity). the upstream agent' ``agent/memory_manager.py`` ships a
 two-tier model: a built-in file-backed provider (always present,
 non-removable) + at most ONE external plugin provider (hindsight,
 supermemory, mem0, etc.). The manager holds them both, dispatches
@@ -40,7 +40,7 @@ class MemoryPutError(Exception):
 class MemoryManager:
     """Holds 1 builtin + at most 1 external memory provider.
 
-    Mirrors Hermes ``agent/memory_manager.MemoryManager``: builtin is
+    Follows the reference ``agent/memory_manager.MemoryManager``: builtin is
     non-removable, only one external provider permitted at a time
     (avoid tool-schema bloat + conflicting backends).
     """
@@ -262,7 +262,7 @@ class MemoryManager:
         user_content: str, assistant_content: str,
     ) -> None:
         """End-of-turn write-back. Each provider gets a chance; failures
-        in one don't block others. Mirrors Hermes ``sync_all``."""
+        in one don't block others. Follows the reference ``sync_all``."""
         import time as _t
         for p in self._providers:
             sync = getattr(p, "sync_turn", None)
@@ -310,7 +310,7 @@ class MemoryManager:
                 pass
 
     async def on_session_end(self, *, session_id: str, messages: list) -> None:
-        """Session-end summary hook. Hermes uses this for fact extraction."""
+        """Session-end summary hook. the reference uses this for fact extraction."""
         for p in self._providers:
             hook = getattr(p, "on_session_end", None)
             if hook is None:

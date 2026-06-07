@@ -68,7 +68,7 @@ META_VIEW_TOOL_NAME = "skill_view"
 # the registry, same code path as the per-skill ``skill_<id>`` tools.
 # In ``unified`` disclosure mode this is the ONLY way to invoke a skill
 # — per-skill tools are not exposed to the LLM at all; in ``inline``
-# mode it's an alias that coexists with them. The Hermes / Claude-Skills
+# mode it's an alias that coexists with them. The upstream agent / Claude-Skills
 # 3-step flow is: skill_browse → skill_view → skill_run.
 META_RUN_TOOL_NAME = "skill_run"
 # Epic #27 P2 G-07 (2026-05-19) — versioned-edit history affordances.
@@ -83,7 +83,7 @@ META_ROLLBACK_TOOL_NAME = "skill_rollback"
 # Epic #27 P2 G-08 (2026-05-19) — self-evolving skills. The agent
 # writes a new SKILL.md under ~/.xmclaw/v2/skills_user/<name>/ +
 # stamps a .proposed.json marker so UserSkillsLoader assigns trust
-# UNTRUSTED. Anti-cargo-cult: unlike Hermes' "5+ tool calls = save
+# UNTRUSTED. Anti-cargo-cult: unlike the upstream agent' "5+ tool calls = save
 # as skill" pattern (which auto-stages transient failures as
 # learning), XMclaw keeps the agent's proposals at UNTRUSTED until
 # explicit human / grader-evidence promotion. The bar is "the agent

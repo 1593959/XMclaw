@@ -14,7 +14,7 @@ What you gain vs ProcessSkillRuntime:
     Path('/').iterdir() returns the container's rootfs, not the host.
   * Network sandbox — ``network_mode="none"`` cuts the container off
     the host's network namespace. ``urllib.request.urlopen("...")``
-    inside the skill fails immediately. Hermes / OpenHands rely on
+    inside the skill fails immediately. the upstream agent / OpenHands rely on
     this same primitive for skill isolation.
   * Memory hard cap — ``mem_limit="512m"`` is enforced by the kernel
     (cgroup memory controller). OOMKilled child surfaces as a

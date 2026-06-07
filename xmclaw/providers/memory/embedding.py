@@ -1,6 +1,6 @@
 """EmbeddingProvider — pluggable embedding backend for the memory layer.
 
-B-41 (CoPaw parity). XMclaw's :class:`SqliteVecMemory` had storage
+B-41 (the upstream agent parity). XMclaw's :class:`SqliteVecMemory` had storage
 plus the cosine-search SQL but no way to actually COMPUTE embeddings
 — the caller had to supply ``MemoryItem.embedding`` as a tuple of
 floats. Without this provider, semantic search silently degraded to

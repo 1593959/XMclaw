@@ -964,7 +964,7 @@ def _parse_skill_md_frontmatter_extras(body: str) -> dict[str, Any]:
     """Parse the G-10 frontmatter extras.
 
     Recognised keys (case-insensitive, hyphen and underscore variants
-    both accepted to match the Claude Code / Hermes conventions):
+    both accepted to match the Claude Code / the upstream agent conventions):
 
       * ``when_to_use`` / ``when-to-use`` / ``whenToUse`` — string
       * ``allowed_tools`` / ``allowed-tools`` / ``allowedTools`` —

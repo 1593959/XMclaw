@@ -133,7 +133,7 @@ class ScanResult:
 # IGNORECASE + DOTALL. Keep them focused — false positives on a friendly
 # README would poison the policy's signal.
 #
-# Provenance: the initial set is adapted from the public Hermes
+# Provenance: the initial set is adapted from the public the upstream agent
 # ``_CONTEXT_THREAT_PATTERNS`` (MIT-licensed) and extended with a few
 # data-exfiltration asks seen in 2025-Q1 red-team reports.
 
@@ -406,7 +406,7 @@ _TOOL_HIJACK = [
 # fragments (XMclaw / DAN / API key) that mix in.
 _C2_PROMPTWARE = [
     # C2 / Brainworm-style promptware — attacks that exist entirely as
-    # natural language within the agent's context window (Hermes threat_patterns
+    # natural language within the agent's context window (the upstream agent threat_patterns
     # §C2 / Brainworm-style promptware port). These anchor on C2-specific
     # vocabulary rather than bossy English, keeping false positives low.
     _compile(
@@ -468,7 +468,7 @@ _C2_PROMPTWARE = [
 
 _SUPPLY_CHAIN = [
     # Supply-chain attacks: download-and-execute, unpinned dependencies,
-    # runtime resource fetching (Hermes skills_guard.py §supply_chain port).
+    # runtime resource fetching (the upstream agent skills_guard.py §supply_chain port).
     _compile(
         "curl_pipe_shell",
         r"\bcurl\s+[^|\n]*?\|\s*(?:bash|sh|zsh|python|perl|node|ruby)\b",
@@ -709,7 +709,7 @@ def _load_yaml_patterns() -> list[_PatternSpec]:
     """Load YAML rules from ``security/rules/*.yaml`` and convert to
     :class:`_PatternSpec` so they participate in :func:`scan_text`.
 
-    Pre-B-350 the ``prompt_injection.yaml`` rules (ported from QwenPaw)
+    Pre-B-350 the ``prompt_injection.yaml`` rules (adapted from a reference)
     were only wired into ``tool_guard`` — they never scanned free-form
     text such as tool results, memory recall, or web-fetch bodies. This
     helper bridges the gap: YAML rules without per-tool scoping

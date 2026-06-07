@@ -1,7 +1,7 @@
 """BuiltinFileMemoryProvider — wraps the persona MEMORY.md / USER.md
 files as a :class:`MemoryProvider`.
 
-Hermes' ``BuiltinMemoryProvider`` does this: the persona files are
+the upstream agent' ``BuiltinMemoryProvider`` does this: the persona files are
 addressable through the same provider interface as any pluggable
 backend, so the agent_loop / manager don't special-case them. We
 mirror it so XMclaw's manager is uniform — built-in is just the
@@ -199,7 +199,7 @@ class BuiltinFileMemoryProvider(MemoryProvider):
         self, *, session_id: str, agent_id: str,
         user_content: str, assistant_content: str,
     ) -> None:
-        """B-40 (CoPaw parity): append a one-line entry to the daily
+        """B-40 (the upstream agent parity): append a one-line entry to the daily
         episodic log at ``<persona_dir>/memory/YYYY-MM-DD.md``.
 
         Gives the agent a per-day chronology distinct from the

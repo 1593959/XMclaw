@@ -1,7 +1,7 @@
 """Skill mutation constraint validators.
 
-Direct port of ``hermes-self-evolution/evolution/skills/constraints.py:30-174``
-— size / growth / structure gates. Hermes uses these to reject GEPA
+Direct port of ``a reference module evolution/skills/constraints.py:30-174``
+— size / growth / structure gates. the reference uses these to reject GEPA
 proposals that would balloon a skill or strip required sections; we lift
 them verbatim so XMclaw's mutator can never promote a degenerate
 candidate (e.g. a 50-line skill that GEPA "optimized" into 5,000 lines
@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass, field
 
 # Bytes (not chars) — UTF-8 worst-case 4 bytes per char keeps the limit
-# reasonable for Chinese / mixed-language skills. Hermes uses chars in
+# reasonable for Chinese / mixed-language skills. the reference uses chars in
 # their TS port; we use bytes so a CJK-heavy skill isn't artificially
 # capped at the same limit as an ASCII one.
 _DEFAULT_MIN_BYTES = 200          # below this, the skill body is too thin
@@ -43,7 +43,7 @@ def _byte_len(s: str) -> int:
 
 
 def _ngram_set(s: str, n: int = 8) -> set[str]:
-    """Word-level n-gram set used for retention-ratio. Mirrors hermes
+    """Word-level n-gram set used for retention-ratio. Follows the reference
     ``_ngram_overlap`` (``constraints.py:66-94``) — coarse but cheap.
     """
     tokens = re.findall(r"\S+", s.lower())

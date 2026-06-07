@@ -1,6 +1,6 @@
 """Feishu (Lark) channel adapter — manifest + scaffolding.
 
-Direct port target: ``qwenpaw/src/qwenpaw/app/channels/feishu/`` which
+Direct port target: ``the upstream agent/src/the upstream agent/app/channels/feishu/`` which
 uses lark-oapi's WebSocket long-poll (no public IP needed). The
 WebSocket-inbound model is why Feishu is the easiest of the four
 Chinese channels to bring up — no cloudflared, no webhook signing, just

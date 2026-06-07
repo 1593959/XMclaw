@@ -1,7 +1,7 @@
 """Persona / soul system — agent identity assembly.
 
-Direct port of OpenClaw's 7-file workspace pattern + Hermes's prompt-builder
-sanitizer + QwenPaw's bootstrap interview pattern. See ``docs/DEV_PLAN.md``
+Direct port of a reference design 7-file workspace pattern + the reference's prompt-builder
+sanitizer + the reference's bootstrap interview pattern. See ``docs/DEV_PLAN.md``
 §1.1 for the design rationale.
 
 Public API:
@@ -16,7 +16,7 @@ Public API:
 * :func:`ensure_default_profile` — write the bundled templates into
   ``~/.xmclaw/persona/profiles/default/`` on first install.
 
-The seven file basenames are (priority order — lower wins, OpenClaw
+The seven file basenames are (priority order — lower wins, the upstream agent
 ``system-prompt.ts:44-52``)::
 
     agents.md (10) → soul.md (20) → identity.md (30) → user.md (40)

@@ -1,7 +1,7 @@
 """DingTalk channel adapter — manifest.
 
 B-383 (Sprint 2): real adapter at ``adapter:DingTalkAdapter`` (was
-B-329 scaffold). Direct port reference: ``qwenpaw/src/qwenpaw/app/
+B-329 scaffold). Direct port reference: ``the upstream agent/src/the upstream agent/app/
 channels/dingtalk/`` + the open-dingtalk Python SDK
 (`dingtalk-stream` on PyPI). Uses the SDK's WebSocket Stream Mode —
 DingTalk pushes events to us over an outbound-from-our-side WS, so
