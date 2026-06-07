@@ -134,6 +134,25 @@
   margin: 0.5rem 0;
 }
 
+/* 2026-06-07 scroll-lock guard: long unbroken lines (raw markdown table
+ * fragments, bare URLs, pipe-delimited rows) must wrap instead of
+ * forcing horizontal overflow. Pre-fix, a collapsed table rendered as
+ * one wide raw line blew out the bubble width and froze vertical
+ * scrolling for the whole transcript. Tables keep their own
+ * overflow-x:auto (they scroll inside their wrapper); everything else
+ * wraps hard. */
+.xmc-md {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+.xmc-md p,
+.xmc-md li,
+.xmc-md blockquote {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 /* ── Inline code ────────────────────────────────────────────────────── */
 
 .xmc-md code:not(pre code) {

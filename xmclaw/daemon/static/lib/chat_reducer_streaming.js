@@ -268,10 +268,20 @@ export function applyStreamingEvent(chat, envelope, helpers) {
         pendingAssistantId: nextPending,
         messages: upsertById(chat.messages, id, (m) => ({
           ...m,
-          // If the server sent the canonical full text, prefer it over
-          // accumulated chunks — this is how we recover from a dropped
-          // chunk mid-stream.
-          content: finalText || m.content || errBody,
+          // Pick whichever rendition is MORE complete, don't blindly
+          // trust finalText. The canonical full text recovers from a
+          // dropped chunk mid-stream — BUT when finalText arrives
+          // TRUNCATED (shorter than what we already streamed), trusting
+          // it overwrites a correctly-rendered reply (e.g. a finished
+          // markdown table) with a broken fragment. Symptom: the bubble
+          // renders perfectly while streaming, then collapses to raw
+          // markdown shards the instant llm_response lands. So: keep the
+          // streamed content when it's strictly longer than finalText.
+          content: (() => {
+            const streamed = m.content || "";
+            if (!finalText) return streamed || errBody;
+            return finalText.length >= streamed.length ? finalText : streamed;
+          })(),
           // Mid-multi-hop: stay in "thinking" so the bubble keeps
           // its spinner + the button stays on Stop. Final hop:
           // flip to terminal status as before.
