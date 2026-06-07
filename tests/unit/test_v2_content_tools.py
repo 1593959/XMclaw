@@ -292,7 +292,10 @@ async def test_clipboard_round_trip() -> None:
 @pytest.mark.asyncio
 async def test_view_image_emits_canonical_attachments(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Isolate uploads dir so the test doesn't pollute ~/.xmclaw.
+    monkeypatch.setenv("XMC_DATA_DIR", str(tmp_path / "data"))
     img = tmp_path / "tiny.png"
     img.write_bytes(bytes.fromhex(_TINY_PNG_HEX))
     r = await ContentTools().invoke(_call(
@@ -301,14 +304,17 @@ async def test_view_image_emits_canonical_attachments(
     assert r.ok is True
     payload = json.loads(r.content)
     assert payload["vision_attached"] is True
-    # Legacy attach_image preserved for backwards compat.
-    assert r.metadata["attach_image"] == str(img)
+    # The file is staged into the uploads dir so /api/v2/media/<basename>
+    # can serve it; both legacy attach_image and canonical path point there.
+    staged = str(tmp_path / "data" / "v2" / "uploads" / "tiny.png")
+    assert r.metadata["attach_image"] == staged
     # Canonical attachments list.
     atts = r.metadata["attachments"]
     assert len(atts) == 1
     assert atts[0]["kind"] == "image"
-    assert atts[0]["path"] == str(img)
+    assert atts[0]["path"] == staged
     assert atts[0]["mime"] == "image/png"
+    assert Path(staged).is_file()
 
 
 @pytest.mark.asyncio

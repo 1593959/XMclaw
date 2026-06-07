@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -515,14 +516,19 @@ class ContentTools(ToolProvider):
                 w, h = im.size
         except Exception:  # noqa: BLE001
             pass
+        # B-MULTIMODAL-UI: arbitrary desktop paths are not served by
+        # /api/v2/media/<basename> (allowlist = screenshots/audio/uploads).
+        # Stage the file into uploads so the browser can actually render
+        # the inline thumbnail instead of a broken-image placeholder.
+        staged = _stage_for_media_route(p)
         att = MediaAttachment(
-            kind="image", path=str(p), mime=mime, bytes_size=size,
+            kind="image", path=str(staged), mime=mime, bytes_size=size,
             width=w, height=h,
         )
         return ToolResult(
             call_id=call.id, ok=True,
             content=json.dumps({
-                "path": str(p),
+                "path": str(staged),
                 "mime": mime,
                 "bytes": size,
                 "width": w,
@@ -531,7 +537,9 @@ class ContentTools(ToolProvider):
             }, ensure_ascii=False),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
             metadata={
-                "attach_image": str(p),
+                # Legacy field also points at the staged copy so vision
+                # pipeline consumers and the UI converge on one served URL.
+                "attach_image": str(staged),
                 "attachments": [att.to_dict()],
             },
         )
@@ -578,14 +586,17 @@ class ContentTools(ToolProvider):
             cap.release()
         except Exception:  # noqa: BLE001
             pass
+        # B-MULTIMODAL-UI: mirror the view_image copy so external
+        # video files render through /api/v2/media/<basename>.
+        staged = _stage_for_media_route(p)
         att = MediaAttachment(
-            kind="video", path=str(p), mime=mime,
+            kind="video", path=str(staged), mime=mime,
             bytes_size=size, duration_s=duration_s,
         )
         return ToolResult(
             call_id=call.id, ok=True,
             content=json.dumps({
-                "path": str(p),
+                "path": str(staged),
                 "mime": mime,
                 "bytes": size,
                 "duration_s": duration_s,
@@ -769,6 +780,31 @@ class ContentTools(ToolProvider):
 
 
 # ── helpers ───────────────────────────────────────────────────────
+
+
+def _stage_for_media_route(src: Path) -> Path:
+    """Copy an external file into the daemon's media-served uploads dir
+    so the browser can fetch it through ``/api/v2/media/<basename>``.
+
+    ``screenshot`` already saves into ``~/.xmclaw/v2/screenshots``,
+    which the media route serves. ``view_image`` / ``view_video`` can
+    reference arbitrary filesystem paths (desktop, downloads, etc.) that
+    are OUTSIDE the allowlist — without this copy the UI gets a 404 and
+    renders a broken-thumbnail "attachment 1" placeholder.
+    """
+    from xmclaw.utils.paths import data_dir
+
+    uploads = data_dir() / "v2" / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    dest = uploads / src.name
+    # Avoid clobbering an existing upload with the same basename.
+    if dest.exists():
+        stem = src.stem
+        suffix = src.suffix
+        ts = int(time.time())
+        dest = uploads / f"{stem}_{ts}{suffix}"
+    shutil.copy2(str(src), str(dest))
+    return dest
 
 
 def _path_arg(call: ToolCall) -> Path | ToolResult:
