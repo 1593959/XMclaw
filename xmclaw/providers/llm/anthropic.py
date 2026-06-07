@@ -105,6 +105,30 @@ class AnthropicLLM(LLMProvider):
         kwargs: dict[str, Any] = {"api_key": self.api_key}
         if self.base_url:
             kwargs["base_url"] = self.base_url
+        # 2026-06-07 ROOT CAUSE of the chronic "APIConnectionError:
+        # Connection error." that failed turn after turn:
+        # the anthropic SDK reads ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY
+        # from the environment. On this host those vars exist but are
+        # EMPTY (set by another tool). An empty AUTH_TOKEN makes the SDK
+        # emit ``Authorization: Bearer `` (empty value), which httpx
+        # rejects at the protocol layer with
+        # ``LocalProtocolError: Illegal header value b'Bearer '`` — the
+        # SDK wraps that as APIConnectionError, masquerading as a network
+        # failure. A raw httpx POST with just x-api-key succeeds in ~1s,
+        # which is what made this look like "the network is fine but the
+        # daemon can't connect".
+        #
+        # Fix: scrub EMPTY anthropic auth env vars before constructing the
+        # client. The SDK reads these at init; an empty (but present)
+        # ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY makes it emit the
+        # malformed empty-Bearer header. An empty value has no legitimate
+        # use, so deleting it in-process is safe and surgical — we then
+        # authenticate purely via the api_key we pass (x-api-key header).
+        import os as _os
+        for _ev in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
+            if _ev in _os.environ and not _os.environ[_ev].strip():
+                del _os.environ[_ev]
+        kwargs["auth_token"] = None
         self._client = AsyncAnthropic(**kwargs)
         return self._client
 
