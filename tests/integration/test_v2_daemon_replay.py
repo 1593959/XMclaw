@@ -112,6 +112,60 @@ def test_reconnect_replays_prior_events_with_replay_flag() -> None:
         assert EventType.LLM_RESPONSE.value in types
 
 
+def test_reconnect_replays_from_disk_when_memory_log_empty(tmp_path) -> None:
+    """2026-06-07 regression: ``session_logs`` is an in-memory ring buffer
+    that's EMPTY after a daemon restart (and a turn still in flight never
+    flushed to session_history). Reconnecting in that window used to show
+    an empty transcript — the user's in-progress message "vanished" even
+    though it was durably in events.db.
+
+    Fix: when the memory buffer is empty, the WS replay falls back to
+    SqliteEventBus.query() (disk). This test simulates a restart by
+    clearing app.state.session_logs after the first turn, then reconnects
+    and asserts the prior events still replay.
+    """
+    from xmclaw.core.bus import SqliteEventBus
+
+    db = tmp_path / "events.db"
+    bus = SqliteEventBus(str(db))
+    llm = _RecordingLLM(script=[LLMResponse(content="durable reply")])
+    agent = AgentLoop(llm=llm, bus=bus)
+    app = create_app(bus=bus, agent=agent)
+    client = TestClient(app)
+
+    # Turn 1 — events land in both the memory log AND events.db.
+    with client.websocket_connect("/agent/v2/disk-sess") as ws:
+        ws.receive_json()  # session_lifecycle: create
+        ws.send_text(json.dumps({"type": "user", "content": "remember me"}))
+        _drain_until_llm_response(ws)
+
+    # Simulate a daemon restart: the in-memory ring buffer is gone, but
+    # events.db on disk still has everything.
+    app.state.session_logs.clear()
+
+    # Reconnect — replay must now come from disk.
+    with client.websocket_connect("/agent/v2/disk-sess") as ws:
+        start = ws.receive_json()
+        assert start["type"] == "session_replay", (
+            f"expected disk-fallback replay marker, got {start!r}"
+        )
+        assert start["payload"]["phase"] == "start"
+        assert start["payload"]["count"] > 0
+        replayed = []
+        for _ in range(50):
+            frame = ws.receive_json()
+            if frame["type"] == "session_replay" and frame["payload"].get("phase") == "end":
+                break
+            replayed.append(frame)
+        types = {f["type"] for f in replayed}
+        assert EventType.USER_MESSAGE.value in types, (
+            "user message not recovered from disk after restart"
+        )
+        # The actual user text survived.
+        joined = json.dumps(replayed, ensure_ascii=False)
+        assert "remember me" in joined
+
+
 def test_reconnect_no_prior_events_skips_replay_markers() -> None:
     """A brand-new session_id has no log; the WS should NOT send
     session_replay markers -- it just starts live."""

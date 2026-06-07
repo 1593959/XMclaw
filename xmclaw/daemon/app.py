@@ -1984,6 +1984,27 @@ def create_app(
         # so the UI can suppress the thinking spinner and avoid
         # double-counting tokens.
         prior_events = list(session_logs.get(session_id, []))
+        # 2026-06-07: disk fallback. ``session_logs`` is an in-memory
+        # per-session ring buffer — it's EMPTY after a daemon restart, and
+        # a turn still in flight hasn't been flushed to session_history
+        # yet. Pre-fix, reconnecting in that window (or after any restart)
+        # showed an empty/stale transcript — the user's in-progress
+        # message "vanished" even though it was durably in events.db.
+        # When the memory buffer has nothing, replay from the persisted
+        # event log so the chat repopulates from disk.
+        if not prior_events and hasattr(bus, "query"):
+            # Only SqliteEventBus (the production durable bus) exposes
+            # query(); a pure in-memory bus has nothing on disk to recover.
+            try:
+                disk_events = bus.query(
+                    session_id=session_id, limit=_SESSION_LOG_CAP,
+                )
+                prior_events = [
+                    e for e in disk_events
+                    if getattr(e, "session_id", "") == session_id
+                ]
+            except Exception:  # noqa: BLE001 — replay is best-effort
+                prior_events = []
         if prior_events:
             # Bracket the replay with marker frames so the client knows
             # when to enter / leave the "hydration" state.
