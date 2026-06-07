@@ -1317,7 +1317,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             ar_cfg = (cog_cfg.get("auto_recall") or {}) if isinstance(
                 cog_cfg, dict,
             ) else {}
-            ar_enabled = bool(ar_cfg.get("enabled", False))  # default OFF
+            ar_enabled = bool(ar_cfg.get("enabled", True))   # default ON
             mem_svc = getattr(self, "_memory_service", None)
             if ar_enabled and mem_svc is not None and user_message:
                 from xmclaw.daemon.auto_recall import (
@@ -1336,7 +1336,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         ar_cfg.get("min_similarity", 0.65),
                     ),
                     exclude_buckets=excludes,
-                    use_hybrid=bool(ar_cfg.get("use_hybrid", False)),
+                    use_hybrid=bool(ar_cfg.get("use_hybrid", True)),
                     timeout_s=float(
                         ar_cfg.get("timeout_s", _AR_DEFAULT_TIMEOUT),
                     ),
