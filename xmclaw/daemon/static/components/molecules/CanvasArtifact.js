@@ -94,14 +94,14 @@ body{background:#1a1f2a;color:#e0e4ea;font:14px/1.5 system-ui,sans-serif;margin:
   />`;
 }
 
-function SvgView({ content }) {
+export function SvgView({ content }) {
   return html`<div
     class="xmc-canvas-svg"
     dangerouslySetInnerHTML=${{ __html: content }}
   />`;
 }
 
-function ChartView({ content }) {
+export function ChartView({ content }) {
   const canvasRef = useRef(null);
   const [err, setErr] = useState(null);
 

@@ -24,7 +24,7 @@ import { Badge } from "../atoms/badge.js";
 import { CodeBlock } from "./CodeBlock.js";
 import { resolveMediaTokenInHtml, _resolveMediaUrl } from "../../lib/chat_reducer.js";
 import { openLightbox } from "../../lib/lightbox.js";
-import { MermaidView } from "./CanvasArtifact.js";
+import { MermaidView, ChartView, SvgView } from "./CanvasArtifact.js";
 
 
 // 折叠摘要：从工具参数里挑一个最有信息量的值作单行预览（path / command /
@@ -331,8 +331,20 @@ export function MarkdownBody({ content }) {
         // text, lang}. Fallback path emits {type:"text"} with raw HTML
         // — let those through unchanged.
         if (tok.type === "code" && typeof tok.text === "string") {
-          if (tok.lang === "mermaid") {
+          // Inline visualisation: a fenced block whose language is a
+          // visual kind renders AS the visual, right inside the message
+          // — no canvas_create tool call, no separate artifact card.
+          // The agent just writes ```mermaid / ```chart / ```svg in its
+          // normal reply and it shows up rendered.
+          const _lang = (tok.lang || "").toLowerCase().trim();
+          if (_lang === "mermaid") {
             return html`<${MermaidView} key=${tok.idx} content=${tok.text} />`;
+          }
+          if (_lang === "chart") {
+            return html`<${ChartView} key=${tok.idx} content=${tok.text} />`;
+          }
+          if (_lang === "svg") {
+            return html`<${SvgView} key=${tok.idx} content=${tok.text} />`;
           }
           return html`
             <${CodeBlock}
