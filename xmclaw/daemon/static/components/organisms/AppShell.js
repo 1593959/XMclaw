@@ -403,6 +403,7 @@ export function AppShell({ activePath, brand = "XMclaw", subBrand, token, tokenU
         <div class="xmc-h-content-area">
           <${AppHeader}
             activePath=${activePath === "/" ? "/sessions" : activePath}
+            token=${token}
             onToggleComm=${toggleComm}
             onToggleNotif=${toggleNotif}
             onToggleFocus=${toggleFocus}

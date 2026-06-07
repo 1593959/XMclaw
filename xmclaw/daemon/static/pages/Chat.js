@@ -20,6 +20,42 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
     connection.status === "connected" &&
     (chat.composerDraft.trim().length > 0 || stagedImages.length > 0);
   const busy = !!chat.pendingAssistantId;
+
+  // 顶栏模型/agent 切换器联动（2026-06-07）：把本会话当前选中态广播给顶栏，
+  // 并监听顶栏派发的切换事件，转调既有 onChangeModel / onSwitchAgent（会话级、
+  // 热生效）。用 window 事件解耦，避免把会话 state thread 到 shell。
+  const _curProfile = chat.llmProfileId || "default";
+  const _curAgent = session.activeAgentId || "main";
+  const _agentsKey = (session.agents || []).map((a) => a.agent_id).join(",");
+  useEffect(() => {
+    const detail = {
+      llmProfileId: _curProfile,
+      agentId: _curAgent,
+      agents: session.agents || [],
+    };
+    window.__xmcChatState = detail;
+    window.dispatchEvent(new CustomEvent("xmc:chat-state", { detail }));
+    return () => {
+      // 卸载（离开对话页）后清掉，顶栏切换器随之隐藏
+      window.__xmcChatState = null;
+      window.dispatchEvent(new CustomEvent("xmc:chat-state", { detail: null }));
+    };
+  }, [_curProfile, _curAgent, _agentsKey]);
+  useEffect(() => {
+    const onModel = (e) => {
+      if (!onChangeModel) return;
+      const pid = e.detail && e.detail.profileId;
+      // "default" = 清掉本会话覆盖，回退 daemon 默认 profile
+      onChangeModel(!pid || pid === "default" ? "" : pid);
+    };
+    const onAgent = (e) => onSwitchAgent && onSwitchAgent((e.detail && e.detail.agentId) || "main");
+    window.addEventListener("xmc:switch-model", onModel);
+    window.addEventListener("xmc:switch-agent", onAgent);
+    return () => {
+      window.removeEventListener("xmc:switch-model", onModel);
+      window.removeEventListener("xmc:switch-agent", onAgent);
+    };
+  }, [onChangeModel, onSwitchAgent]);
   const sid = session.activeSid || "(new)";
 
   const fmtBytes = (n) => {
