@@ -50,13 +50,14 @@ _DEFAULT_EXCLUDE_BUCKETS: frozenset[str] = frozenset({
     "user_identity",
     "user_preference",
     "values",
+    "misc",  # catch-all bucket — noisy, low-signal for recall
 })
 
 
 # Defaults — modest k so we don't crowd user message; loose
 # similarity floor so a moderately-related fact still surfaces.
-_DEFAULT_K = 8
-_DEFAULT_MIN_SIMILARITY = 0.65
+_DEFAULT_K = 4
+_DEFAULT_MIN_SIMILARITY = 0.72
 _DEFAULT_MIN_USER_MESSAGE_CHARS = 4   # 1-3 char turns ("ok", "?") → skip
 
 # 2026-05-29 emergency cap: ``recall`` happens on the user-turn

@@ -1317,7 +1317,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             ar_cfg = (cog_cfg.get("auto_recall") or {}) if isinstance(
                 cog_cfg, dict,
             ) else {}
-            ar_enabled = bool(ar_cfg.get("enabled", True))   # default ON
+            ar_enabled = bool(ar_cfg.get("enabled", False))  # default OFF
             mem_svc = getattr(self, "_memory_service", None)
             if ar_enabled and mem_svc is not None and user_message:
                 from xmclaw.daemon.auto_recall import (
@@ -1336,7 +1336,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         ar_cfg.get("min_similarity", 0.65),
                     ),
                     exclude_buckets=excludes,
-                    use_hybrid=bool(ar_cfg.get("use_hybrid", True)),
+                    use_hybrid=bool(ar_cfg.get("use_hybrid", False)),
                     timeout_s=float(
                         ar_cfg.get("timeout_s", _AR_DEFAULT_TIMEOUT),
                     ),
@@ -1559,97 +1559,15 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             _prep_mark("regex_extract_scheduled", _t)
 
         # Wave 27 Phase 3.2: Layer 2 — LLM-based semantic extractor.
-        # Runs ASYNC as a background task so it doesn't add latency
-        # to the user turn. Catches everything regex (Phase 3b)
-        # misses: implicit identity ("做电商" → industry), paraphrased
-        # facts ("月底前" → deadline without 截止 keyword), domain
-        # knowledge ("电商" → 业务模型 + 用户画像), soft preferences,
-        # cross-sentence references. The two layers complement: regex
-        # = high precision/fast, LLM = high recall/slow. remember()
-        # is idempotent so overlap doesn't double-count.
-        if memory_v2 is not None and user_message and not _is_trivial_turn:
-            # 2026-05-26 cheap-path: trivial turns (greetings, acks)
-            # never yield extractable identity / preference facts. The
-            # regex layer above already caught any URL / account /
-            # numeric goal. Skipping the LLM extractor saves ~5-10
-            # cents per greeting turn.
-            try:
-                # Wired by app_lifespan into the AgentLoop when
-                # cognition.memory_v2.enabled. None when not wired
-                # (no LLM available, or fact extraction disabled).
-                llm_fact_extractor = getattr(
-                    self, "_memory_v2_llm_extractor", None,
-                )
-                if llm_fact_extractor is not None:
-                    from xmclaw.memory.v2 import llm_extract_and_remember
-                    src_event = user_correlation_id or session_id
-
-                    async def _bg_llm_extract() -> None:
-                        _t0 = time.monotonic()
-                        _status = "ok"
-                        _written_count = 0
-                        try:
-                            written = await llm_extract_and_remember(
-                                user_message,
-                                memory_v2,
-                                llm_fact_extractor,
-                                source_event_id=src_event,
-                            )
-                            _written_count = len(written) if written else 0
-                            # Wave-27 fix-12 / refactor B Phase 1:
-                            # re-render persona MD files affected
-                            # by the new LLM-extracted facts (e.g.
-                            # ``kind=identity, scope=session`` →
-                            # IDENTITY.md, ``kind=preference,
-                            # scope=user`` → USER.md). See same
-                            # block in the regex path above.
-                            if written:
-                                await self._render_persona_after_writes(
-                                    written,
-                                )
-                        except Exception as exc:  # noqa: BLE001
-                            _status = "error"
-                            from xmclaw.utils.log import get_logger
-                            get_logger(__name__).warning(
-                                "memory_v2.llm_extract_failed "
-                                "session=%s err=%s",
-                                session_id, exc,
-                            )
-                        finally:
-                            try:
-                                await publish(
-                                    EventType.MEMORY_EXTRACTION_LATENCY,
-                                    {
-                                        "session_id": session_id,
-                                        "latency_ms": round(
-                                            (time.monotonic() - _t0) * 1000, 1
-                                        ),
-                                        "facts_count": _written_count,
-                                        "status": _status,
-                                        "layer": "llm",
-                                    },
-                                )
-                            except Exception:  # noqa: BLE001
-                                pass
-
-                    bg_task = asyncio.create_task(
-                        _bg_llm_extract(),
-                        name=f"v2-llm-extract-{session_id[:8]}",
-                    )
-                    # Park in the post-sampling background set so the
-                    # task survives without warnings about unreferenced
-                    # task objects.
-                    post_sampling_bg = getattr(
-                        self, "_post_sampling_bg", None,
-                    )
-                    if post_sampling_bg is not None:
-                        post_sampling_bg.add(bg_task)
-                        bg_task.add_done_callback(post_sampling_bg.discard)
-            except Exception as exc:  # noqa: BLE001
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).warning(
-                    "memory_v2.llm_extract_schedule_failed err=%s", exc,
-                )
+        # DISABLED 2026-06-08: the LLM extractor was creating massive
+        # overlap with the post-sampling ExtractLessonsHook. A short
+        # 5-turn conversation produced 60+ facts, most redundant or
+        # low-value. The surface is now:
+        #   Layer 1 (regex, above)   = high-precision identity/preference
+        #   Layer 3 (post-sampling)  = workflow/lessons from full turn
+        # Re-enable via config when a unified single-extractor design
+        # lands (Phase 5).
+        pass
 
         # Phase 6 wiring A: push user message as a percept when the
         # continuous cognitive loop is on. The PerceptionBus reference
