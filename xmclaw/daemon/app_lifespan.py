@@ -1516,12 +1516,21 @@ def make_lifespan(
                 (config or {}).get("mcp_servers"),
             )
             connected = sum(1 for s in statuses.values() if s == "connected")
-            if connected > 0 and agent is not None and hasattr(agent, "_tools"):
+            # 2026-06-07：**总是**把 hub 接进 agent._tools（哪怕当前 0 个 server）。
+            # 否则后续热装 MCP server 时，hub 不在工具栈里，新工具就浮不出来。
+            if agent is not None and hasattr(agent, "_tools"):
                 if agent._tools is None:
                     agent._tools = mcp_hub
                 else:
                     agent._tools = CompositeToolProvider(agent._tools, mcp_hub)
             _app.state.mcp_hub = mcp_hub
+            # 让 skill 安装工具能在检测到 MCP server 时热加载 + 落盘。
+            try:
+                from xmclaw.skills.tool_bridge import set_mcp_install_context
+                set_mcp_install_context(mcp_hub, config_path)
+            except Exception:  # noqa: BLE001
+                pass
+            log.info("mcp.hub_ready connected=%d total=%d", connected, len(statuses))
         except Exception as exc:  # noqa: BLE001 — MCP failure must not block daemon
             log.warning("mcp.hub_init_failed err=%s", exc)
             _app.state.mcp_hub = None

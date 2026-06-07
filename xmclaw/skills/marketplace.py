@@ -52,6 +52,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -288,6 +289,11 @@ class InstallResult:
     version: str
     source: str
     findings: list[dict[str, Any]] = field(default_factory=list)
+    # 2026-06-07：安装产物类型。``skill`` = 传统 XMclaw/Anthropic SKILL.md 技能；
+    # ``mcp`` = 检测到 MCP server，``mcp_config`` 给出可写进 config.mcp_servers
+    # 的条目（{command,args,...}），调用方据此热加载 + 落盘。
+    kind: str = "skill"
+    mcp_config: dict[str, Any] | None = None
 
 
 # ── Path helpers ────────────────────────────────────────────────────────
@@ -648,6 +654,121 @@ def _validate_structure(install_path: Path) -> dict[str, Any]:
     }
 
 
+def detect_mcp_server(install_path: Path) -> dict[str, Any] | None:
+    """识别克隆下来的目录是不是 **MCP server**，是则推断一个自安装启动命令。
+
+    2026-06-07：用户反馈"为什么只认自家 skill 格式"。MCP（模型上下文协议）是
+    事实标准的工具接入方式，XMclaw 本就内置 MCP 桥（``mcp_hub``/``mcp_bridge`` +
+    config ``mcp_servers``），只是安装器没接上。本函数让安装器认出 MCP server。
+
+    启动命令用 **自安装 runner**（首次起进程时装依赖，免单独构建步骤）：
+      * Node（有 package.json）→ ``npx -y <dir>``
+      * Python（有 pyproject.toml / setup.py）→ ``uvx --from <dir> <script>``
+
+    返回 ``{"runtime","command","args","note","package"}`` 或 ``None``（不是 MCP）。
+    纯函数、无副作用，便于单测。命令是**最佳猜测**——note 里写明假设。
+    """
+    p = install_path
+    name_hint = p.name.lower()
+    pkg_json = p / "package.json"
+    pyproject = p / "pyproject.toml"
+    setup_py = p / "setup.py"
+
+    def _readme_mentions_mcp() -> bool:
+        for fn in ("README.md", "README.rst", "readme.md", "README"):
+            f = p / fn
+            if f.is_file():
+                try:
+                    txt = f.read_text(encoding="utf-8", errors="ignore").lower()
+                except OSError:
+                    continue
+                if "model context protocol" in txt or "modelcontextprotocol" in txt \
+                        or "mcp server" in txt or "@modelcontextprotocol" in txt:
+                    return True
+        return False
+
+    # ── Node ──
+    if pkg_json.is_file():
+        try:
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pkg = {}
+        deps = {}
+        for k in ("dependencies", "devDependencies", "peerDependencies"):
+            d = pkg.get(k)
+            if isinstance(d, dict):
+                deps.update(d)
+        keywords = pkg.get("keywords") if isinstance(pkg.get("keywords"), list) else []
+        blob = " ".join([
+            str(pkg.get("name") or ""), str(pkg.get("description") or ""),
+            " ".join(str(x) for x in keywords), " ".join(deps.keys()),
+        ]).lower()
+        is_mcp = (
+            "modelcontextprotocol" in blob
+            or "mcp" in keywords
+            or "mcp" in name_hint
+            or "model-context-protocol" in blob
+            or _readme_mentions_mcp()
+            or any("mcp" in dk.lower() for dk in deps)
+        )
+        if is_mcp:
+            return {
+                "runtime": "node",
+                "command": "npx",
+                "args": ["-y", str(p)],
+                "package": str(pkg.get("name") or p.name),
+                "note": (
+                    "检测为 Node MCP server，启动命令推断为 `npx -y <dir>`"
+                    "（首次起进程时 npx 会装依赖）。若该仓库需要先构建"
+                    "（TypeScript→dist），可能要在该目录先 `npm install && npm run build`，"
+                    "再把命令改成 `node <dist入口>`。需要本机有 Node/npx。"
+                ),
+            }
+
+    # ── Python ──
+    if pyproject.is_file() or setup_py.is_file():
+        text = ""
+        for f in (pyproject, setup_py):
+            if f.is_file():
+                try:
+                    text += f.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    pass
+        low = text.lower()
+        is_mcp = (
+            "modelcontextprotocol" in low
+            or "model-context-protocol" in low
+            or "mcp" in name_hint
+            or re.search(r'(^|[\s"\'=\[])mcp([\s"\'>=~,\]]|$)', low) is not None
+            or _readme_mentions_mcp()
+        )
+        if is_mcp:
+            # 找 [project.scripts] 下的一个脚本名当入口
+            script = None
+            m = re.search(r"\[project\.scripts\](.*?)(\n\[|\Z)", text, re.DOTALL)
+            if m:
+                sm = re.search(r'^\s*["\']?([A-Za-z0-9_.\-]+)["\']?\s*=', m.group(1), re.MULTILINE)
+                if sm:
+                    script = sm.group(1)
+            args = ["--from", str(p)]
+            if script:
+                args.append(script)
+            return {
+                "runtime": "python",
+                "command": "uvx",
+                "args": args,
+                "package": script or p.name,
+                "note": (
+                    "检测为 Python MCP server，启动命令推断为 "
+                    "`uvx --from <dir> " + (script or "<script>") + "`"
+                    "（uvx 会装依赖并运行）。若没识别到入口脚本，请把 args 末尾"
+                    "补上正确的 console_script 名或改成 `python -m <module>`。需要本机有 uv。"
+                ),
+            }
+
+    return None
+
+
 def _scan_for_critical(install_path: Path) -> list[dict[str, Any]]:
     """Run :func:`xmclaw.security.skill_scanner.scan_directory` on the
     install. Any CRITICAL finding raises :class:`InstallScanFailed` so we
@@ -858,10 +979,38 @@ def install_from_source(
     try:
         _validate_structure(target)
         findings = _scan_for_critical(target)
-    except MarketplaceError:
+    except MarketplaceError as skill_err:
+        # 不是传统 skill —— 先看看是不是 MCP server（2026-06-07）。是则不拒绝，
+        # 返回一个可热加载 + 落盘的 mcp_config，让调用方接进 mcp_hub。
+        mcp = detect_mcp_server(target)
+        if mcp is not None:
+            findings = _scan_for_critical(target)  # 安全扫描照跑
+            mcp_config = {
+                "command": mcp["command"],
+                "args": mcp["args"],
+                "disabled": False,
+                "_runtime": mcp["runtime"],
+                "_source": source,
+                "_note": mcp["note"],
+            }
+            return InstallResult(
+                skill_id=final_id,
+                install_path=target,
+                version="manual",
+                source=source,
+                findings=findings,
+                kind="mcp",
+                mcp_config=mcp_config,
+            )
+        # 既不是 skill 也不是 MCP → 删掉克隆，给可操作的报错
         if target.exists():
             _safe_rmtree(target)
-        raise
+        raise InstallValidationError(
+            f"{skill_err}. 这个仓库既不是 XMclaw/Anthropic skill"
+            "（无 SKILL.md / manifest.json / skill.py），也不是可识别的 MCP server"
+            "（无带 MCP 标记的 package.json / pyproject.toml）。它可能是个通用项目，"
+            "无法直接作为 skill 或 MCP 集成。"
+        ) from skill_err
 
     records = _read_installed_registry()
     records[final_id] = InstalledSkill(

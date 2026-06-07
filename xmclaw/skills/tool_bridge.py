@@ -129,6 +129,63 @@ def _to_tool_name(skill_id: str) -> str:
     return f"skill_{safe}"[:64]
 
 
+# ── MCP 安装上下文（2026-06-07）────────────────────────────────────────
+# 由 app_lifespan 在建好 MCPHub 后调用 set_mcp_install_context(hub, config_path)。
+# install 工具检测到 MCP server 时，用它把条目写进 config.mcp_servers 并热加载，
+# 实现"装 MCP server 免重启"（用户要的全自动）。
+_MCP_INSTALL_CTX: dict[str, Any] = {"hub": None, "config_path": None}
+
+
+def set_mcp_install_context(hub: Any, config_path: Any) -> None:
+    _MCP_INSTALL_CTX["hub"] = hub
+    _MCP_INSTALL_CTX["config_path"] = config_path
+
+
+async def _register_and_hotload_mcp(server_id: str, mcp_config: dict) -> dict:
+    """把 MCP server 落盘进 config.mcp_servers 并热加载到运行中的 hub。
+
+    返回 ``{"persisted","hot_loaded","status","restart_required","error?"}``。
+    任何一步失败都不抛——把结果如实回给 agent/用户。
+    """
+    import json as _json
+    out: dict[str, Any] = {"persisted": False, "hot_loaded": False,
+                           "status": None, "restart_required": True}
+    hub = _MCP_INSTALL_CTX.get("hub")
+    cfg_path = _MCP_INSTALL_CTX.get("config_path")
+
+    # 1) 落盘
+    servers: dict[str, Any] = {}
+    if cfg_path:
+        try:
+            from pathlib import Path as _Path
+            p = _Path(cfg_path)
+            cfg = _json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+            servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+            servers[server_id] = mcp_config
+            cfg["mcp_servers"] = servers
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            tmp.write_text(_json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(p)
+            out["persisted"] = True
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = f"persist failed: {exc}"
+    else:
+        servers = {server_id: mcp_config}
+
+    # 2) 热加载（hub 在则免重启）
+    if hub is not None and hasattr(hub, "reload_from_config"):
+        try:
+            statuses = await hub.reload_from_config(servers)
+            out["status"] = statuses.get(server_id) if isinstance(statuses, dict) else None
+            out["hot_loaded"] = out["status"] == "connected"
+            out["restart_required"] = not out["hot_loaded"]
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = f"hot-load failed: {exc}"
+    return out
+
+
 class SkillToolProvider:
     """Bridges :class:`SkillRegistry` HEAD into a :class:`ToolProvider`.
 
@@ -1449,9 +1506,15 @@ class SkillToolProvider:
                 "skill.py needed. Skill is picked up by the daemon's "
                 "UserSkillsLoader on the next boot (or immediately "
                 "via skills_watcher). Returns ``{skill_id, install_"
-                "path, findings}``; raises if the dir has none of "
-                "manifest.json / SKILL.md / skill.py, or if the "
-                "security scanner flags a CRITICAL finding. "
+                "path, findings}``. "
+                "**MCP servers are also supported** (2026-06-07): if the "
+                "repo is an MCP server (package.json/pyproject with MCP "
+                "markers, e.g. ``*-mcp-server``) rather than a skill, it is "
+                "auto-registered into ``config.mcp_servers`` and hot-loaded "
+                "into the running MCP hub — its tools appear next turn with "
+                "no restart. Return then has ``kind:'mcp'`` + ``register`` "
+                "status. Only a repo that is NEITHER a skill NOR an MCP "
+                "server is rejected (with an actionable error). "
                 "Idempotent: re-installing the same id wipes the "
                 "previous copy first (upgrade)."
             ),
@@ -1546,11 +1609,52 @@ class SkillToolProvider:
                 f"install crashed ({type(exc).__name__}): {exc}",
                 t0,
             )
+
+        # ── MCP server：登记进 config.mcp_servers + 热加载（2026-06-07）──
+        if getattr(result, "kind", "skill") == "mcp" and result.mcp_config:
+            reg = await _register_and_hotload_mcp(result.skill_id, result.mcp_config)
+            if reg.get("hot_loaded"):
+                note = (
+                    f"识别为 MCP server，已登记并**热加载**（status=connected），其工具"
+                    f"下一轮即可用，无需重启。{result.mcp_config.get('_note','')}"
+                )
+            elif reg.get("persisted"):
+                note = (
+                    f"识别为 MCP server，已写入 config.mcp_servers['{result.skill_id}']，"
+                    f"但热加载未连上（status={reg.get('status')}）。多半是启动命令需微调或"
+                    f"缺 Node/uv 运行时。{result.mcp_config.get('_note','')} "
+                    f"改好命令后重启 daemon 即生效。"
+                    + (f" [{reg['error']}]" if reg.get("error") else "")
+                )
+            else:
+                note = (
+                    f"识别为 MCP server 但自动登记失败（{reg.get('error','no config context')}）。"
+                    f"请手动把下面加进 daemon/config.json 的 mcp_servers['{result.skill_id}']："
+                    f"{result.mcp_config}"
+                )
+            return ToolResult(
+                call_id=call.id,
+                ok=True,
+                content={
+                    "skill_id": result.skill_id,
+                    "kind": "mcp",
+                    "install_path": str(result.install_path),
+                    "mcp_config": result.mcp_config,
+                    "register": reg,
+                    "findings": result.findings,
+                    "note": note,
+                },
+                error=None,
+                latency_ms=self._elapsed_ms(t0),
+                side_effects=(str(result.install_path),),
+            )
+
         return ToolResult(
             call_id=call.id,
             ok=True,
             content={
                 "skill_id": result.skill_id,
+                "kind": "skill",
                 "install_path": str(result.install_path),
                 "version": result.version,
                 "source": result.source,
