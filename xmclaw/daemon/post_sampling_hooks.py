@@ -190,6 +190,26 @@ async def _safe_run(hook: PostSamplingHook, ctx: HookContext) -> None:
         )
 
 
+def _batch_dedup(facts: list[str]) -> list[str]:
+    """Drop facts whose normalized text is a substring (or equal) of
+    an already-kept fact.  Catches "用户喜欢中文" vs "用户喜欢中文回答"
+    within the same write batch without needing embeddings."""
+    import re
+
+    kept: list[str] = []
+    for f in facts:
+        norm = re.sub(r"[^\w\u4e00-\u9fff]+", "", f.lower())
+        dup = False
+        for k in kept:
+            k_norm = re.sub(r"[^\w\u4e00-\u9fff]+", "", k.lower())
+            if norm == k_norm or norm in k_norm or k_norm in norm:
+                dup = True
+                break
+        if not dup:
+            kept.append(f)
+    return kept
+
+
 async def _write_facts_to_memory(
     ctx: HookContext,
     facts: list[str],
@@ -243,7 +263,9 @@ async def _write_facts_to_memory(
         cleaned_facts.append(_f)
     if not cleaned_facts:
         return
-    facts = cleaned_facts
+    facts = _batch_dedup(cleaned_facts)
+    if not facts:
+        return
 
     # Wave-27 follow-up: v2 facts write runs FIRST + independently so
     # the legacy memory.db None-path doesn't short-circuit it. Lessons
@@ -635,9 +657,13 @@ _LESSONS_PROMPT = (
     "Skip:\n"
     "  - Pure status restatements ('I just did X', 'opening file Y').\n"
     "  - Information already in the system prompt.\n"
-    "  - One-off transient context that won't matter next turn.\n\n"
+    "  - One-off transient context that won't matter next turn.\n"
+    "  - Facts that are substantively identical to ones already "
+    "extracted in previous turns (e.g. repeating the same preference, "
+    "rule, or workflow observation). Only extract genuinely NEW "
+    "insights or materially expanded versions.\n\n"
     "It's BETTER to extract a small/imperfect bullet than to skip — "
-    "Auto-Dream consolidates duplicates, and the cap of 3 per bucket "
+    "Auto-Dream consolidates duplicates, and the cap of 2 per bucket "
     "stops verbose LLMs from spamming. Output strict JSON: "
     "{\"workflow\": [\"...\"], \"tool_quirks\": [\"...\"], "
     "\"failure_modes\": [\"...\"], \"values\": [\"...\"], "
@@ -722,7 +748,7 @@ class ExtractLessonsHook(PostSamplingHook):
     id = "extract_lessons"
 
     #: Per-turn cap so a verbose LLM can't dump 20 vague "facts".
-    MAX_PER_BUCKET: int = 3
+    MAX_PER_BUCKET: int = 2
 
     def is_enabled(self, ctx: HookContext) -> bool:
         if ctx.persona_dir is None:
@@ -788,7 +814,7 @@ class ExtractLessonsHook(PostSamplingHook):
                 if s:
                     cleaned.append(s)
             if cleaned:
-                buckets[key] = cleaned
+                buckets[key] = _batch_dedup(cleaned)
 
         if not buckets:
             return

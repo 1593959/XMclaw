@@ -156,7 +156,7 @@ async def _scan_all(
 #: stamped CONTRADICTS on the top-3 same-kind neighbours of every
 #: write, which is why the UI read "与 N 条事实矛盾" on basically
 #: everything. Fixed in the Wave-27 follow-up.
-NEAR_DUPLICATE_DISTANCE_THRESHOLD = 0.15
+NEAR_DUPLICATE_DISTANCE_THRESHOLD = 0.20
 SAME_TOPIC_DISTANCE_THRESHOLD = 0.30
 CONTRADICTS_DISTANCE_THRESHOLD = 0.25
 
@@ -1770,7 +1770,7 @@ class MemoryService:
             losers = group_sorted[1:]
             merge_preview.append({
                 "survivor": survivor.fact.text[:120],
-                "merged": [l.fact.text[:120] for l in losers],
+                "merged": [lo.fact.text[:120] for lo in losers],
             })
             if dry_run:
                 merged_count += len(losers)
@@ -1864,9 +1864,6 @@ class MemoryService:
                 "merged": 0,
                 "dry_run": dry_run,
             }
-
-        # id → hit for fast lookup when applying merges.
-        by_id = {h.fact.id: h for h in hits}
 
         # Process in batches so the prompt stays bounded. Each batch
         # is independent — we don't try to merge across batches in one

@@ -263,7 +263,7 @@ async def test_lessons_per_bucket_cap_enforced(tmp_path: Path) -> None:
 
     text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     kept = sum(1 for i in range(10) if f"lesson #{i}" in text)
-    assert kept == hook.MAX_PER_BUCKET == 3
+    assert kept == hook.MAX_PER_BUCKET == 2
 
 
 @pytest.mark.asyncio
