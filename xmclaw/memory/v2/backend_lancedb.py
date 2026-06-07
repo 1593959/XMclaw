@@ -368,6 +368,12 @@ class LanceDBVectorBackend:
             ("bucket", "''"),  # Wave-27 fix-LAT15 / refactor B Phase 1
             ("valid_at", "0.0"),    # Phase 8 ⑩ — bi-temporal validity
             ("invalid_at", "0.0"),  # Phase 8 ⑩ — bi-temporal validity
+            # 2026-06-07: the Wave-1 provenance field (2026-06-06) shipped
+            # WITHOUT registering its migration here, so every table
+            # created before then failed every fact write with
+            # "Field 'provenance' not found in target schema" — daemon.log
+            # showed key_info_extractor.remember_failed on every turn.
+            ("provenance", "'unknown'"),
         ]
         for col, default in _MIGRATIONS:
             if col in on_disk:
