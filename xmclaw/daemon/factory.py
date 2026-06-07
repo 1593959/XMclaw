@@ -842,7 +842,13 @@ def build_tools_from_config(
     tools_section = cfg.get("tools")
     if tools_section is None:
         # Default posture: full access, all tool families on.
-        return BuiltinTools(session_store=session_store)
+        # Must still wire persona_dir_provider so memory_get /
+        # remember / recall_user_preferences work when the user has
+        # not created a tools section.
+        return BuiltinTools(
+            session_store=session_store,
+            persona_dir_provider=_persona_dir_provider(cfg),
+        )
     if not isinstance(tools_section, dict):
         raise ConfigError(
             f"'tools' must be an object, got {type(tools_section).__name__}"
