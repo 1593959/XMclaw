@@ -43,7 +43,7 @@ import time
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
-from xmclaw.skills.base import SkillInput
+from xmclaw.skills.base import SkillContext, SkillInput
 from xmclaw.skills.registry import SkillRegistry, UnknownSkillError
 
 _VALID_NAME = re.compile(r"[^a-zA-Z0-9_-]")
@@ -90,6 +90,8 @@ META_ROLLBACK_TOOL_NAME = "skill_rollback"
 # can write code on disk + see it loaded", not "the agent gets to
 # self-promote whatever it just authored."
 META_PROPOSE_TOOL_NAME = "skill_propose"
+# Wave-33: skill composition — sequential workflow of multiple skills.
+META_COMPOSE_TOOL_NAME = "skill_compose"
 
 # Disclosure modes:
 #   ``inline``  — legacy. Every registered skill shows up as its own
@@ -283,6 +285,8 @@ class SkillToolProvider:
         # ``~/.xmclaw/v2/skills_user/<name>/``. Marker file keeps
         # trust at UNTRUSTED until manual promotion.
         specs.append(self._propose_spec())
+        # Wave-33: skill composition — sequential workflow execution.
+        specs.append(self._compose_spec())
 
         if self._effective_disclosure_mode() == DISCLOSURE_MODE_UNIFIED:
             # Skip per-skill tools entirely. The LLM discovers + invokes
@@ -347,6 +351,8 @@ class SkillToolProvider:
             return self._invoke_rollback(call, t0)
         if call.name == META_PROPOSE_TOOL_NAME:
             return self._invoke_propose(call, t0)
+        if call.name == META_COMPOSE_TOOL_NAME:
+            return await self._invoke_compose(call, t0)
 
         # Epic #27 G-04: skill_run reads ``skill_id`` from args and
         # falls through to the shared invocation path below. This
@@ -402,8 +408,18 @@ class SkillToolProvider:
                 call.id, f"skill {skill_id!r} not at HEAD: {exc}", t0
             )
 
+        # Wave-33: inject SkillContext so skills can introspect the
+        # registry (read-only).  Backward-compatible: only pass ``ctx``
+        # when the concrete subclass accepts it.
+        import inspect as _inspect
+        _ctx = SkillContext(_registry=self._registry)
+        _sig = _inspect.signature(skill.run)
+        _has_ctx = "ctx" in _sig.parameters
         try:
-            out = await skill.run(SkillInput(args=call_args))
+            if _has_ctx:
+                out = await skill.run(SkillInput(args=call_args), ctx=_ctx)
+            else:
+                out = await skill.run(SkillInput(args=call_args))
         except Exception as exc:  # noqa: BLE001
             latency_ms = self._elapsed_ms(t0)
             self._registry.record_usage(skill_id, success=False, latency_ms=latency_ms)
@@ -1409,6 +1425,144 @@ class SkillToolProvider:
             },
             error=None, latency_ms=self._elapsed_ms(t0),
             side_effects=(str(skill_dir),),
+        )
+
+    # ── Wave-33: skill composition (sequential workflow) ─────────
+
+    def _compose_spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=META_COMPOSE_TOOL_NAME,
+            description=(
+                "Compose multiple skills into a sequential workflow. "
+                "Each step runs the specified skill with its args; the "
+                "previous step's result is injected as ``_prev_result`` "
+                "so later steps can adapt. Steps execute serially — "
+                "if any step fails, composition stops and the error is "
+                "returned alongside the partial trace."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["workflow"],
+                "properties": {
+                    "workflow": {
+                        "type": "array",
+                        "description": (
+                            "Ordered list of skill invocations. Each item "
+                            "must have 'skill_id' and optionally 'args'."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["skill_id"],
+                            "properties": {
+                                "skill_id": {
+                                    "type": "string",
+                                    "description": "Skill ID to invoke",
+                                },
+                                "args": {
+                                    "type": "object",
+                                    "description": "Arguments passed to the skill",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        )
+
+    async def _invoke_compose(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        args = dict(call.args or {})
+        workflow = args.get("workflow")
+        if not isinstance(workflow, list) or not workflow:
+            return self._error_result(
+                call.id,
+                "skill_compose requires a non-empty 'workflow' array",
+                t0,
+            )
+
+        trace: list[dict[str, Any]] = []
+        _ctx = SkillContext(_registry=self._registry)
+        import inspect as _inspect
+
+        for idx, step in enumerate(workflow):
+            if not isinstance(step, dict):
+                return self._error_result(
+                    call.id,
+                    f"workflow[{idx}] must be an object",
+                    t0,
+                )
+            skill_id = step.get("skill_id")
+            if not isinstance(skill_id, str) or not skill_id.strip():
+                return self._error_result(
+                    call.id,
+                    f"workflow[{idx}] missing 'skill_id'",
+                    t0,
+                )
+            step_args = dict(step.get("args") or {})
+            # Inject previous result so steps can pipe outputs.
+            if trace:
+                step_args["_prev_result"] = trace[-1].get("result")
+
+            try:
+                skill = self._registry.get(skill_id)
+            except UnknownSkillError as exc:
+                trace.append({
+                    "step": idx, "skill_id": skill_id,
+                    "ok": False, "error": str(exc),
+                })
+                return ToolResult(
+                    call_id=call.id, ok=False,
+                    content={"trace": trace, "stopped_at": idx},
+                    error=f"skill_compose: step {idx}: {exc}",
+                    latency_ms=self._elapsed_ms(t0),
+                )
+
+            _sig = _inspect.signature(skill.run)
+            _has_ctx = "ctx" in _sig.parameters
+            try:
+                if _has_ctx:
+                    out = await skill.run(
+                        SkillInput(args=step_args), ctx=_ctx,
+                    )
+                else:
+                    out = await skill.run(SkillInput(args=step_args))
+            except Exception as exc:  # noqa: BLE001
+                trace.append({
+                    "step": idx, "skill_id": skill_id,
+                    "ok": False, "error": f"{type(exc).__name__}: {exc}",
+                })
+                return ToolResult(
+                    call_id=call.id, ok=False,
+                    content={"trace": trace, "stopped_at": idx},
+                    error=(
+                        f"skill_compose: step {idx} "
+                        f"({skill_id}): {type(exc).__name__}: {exc}"
+                    ),
+                    latency_ms=self._elapsed_ms(t0),
+                )
+
+            trace.append({
+                "step": idx, "skill_id": skill_id,
+                "ok": bool(out.ok), "result": out.result,
+            })
+            if not out.ok:
+                return ToolResult(
+                    call_id=call.id, ok=False,
+                    content={"trace": trace, "stopped_at": idx},
+                    error=(
+                        f"skill_compose: step {idx} "
+                        f"({skill_id}) returned ok=False"
+                    ),
+                    latency_ms=self._elapsed_ms(t0),
+                )
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={"trace": trace, "steps": len(trace)},
+            error=None, latency_ms=self._elapsed_ms(t0),
         )
 
     # ── Epic #27 G-04: progressive-disclosure run dispatcher ───────

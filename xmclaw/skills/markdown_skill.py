@@ -25,8 +25,10 @@ controller decision.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from xmclaw.skills.base import Skill, SkillInput, SkillOutput
 
@@ -35,6 +37,39 @@ from xmclaw.skills.base import Skill, SkillInput, SkillOutput
 # block carrying ``description`` / ``name`` / ``signals_match``; the
 # agent doesn't need it inline (and it's noisy in tool output).
 _FRONTMATTER_RE = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+
+# Wave-33: structured procedure — JSON block inside markdown body.
+# If the body contains a fenced JSON block with a "steps" array,
+# the skill returns a machine-readable workflow instead of raw text.
+_STRUCTURED_BLOCK_RE = re.compile(
+    r"```json\s*(\{.*?\})\s*```", re.DOTALL,
+)
+
+
+def _extract_structured_steps(body: str) -> list[dict[str, Any]] | None:
+    """Extract a structured steps array from a markdown body.
+
+    Looks for the first fenced JSON block containing
+    ``{"steps": [...]}``.  Each step must have at least ``action``
+    (the tool/skill name) and may carry ``args`` and ``note``.
+
+    Returns None when no structured block is found or parsing fails.
+    """
+    for m in _STRUCTURED_BLOCK_RE.finditer(body or ""):
+        try:
+            data = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            continue
+        steps = data.get("steps")
+        if isinstance(steps, list) and steps:
+            # Validate minimal step shape.
+            valid = []
+            for s in steps:
+                if isinstance(s, dict) and "action" in s:
+                    valid.append(s)
+            if valid:
+                return valid
+    return None
 
 
 @dataclass
@@ -110,6 +145,26 @@ class MarkdownProcedureSkill(Skill):
                 f"_All relative paths (scripts/, assets/, references/) "
                 f"below resolve against this directory._\n\n"
                 f"{body}"
+            )
+
+        # Wave-33: structured procedure support.
+        steps = _extract_structured_steps(body)
+        if steps is not None:
+            return SkillOutput(
+                ok=True,
+                result={
+                    "kind": "structured_procedure",
+                    "skill_id": self.id,
+                    "steps": steps,
+                    "instructions": instructions,
+                    "guidance": (
+                        f"Skill {self.id!r} loaded successfully. "
+                        "This skill exposes a structured workflow. "
+                        "Use 'skill_compose' or execute the steps "
+                        "manually using the listed actions."
+                    ),
+                },
+                side_effects=[],
             )
 
         return SkillOutput(
