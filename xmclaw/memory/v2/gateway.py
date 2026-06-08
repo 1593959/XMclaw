@@ -128,6 +128,12 @@ class CognitiveMemoryGateway:
             "ingest_actions": {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NOOP": 0},
             "think_cache_hits": 0,
             "think_cache_misses": 0,
+            "think_latency_ms": [],  # Wave-29: rolling latency histogram
+            "think_quality_fallbacks": 0,  # Wave-29: _synthesis_quality catches
+            "think_quality_fallback_verbatim": 0,
+            "think_quality_fallback_too_short": 0,
+            "think_quality_fallback_too_long": 0,
+            "think_quality_fallback_empty": 0,
             "recall_total": 0,
             "recall_gate_skipped": 0,
             "recall_classify_buckets": {},
@@ -301,8 +307,11 @@ class CognitiveMemoryGateway:
             if similarity < min_similarity:
                 continue
             bucket = (getattr(f, "bucket", "") or "").strip()
-            # Skip structural-axis buckets (already in system prompt).
-            if bucket in {"agent_identity", "user_identity", "user_preference", "values", "misc"}:
+            # Skip structural-axis buckets that are static (already in
+            # system prompt).  Wave-28: keep user_preference/user_identity
+            # in recall — they are dynamic (user tells us new prefs / names
+            # mid-session) and the persona file may lag behind.
+            if bucket in {"agent_identity", "misc"}:
                 continue
             results.append(RecallResult(
                 fid=(getattr(f, "id", "") or "")[:12],
@@ -323,6 +332,32 @@ class CognitiveMemoryGateway:
 
     # ── Internal: THINK (Phase 2) ────────────────────────────────
 
+    # ── Tier-1 signal detection (Wave-28 fix: deterministic fast-path) ─
+    _TIER1_KEYWORDS: tuple[str, ...] = (
+        # Identity — high-certainty, hard to mis-trigger
+        "名叫", "名字是", "称呼我", "叫我", "我是", "我的名字",
+        # Environment / network config — must be SPECIFIC phrases
+        # Single "代理" or "端口" catches too much; require compound forms.
+        "代理端口", "代理地址", "代理设置", "网络代理",
+        "http_proxy", "https_proxy", "all_proxy",
+        # Explicit "remember this" — unambiguous
+        "记住", "记下来", "别忘了", "记着",
+        # Explicit preference confirmations — multi-word for precision
+        "偏好使用", "习惯使用", "以后都用", "默认使用", "优先使用",
+        "不喜欢", "不想用", "不愿用",
+    )
+
+    def _is_tier1_signal(self, observation: Observation) -> bool:
+        """Detect high-priority signals that bypass LLM deliberation.
+
+        Tier-1 facts (identity, environment config, confirmed preferences,
+        long-term goals) are too important to risk LLM inconsistency.
+        When detected, we force worth_remembering=True and skip the
+        expensive LLM call entirely.
+        """
+        text = (observation.content or "").lower()
+        return any(kw in text for kw in self._TIER1_KEYWORDS)
+
     async def _think(
         self,
         observation: Observation,
@@ -338,9 +373,18 @@ class CognitiveMemoryGateway:
              observation is worth remembering, already known, or
              contradictory.
 
-        When the LLM is unavailable or the call fails, degrades gracefully
-        to the Phase-1 passthrough behaviour.
+        Wave-28 fix: Tier-1 signals bypass LLM deliberation for
+        deterministic, consistent retention of critical facts.
         """
+        # ── Wave-28: Tier-1 fast-path ───────────────────────────────
+        if self._is_tier1_signal(observation):
+            _log.info(
+                "gateway.think.tier1_fast_path source=%s text=%r",
+                observation.source,
+                observation.content[:80],
+            )
+            return self._tier1_digest(observation)
+
         if not self._think_enabled or self._llm is None:
             return self._passthrough_digest(observation)
 
@@ -368,9 +412,26 @@ class CognitiveMemoryGateway:
                 tools=None,
             )
             _think_latency_ms = (time.perf_counter() - t0) * 1000.0
+            # Wave-29: rolling latency histogram (keep last 100).
+            self._metrics["think_latency_ms"].append(_think_latency_ms)
+            if len(self._metrics["think_latency_ms"]) > 100:
+                self._metrics["think_latency_ms"].pop(0)
+
             digest = _parse_think_response(
                 resp.content or "", observation, neighbours,
             )
+            # Wave-29: count quality fallbacks (with breakdown).
+            if "_fallback" in digest.reason:
+                self._metrics["think_quality_fallbacks"] += 1
+                if "empty" in digest.reason:
+                    self._metrics["think_quality_fallback_empty"] += 1
+                elif "verbatim" in digest.reason:
+                    self._metrics["think_quality_fallback_verbatim"] += 1
+                elif "too_short" in digest.reason:
+                    self._metrics["think_quality_fallback_too_short"] += 1
+                elif "too_long" in digest.reason:
+                    self._metrics["think_quality_fallback_too_long"] += 1
+
             _log.info(
                 "gateway.think result=%s text=%r reason=%s latency_ms=%.0f",
                 "keep" if digest.worth_remembering else "drop",
@@ -385,13 +446,62 @@ class CognitiveMemoryGateway:
             _log.warning("gateway.think.llm_failed err=%s", exc)
             return self._passthrough_digest(observation)
 
+    def _tier1_digest(self, observation: Observation) -> CognitiveDigest:
+        """Wave-28: Tier-1 fast-path digest — always remember, high confidence.
+
+        Tier-1 bypasses the LLM for speed, but we still do basic
+        synthesis so we don't store verbatim user messages.  Strip
+        leading fluff ("用户说", "网址:", "注意") and collapse
+        redundant whitespace.  The result should be a compact
+        statement, not a copy-paste.
+        """
+        import re as _re
+
+        md = observation.metadata
+        text = (observation.content or "").strip()
+
+        # 1. Strip common leading fluff that makes the fact look like a
+        #    raw transcript rather than a synthesized statement.
+        #    The colon is REQUIRED so we don't strip "用户做电商" → "做电商".
+        fluff_patterns = [
+            r"^用户[:：]\s*",
+            r"^网址[:：]\s*",
+            r"^注意[:：]\s*",
+            r"^提示[:：]\s*",
+            r"^提醒[:：]\s*",
+            r"^.*?(?:说|提到|表示)[:：]\s*",
+        ]
+        synthesized = text
+        for pat in fluff_patterns:
+            synthesized = _re.sub(pat, "", synthesized, count=1, flags=_re.IGNORECASE)
+
+        # 2. Collapse repeated whitespace.
+        synthesized = _re.sub(r"\s+", " ", synthesized).strip()
+
+        # 3. If after stripping we're left with an empty string,
+        #    fall back to the original (shouldn't happen for Tier-1).
+        if not synthesized:
+            synthesized = text
+
+        return CognitiveDigest(
+            worth_remembering=True,
+            action="ADD",
+            synthesized_text=synthesized,
+            target_fact_id=None,
+            kind=md.get("kind_hint", "fact"),
+            scope=md.get("scope_hint", "user"),
+            bucket=md.get("bucket_hint", ""),
+            confidence=0.92,  # Tier-1: high confidence
+            reason="tier1_fast_path",
+        )
+
     def _passthrough_digest(self, observation: Observation) -> CognitiveDigest:
         """Phase-1 fallback: map observation directly to an ADD digest."""
         md = observation.metadata
         return CognitiveDigest(
             worth_remembering=True,
             action="ADD",
-            synthesized_text=observation.content.strip(),
+            synthesized_text=_clean_original_text(observation.content),
             target_fact_id=None,
             kind=md.get("kind_hint", "lesson"),
             scope=md.get("scope_hint", "project"),
@@ -440,6 +550,12 @@ class CognitiveMemoryGateway:
         bucket = digest.bucket
         confidence = digest.confidence
 
+        # Determine provenance based on how we got here.
+        provenance = (
+            "gateway_tier1" if digest.reason == "tier1_fast_path"
+            else "gateway_think"
+        )
+
         # Phase 1: when decide is disabled, route through
         # remember_with_decision if the service has it AND the user
         # configured it.  This wires up the existing Mem0 decision
@@ -483,17 +599,19 @@ class CognitiveMemoryGateway:
             confidence=confidence,
             source_event_id=observation.turn_id,
             bucket=bucket,
+            provenance=provenance,
         )
 
     async def _fallback_remember(self, observation: Observation) -> Fact | None:
         """Emergency fallback when the main pipeline throws."""
         return await self._svc.remember(
-            observation.content,
+            _clean_original_text(observation.content),
             kind=observation.metadata.get("kind_hint", "lesson"),
             scope=observation.metadata.get("scope_hint", "project"),
             confidence=0.7,
             source_event_id=observation.turn_id,
             bucket=observation.metadata.get("bucket_hint", ""),
+            provenance="gateway_fallback",
         )
 
     # ── Properties (read-only) ───────────────────────────────────
@@ -517,20 +635,47 @@ class CognitiveMemoryGateway:
 
 
 _THINK_PROMPT_TEMPLATE = """\
-你是记忆系统的「认知层」。你的任务是从用户的对话片段中提取有价值的长期记忆，但必须做真正的「总结归纳」，而不是原文摘抄。
+你是记忆系统的「认知层」。你的任务是从用户对话中提取有价值的长期记忆。
 
-【规则】
-1. **必须总结归纳**：禁止原文复述。把用户的原话提炼成一句简洁、规范的事实陈述。例如：
-   - 用户说「我那个网店是 pw310 的」→ 归纳后：「用户运营的网店域名为 pw310」
-   - 用户说「以后都用中文跟我聊」→ 归纳后：「用户偏好使用中文进行交流」
-2. **区分稳定事实 vs 临时命令**：
-   - ✅ 稳定事实：跨会话仍成立的信息（偏好、身份、长期目标、已做决定、技术栈）
-   - ❌ 临时命令：只针对当前回答的动作请求（"帮我改配置"、"删除X"、"运行Y"）
-3. **判断与已有记忆的关系**：
-   - 如果已有记忆已完全覆盖这条信息 → worth_remembering = false
-   - 如果新信息补充了已有记忆 → worth_remembering = true
-   - 如果新信息与已有记忆矛盾 → worth_remembering = true（系统会自动处理矛盾）
-4. **输出要求**：只返回纯 JSON，不要 markdown 代码块，不要任何解释文字。
+【核心原则 — 按优先级执行】
+1. **宁可多记，不可漏记**。系统有自动去重（Auto-Dream），重复的记忆会被合并，但漏掉的记忆永远找不回来。
+2. **不确定时 → 记住**。如果你犹豫"这条信息有没有价值"，答案永远是"有"。
+3. **必须总结归纳**：禁止原文复述。提炼成简洁规范的事实陈述。
+
+【信号检查表 — 逐条核对】
+看到以下信号时，**必须记住**（worth_remembering = true）：
+□ 身份信息：用户的名字、称呼、AI该怎么称呼用户
+□ 环境配置：代理端口、网络设置、工具路径、系统配置、API位置
+□ 已确认的偏好：语言、代码风格、沟通方式、输出格式、默认工具选择
+□ 长期目标/项目：用户在开发什么、搭建什么、计划做什么
+□ 工作流程：用户喜欢的操作顺序、最佳实践、established patterns
+□ 工具经验：工具的隐藏参数、意外行为、输出格式、坑点
+□ 失败模式：错误模式、修复策略、retry策略、什么做法不行
+□ 规则/启发式：用户明确说的"如果X就Y"、应该遵守的约束
+
+**绝不记住**（worth_remembering = false）：
+□ 临时命令（"帮我改这个文件"、"运行一下Y"）
+□ 正在进行中的一次性操作步骤，且不是长期项目的一部分（"正在安装X"、"在调试Z"）
+□ 纯状态重述（"我刚做了X"、"打开文件Y"）
+□ 已经在系统提示中的信息
+□ 一次性查询结果（今天的天气、当前时间）
+□ 和已有记忆完全重复的信息
+
+【归纳示例 — 必须遵循的格式】
+GOOD:
+- 用户说「我那个网店是 pw310 的」→ 「用户运营的网店域名为 pw310」
+- 用户说「以后都用中文跟我聊」→ 「用户偏好使用中文进行交流」
+- 用户说「代理端口 7897」→ 「用户网络代理端口为 7897，用于访问外网」
+- 用户说「GitHub 连不上，加个代理」→ 「用户访问 GitHub 需要使用代理」
+- 用户说「我喜欢用 ruff 不用 black」→ 「用户偏好使用 ruff 而非 black 进行代码格式化」
+- 用户说「我正在写一个 FastAPI 服务，用来做代理转发」→ 「用户正在开发一个基于 FastAPI 的代理转发服务」
+- 用户说「那个 deploy.sh 脚本总是失败在第三步」→ 「deploy.sh 脚本在执行到第三步时稳定失败，需要排查该步骤的问题」
+
+BAD（机械复述/过长/无信息量）:
+- 「用户说他的网店是 pw310 的」（禁止直接引用用户原话）
+- 「用户提到代理端口和网店域名以及代码格式偏好等多个信息」（禁止罗列，必须拆成单条事实）
+- 「用户提到一些配置信息」（无具体内容的空泛陈述）
+- 「用户讨论了一些技术话题」（无信息量）
 
 【当前观察】
 来源: {source}
@@ -538,7 +683,7 @@ _THINK_PROMPT_TEMPLATE = """\
 
 【已有相关记忆】{neighbours_block}
 
-【输出格式】
+【输出格式】只返回纯 JSON，不要 markdown 代码块，不要任何解释文字：
 {{
   "worth_remembering": true/false,
   "synthesized_text": "归纳后的规范陈述句（一句话，中文）",
@@ -578,6 +723,13 @@ def _parse_think_response(
 
     Defensive: any parse failure → passthrough digest so we never
     silently drop a fact due to JSON malformation.
+
+    Quality gate (Wave-29): after parsing, run a quality check on the
+    synthesized_text.  If the LLM produced a low-quality extraction
+    (verbatim copy, too short, too long, or mechanically prefixed),
+    fall back to a cleaned version of the original observation text.
+    This implements the "Verbatim Fast-Path" from the survey report:
+    never store a worse summary when the original is available.
     """
     import json as _json
 
@@ -609,9 +761,30 @@ def _parse_think_response(
 
     worth = bool(data.get("worth_remembering", True))
     synthesized = str(data.get("synthesized_text") or "").strip()
+
+    # ── Wave-29: quality gate ─────────────────────────────────────
+    original = (observation.content or "").strip()
+    cleaned = _clean_original_text(original)
+    quality = _synthesis_quality(synthesized, original)
+
     if not synthesized:
-        # Fallback to original content if LLM returned empty text.
-        synthesized = observation.content.strip()
+        # Empty extraction → use cleaned original
+        synthesized = cleaned
+        reason_suffix = " (empty_fallback)"
+    elif quality["is_verbatim_copy"]:
+        # LLM mechanically copied the input → use cleaned original
+        synthesized = cleaned
+        reason_suffix = " (verbatim_fallback)"
+    elif quality["too_short"]:
+        # Too short to be informative → use cleaned original
+        synthesized = cleaned
+        reason_suffix = " (too_short_fallback)"
+    elif quality["too_long"]:
+        # Too long, probably just restated → truncate or use cleaned
+        synthesized = cleaned
+        reason_suffix = " (too_long_fallback)"
+    else:
+        reason_suffix = ""
 
     md = observation.metadata
     return CognitiveDigest(
@@ -623,7 +796,7 @@ def _parse_think_response(
         scope=md.get("scope_hint", "project"),
         bucket=md.get("bucket_hint", ""),
         confidence=float(md.get("confidence_hint", 0.8)),
-        reason=str(data.get("reason") or "think_phase2"),
+        reason=str(data.get("reason") or "think_phase2") + reason_suffix,
     )
 
 
@@ -633,7 +806,7 @@ def _passthrough_digest_from_obs(observation: Observation) -> CognitiveDigest:
     return CognitiveDigest(
         worth_remembering=True,
         action="ADD",
-        synthesized_text=observation.content.strip(),
+        synthesized_text=_clean_original_text(observation.content),
         target_fact_id=None,
         kind=md.get("kind_hint", "lesson"),
         scope=md.get("scope_hint", "project"),
@@ -641,6 +814,105 @@ def _passthrough_digest_from_obs(observation: Observation) -> CognitiveDigest:
         confidence=float(md.get("confidence_hint", 0.8)),
         reason="think_parse_fallback",
     )
+
+
+def _clean_original_text(text: str) -> str:
+    """Strip fluff and normalise whitespace from raw observation text.
+
+    Used as the Verbatim Fast-Path fallback: when the LLM fails to
+    produce a quality synthesis, we store a cleaned version of the
+    original rather than a verbatim copy.  This keeps the memory
+    store free of raw transcript noise ("用户说:" / "注意:" etc.)
+    while preserving all factual content.
+    """
+    import re as _re
+    if not text:
+        return ""
+    cleaned = text.strip()
+    fluff_patterns = [
+        # Only strip when the prefix is clearly a speaker / meta label,
+        # i.e. it is followed by a colon or Chinese colon.  Without the
+        # colon "用户做电商" would be mangled into "做电商".
+        r"^用户[:：]\s*",
+        r"^网址[:：]\s*",
+        r"^注意[:：]\s*",
+        r"^提示[:：]\s*",
+        r"^提醒[:：]\s*",
+        r"^.*?(?:说|提到|表示)[:：]\s*",
+    ]
+    for pat in fluff_patterns:
+        cleaned = _re.sub(pat, "", cleaned, count=1, flags=_re.IGNORECASE)
+    cleaned = _re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _synthesis_quality(
+    synthesized: str, original: str,
+) -> dict[str, bool]:
+    """Score the quality of an LLM-extracted synthesis.
+
+    Returns a dict of booleans.  When any is True the caller should
+    fall back to ``_clean_original_text`` instead.
+    """
+    import re as _re
+
+    s = synthesized.strip()
+    o = original.strip()
+    result: dict[str, bool] = {
+        "is_verbatim_copy": False,
+        "too_short": False,
+        "too_long": False,
+    }
+
+    if not s or not o:
+        result["too_short"] = True
+        return result
+
+    # 1. Verbatim copy detection: if >80% of the synthesized text is
+    #    found contiguously inside the original, the LLM just restated.
+    s_norm = _re.sub(r"\s+", "", s)
+    o_norm = _re.sub(r"\s+", "", o)
+    if s_norm and o_norm and len(s_norm) >= 4:
+        # Check if synthesized is mostly a substring of original
+        if s_norm in o_norm or o_norm in s_norm:
+            result["is_verbatim_copy"] = True
+        elif len(o_norm) > 0:
+            # Jaccard-like overlap on character bigrams
+            s_bigrams = {s_norm[i:i + 2] for i in range(len(s_norm) - 1)}
+            o_bigrams = {o_norm[i:i + 2] for i in range(len(o_norm) - 1)}
+            if s_bigrams and o_bigrams:
+                overlap = len(s_bigrams & o_bigrams) / len(s_bigrams)
+                if overlap > 0.80:
+                    result["is_verbatim_copy"] = True
+
+    # 2. Too short: fewer than 8 chars or fewer than 4 CJK chars
+    #    (a valid synthesis needs at least a subject + predicate).
+    cjk_count = sum(1 for c in s if "\u4e00" <= c <= "\u9fff")
+    if len(s) < 8 and cjk_count < 4:
+        result["too_short"] = True
+
+    # 3. Mechanical prefix detection: if the LLM just wrapped the
+    #    original in a "用户说..." or "原文是..." jacket, it's not a
+    #    real synthesis.  We look for prefixes that are CLEARLY
+    #    meta-descriptive wrappers, not legitimate subject nouns
+    #    (e.g. "用户偏好中文" is fine; "用户说：..." is not).
+    _MECHANICAL_PREFIXES = (
+        "用户说", "用户提到", "用户表示", "用户认为",
+        "他说", "她说", "原文", "这句话", "这段话",
+        "内容是", "意思是", "大意是", "总结为", "归纳为",
+    )
+    if any(s.startswith(p) for p in _MECHANICAL_PREFIXES):
+        result["is_verbatim_copy"] = True
+
+    # 4. Too long: more than 3× the length of the cleaned original,
+    #    or over 200 chars (indicates the LLM just restated / added noise).
+    o_clean = _clean_original_text(o)
+    if len(s) > 200:
+        result["too_long"] = True
+    elif o_clean and len(s) > len(o_clean) * 3:
+        result["too_long"] = True
+
+    return result
 
 
 def _cache_key(observation: Observation) -> str:

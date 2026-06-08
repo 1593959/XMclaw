@@ -2557,5 +2557,60 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     setup_logging()
-    _app = create_app()
+
+    # ── boot-time skill loading (mirror xmclaw serve) ─────────────────
+    # Pre-fix: ``python -m xmclaw.daemon.app`` started with
+    # orchestrator=None, so app_lifespan's _start_skills_watcher()
+    # returned immediately and no user skills were ever loaded.
+    # Now we replicate the CLI serve path's boot-time registry
+    # construction + skill loading so direct module execution works.
+    _orchestrator = None
+    try:
+        from xmclaw.daemon.factory import load_config as _load_config
+        from xmclaw.core.bus import InProcessEventBus
+        from xmclaw.skills.registry import SkillRegistry
+        from xmclaw.skills.user_loader import (
+            UserSkillsLoader, resolve_skill_roots,
+        )
+        from xmclaw.utils.paths import skills_dir, data_dir
+
+        _cfg_path = data_dir() / "config.json"
+        _cfg = None
+        if _cfg_path.exists():
+            _cfg = _load_config(_cfg_path)
+
+        _bus = InProcessEventBus()
+        _registry = SkillRegistry(history_dir=skills_dir())
+
+        if _cfg is not None:
+            _ev_cfg = _cfg.get("evolution") or {}
+            if _ev_cfg.get("enabled", True):
+                from xmclaw.skills.orchestrator import EvolutionOrchestrator
+                _auto_apply = bool(_ev_cfg.get("auto_apply", True))
+                _orchestrator = EvolutionOrchestrator(
+                    _registry, _bus, auto_apply=_auto_apply,
+                )
+
+        _user_root, _extra_roots = resolve_skill_roots(_cfg)
+        _results = UserSkillsLoader(
+            _registry, _user_root, extra_roots=_extra_roots,
+        ).load_all()
+        if _results:
+            _ok_n = sum(1 for r in _results if r.ok)
+            if _ok_n:
+                print(f"[boot] loaded {_ok_n} user skill(s)")
+            for r in _results:
+                if not r.ok:
+                    print(f"[boot] skill load failed: {r.skill_id}: {r.error}")
+
+        try:
+            _replayed = _registry.replay_history()
+            if _replayed:
+                print(f"[boot] replayed HEAD for {len(_replayed)} skill(s)")
+        except Exception:
+            pass
+    except Exception as _boot_exc:
+        print(f"[boot] skill init warning: {_boot_exc}")
+
+    _app = create_app(bus=_bus if '_bus' in dir() else None, orchestrator=_orchestrator)
     uvicorn.run(_app, host=args.host, port=args.port, log_level="info")

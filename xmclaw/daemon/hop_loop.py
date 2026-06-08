@@ -1966,7 +1966,7 @@ class HopLoopMixin:
                     # actually call the memory tool.
                     continue
 
-            compression_info = self._persist_history(session_id, messages)
+            compression_info = await self._persist_history(session_id, messages)
             if compression_info is not None:
                 # B-33: emit a CONTEXT_COMPRESSED event so the Trace
                 # page surfaces the squeeze. Best-effort — never let

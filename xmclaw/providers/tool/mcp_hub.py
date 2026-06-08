@@ -105,6 +105,10 @@ class McpServerConfig:
     disabled: bool = False
     auto_approve: list[str] = field(default_factory=list)
     timeout_s: float = 30.0
+    # Wave-29 (survey Phase 5): trust level for security gating.
+    # "trusted"    — user-curated, skip heuristics (but NOT param scan).
+    # "untrusted"  — default; full safety audit on start + every invoke.
+    trust_level: str = "untrusted"
 
 
 def _parse_server_config(name: str, raw: Any) -> McpServerConfig | None:
@@ -127,6 +131,9 @@ def _parse_server_config(name: str, raw: Any) -> McpServerConfig | None:
         timeout_s = float(timeout_raw)
     except (TypeError, ValueError):
         timeout_s = 30.0
+    trust = str(raw.get("trust_level") or raw.get("trustLevel") or "untrusted").strip().lower()
+    if trust not in ("trusted", "untrusted"):
+        trust = "untrusted"
     return McpServerConfig(
         name=str(name),
         command=str(command) if command else None,
@@ -137,6 +144,7 @@ def _parse_server_config(name: str, raw: Any) -> McpServerConfig | None:
         disabled=bool(raw.get("disabled", False)),
         auto_approve=auto,
         timeout_s=timeout_s,
+        trust_level=trust,
     )
 
 
@@ -162,6 +170,104 @@ def parse_settings_file(text: str) -> dict[str, McpServerConfig]:
 def default_settings_path() -> Path:
     from xmclaw.utils.paths import data_dir
     return data_dir() / "mcpServers.json"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Security audit (Wave-29, survey Phase 5)
+# ──────────────────────────────────────────────────────────────────────
+
+# Patterns that indicate supply-chain or injection risk in MCP configs.
+_UNPINNED_PKG_RE = re.compile(r"@[^/]+$")
+_SHELL_METACHAR_RE = re.compile(r"[;|&$()`\"]|")
+_SUSPICIOUS_URL_RE = re.compile(
+    r"https?://[^/\s]*(?:past\.ee|pastebin|transfer\.sh|0x0\.st)",
+    re.IGNORECASE,
+)
+# Prompt-injection sentinels we scan in tool arguments before forwarding
+# to the MCP server.  Same patterns as xmclaw.memory.v2.sanitizer.
+_ARG_INJECTION_PATTERNS = [
+    re.compile(r"ignore\s+(previous|above|all)\s+instructions", re.IGNORECASE),
+    re.compile(r"system\s*prompt\s*:\s*", re.IGNORECASE),
+    re.compile(r"you\s+are\s+now\s+", re.IGNORECASE),
+    re.compile(r"new\s+role\s*:\s*", re.IGNORECASE),
+    re.compile(r"override\s+(safety|security|policy)", re.IGNORECASE),
+]
+
+
+def _audit_server_config(cfg: McpServerConfig) -> tuple[bool, list[str]]:
+    """Safety audit for one MCP server config.
+
+    Returns (is_safe, warnings).  ``is_safe==False`` means the config
+    should be REFUSED (not started).  ``warnings`` are logged but do
+    not block start.
+    """
+    warnings: list[str] = []
+    fatal: list[str] = []
+
+    # 1. Unpinned package version (supply-chain risk).
+    for arg in cfg.args:
+        if _UNPINNED_PKG_RE.search(arg):
+            warnings.append(
+                f"unpinned_dependency: arg {arg!r} has no explicit "
+                f"version pin (e.g. @1.2.3). @latest is a supply-chain "
+                f"risk — add a pinned version."
+            )
+
+    # 2. Shell metacharacters in command (command injection).
+    if cfg.command and _SHELL_METACHAR_RE.search(cfg.command):
+        fatal.append(
+            f"command_injection_risk: command {cfg.command!r} contains "
+            f"shell metacharacters. Use a plain binary name."
+        )
+
+    # 3. Suspicious URLs in args (payload delivery).
+    for arg in cfg.args:
+        if _SUSPICIOUS_URL_RE.search(arg):
+            fatal.append(
+                f"suspicious_url: arg {arg!r} references a known "
+                f"ephemeral file host. This is a common payload-delivery "
+                f"vector for malicious MCP servers."
+            )
+
+    # 4. Environment overrides that look like credential theft.
+    for key in cfg.env:
+        if key.lower() in ("path", "home", "userprofile"):
+            warnings.append(
+                f"env_override: {key!r} is being overridden. Ensure this "
+                f"is intentional and not a PATH-hijacking attack."
+            )
+
+    return (not fatal, warnings + fatal)
+
+
+def _scan_tool_args(args: dict[str, Any]) -> tuple[bool, str]:
+    """Scan tool arguments for prompt-injection patterns before
+    forwarding to an untrusted MCP server.
+
+    Returns (is_safe, reason).  Trusted servers still get the scan
+    (defence-in-depth) but the result is only logged, not blocking.
+    """
+    if not args:
+        return True, ""
+    # Flatten nested dicts to a single string for scanning.
+    flat: list[str] = []
+
+    def _walk(obj: Any) -> None:
+        if isinstance(obj, str):
+            flat.append(obj)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                _walk(item)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _walk(v)
+
+    _walk(args)
+    corpus = "\n".join(flat)
+    for pat in _ARG_INJECTION_PATTERNS:
+        if pat.search(corpus):
+            return False, f"injection_pattern:{pat.pattern[:40]}"
+    return True, ""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -255,6 +361,22 @@ class MCPHub(ToolProvider):
                         config=cfg, status="disabled"
                     )
                     continue
+
+                # Wave-29: security audit before boot.
+                is_safe, audit_msgs = _audit_server_config(cfg)
+                for msg in audit_msgs:
+                    if is_safe:
+                        _log.warning("mcp.audit_warning name=%s msg=%s", name, msg)
+                    else:
+                        _log.error("mcp.audit_fatal name=%s msg=%s", name, msg)
+                if not is_safe:
+                    state = _ServerState(
+                        config=cfg, status="error",
+                        last_error="security_audit_failed: " + "; ".join(audit_msgs),
+                    )
+                    self._servers[name] = state
+                    continue
+
                 state = _ServerState(config=cfg, status="connecting")
                 self._servers[name] = state
                 try:
@@ -349,6 +471,28 @@ class MCPHub(ToolProvider):
         for srv_name, st in self._servers.items():
             if call.name in st.tool_name_map and st.bridge is not None:
                 original = st.tool_name_map[call.name]
+
+                # Wave-29: argument safety scan (defence-in-depth).
+                arg_safe, arg_reason = _scan_tool_args(call.args or {})
+                if not arg_safe:
+                    _log.warning(
+                        "mcp.invoke.arg_scan_failed server=%s tool=%s "
+                        "reason=%s", srv_name, original, arg_reason,
+                    )
+                    # For untrusted servers this is fatal.
+                    if st.config.trust_level != "trusted":
+                        return ToolResult(
+                            call_id=call.id,
+                            ok=False,
+                            content=None,
+                            error=(
+                                f"MCP argument blocked by security scan: "
+                                f"{arg_reason}. If this is a legitimate "
+                                f"use case, set trust_level='trusted' on "
+                                f"server {srv_name!r}."
+                            ),
+                        )
+
                 inner = ToolCall(
                     id=call.id,
                     name=original,

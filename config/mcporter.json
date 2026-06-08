@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "weibo": {
+      "command": "mcp-server-weibo"
+    }
+  }
+}

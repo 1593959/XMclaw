@@ -1311,6 +1311,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         #     is explicitly set (pure vector by default)
         # The proper the standard background prefetch lands in
         # Phase 5; this is the safety net.
+        # Wave-28: recall context is collected here but injected into
+        # the SYSTEM PROMPT (not the user message) so the user never
+        # sees it in their chat bubble, while the LLM still receives it.
+        _recall_for_system: str = ""
         try:
             cog_cfg = (
                 self._cfg.get("cognition", {})
@@ -1324,17 +1328,15 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             if ar_enabled and user_message:
                 if _gateway is not None:
                     # Phase 1: route through CognitiveMemoryGateway.
-                    # The Gateway delegates to the existing auto_recall
-                    # pipeline (transparent passthrough).
                     _recall_block = await _gateway.recall_for_turn(
                         user_message,
                         turn_context={"session_id": session_id},
                     )
                     if _recall_block:
-                        user_message = f"{_recall_block}\n\n{user_message}"
+                        _recall_for_system = _recall_block
                         from xmclaw.utils.log import get_logger
                         get_logger(__name__).info(
-                            "gateway.recall.injected session=%s",
+                            "gateway.recall.collected session=%s",
                             session_id[:8],
                         )
                 else:
@@ -1344,7 +1346,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         from xmclaw.daemon.auto_recall import (
                             _DEFAULT_EXCLUDE_BUCKETS as _AR_DEFAULTS,
                             _DEFAULT_TIMEOUT_S as _AR_DEFAULT_TIMEOUT,
-                            prepend_recalled_block as _prepend_recalled,
+                            render_recalled_block as _render_recalled,
                             recall_for_message as _recall_for_message,
                         )
                         excludes = set(_AR_DEFAULTS) | set(
@@ -1364,10 +1366,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                             query_embedding=_shared_query_emb,
                         )
                         if hits:
-                            user_message = _prepend_recalled(user_message, hits)
+                            _recall_for_system = _render_recalled(hits)
                             from xmclaw.utils.log import get_logger
                             get_logger(__name__).info(
-                                "auto_recall.injected k=%d top_sim=%.2f",
+                                "auto_recall.collected k=%d top_sim=%.2f",
                                 len(hits), hits[0].similarity,
                             )
         except Exception as _exc:  # noqa: BLE001
@@ -2546,6 +2548,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     _parts.append(gs.render())
         except Exception:  # noqa: BLE001 — never block a turn over git
             pass
+
+        # Wave-28: inject collected recall context into the system prompt
+        # (NOT the user message) so the user never sees it in their chat.
+        if _recall_for_system:
+            _parts.append(_recall_for_system)
 
         system_content = (
             "\n\n" + CACHE_BREAKPOINT_MARKER + "\n\n"

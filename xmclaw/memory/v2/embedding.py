@@ -100,6 +100,8 @@ class EmbeddingService:
             LRU eviction. 0 disables caching.
         retry_attempts: total tries including first. ≥ 1.
         retry_backoff_s: base delay; doubles each retry. 0 disables.
+        cache_path: optional path to a gzipped JSON file for persistent
+            cache. Loaded on init, saved periodically (every 50 puts).
     """
 
     def __init__(
@@ -111,33 +113,27 @@ class EmbeddingService:
         retry_backoff_s: float = 0.5,
         circuit_breaker_threshold: int = 5,
         circuit_breaker_cooldown_s: float = 300.0,
+        cache_path: str | None = None,
     ) -> None:
         self._provider = provider
         self._cache: OrderedDict[str, tuple[float, ...]] = OrderedDict()
         self._cache_capacity = max(0, int(cache_capacity))
         self._retry_attempts = max(1, int(retry_attempts))
         self._retry_backoff_s = max(0.0, float(retry_backoff_s))
+        self._cache_path = cache_path
+        self._cache_save_counter = 0
         # Stats so tests + observability can see hit rate.
         self.cache_hits = 0
         self.cache_misses = 0
         self.failures = 0
         # Epic #27 sweep #8 (2026-05-19) — circuit breaker.
-        # Pre-fix daemon.log showed 857 ``embedding.http_error`` /day on
-        # the user's machine: 5xx from the provider, retry 3× with
-        # 0.5→4.5s backoff, then outer caller (key_info_extractor /
-        # llm_fact_extractor / etc) retries the whole thing, stacking
-        # into a sustained storm. Each one of those is a failed
-        # ``remember()`` — user input is getting LOST. The breaker
-        # short-circuits after ``threshold`` consecutive failures and
-        # raises ``EmbeddingFailure`` immediately for the next
-        # ``cooldown_s`` seconds. A successful call resets the counter
-        # back to 0. Threshold + cooldown picked to bound a bad
-        # provider's blast radius at ~5 attempts per 5 minutes
-        # regardless of caller behavior.
         self._cb_threshold = max(1, int(circuit_breaker_threshold))
         self._cb_cooldown_s = max(0.0, float(circuit_breaker_cooldown_s))
         self._cb_consecutive_failures = 0
         self._cb_open_until: float = 0.0  # monotonic ts; 0 = closed
+        # Load persisted cache if available.
+        if self._cache_path:
+            self._load_cache()
 
     @property
     def dim(self) -> int:
@@ -229,6 +225,85 @@ class EmbeddingService:
         self._cache.move_to_end(key)
         while len(self._cache) > self._cache_capacity:
             self._cache.popitem(last=False)
+        # Persist every 50 writes.
+        if self._cache_path:
+            self._cache_save_counter += 1
+            if self._cache_save_counter >= 50:
+                self._cache_save_counter = 0
+                self._save_cache()
+
+    # ── Cache persistence ─────────────────────────────────────────
+
+    def _load_cache(self) -> None:
+        import gzip, json, os
+        if not self._cache_path or not os.path.exists(self._cache_path):
+            return
+        try:
+            with gzip.open(self._cache_path, "rt", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if data.get("version") != 2:
+                return
+            if data.get("provider_name") != self._provider.name:
+                return
+            if data.get("dim") != self._provider.dim:
+                return
+            entries = data.get("entries", {})
+            # Decode base64-encoded float32 vectors.
+            import base64, struct
+            dim = self._provider.dim
+            fmt = f"<{dim}f"
+            loaded = 0
+            for key, b64 in entries.items():
+                try:
+                    raw = base64.b64decode(b64)
+                    vec = struct.unpack(fmt, raw)
+                    self._cache[key] = tuple(vec)
+                    loaded += 1
+                except Exception:
+                    continue
+            _log.info(
+                "embedding_cache.loaded path=%s entries=%d/%d",
+                self._cache_path, loaded, len(entries),
+            )
+        except Exception as exc:
+            _log.warning("embedding_cache.load_failed err=%s", exc)
+
+    def _save_cache(self) -> None:
+        import base64, gzip, json, struct
+        if not self._cache_path:
+            return
+        try:
+            dim = self._provider.dim
+            fmt = f"<{dim}f"
+            entries: dict[str, str] = {}
+            for key, vec in self._cache.items():
+                try:
+                    raw = struct.pack(fmt, *vec)
+                    entries[key] = base64.b64encode(raw).decode("ascii")
+                except Exception:
+                    continue
+            data = {
+                "version": 2,
+                "provider_name": self._provider.name,
+                "dim": dim,
+                "entries": entries,
+            }
+            # Atomic write: temp file then rename.
+            import os
+            tmp = self._cache_path + ".tmp"
+            with gzip.open(tmp, "wt", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            os.replace(tmp, self._cache_path)
+            _log.debug(
+                "embedding_cache.saved path=%s entries=%d",
+                self._cache_path, len(entries),
+            )
+        except Exception as exc:
+            _log.warning("embedding_cache.save_failed err=%s", exc)
+
+    def persist(self) -> None:
+        """Explicit save — call on graceful shutdown."""
+        self._save_cache()
 
     async def _embed_with_retry(
         self, texts: list[str],
@@ -368,11 +443,24 @@ def build_embedding_service(
             cfg_cap = sec.get("cache_capacity")
             if isinstance(cfg_cap, int) and cfg_cap > 0:
                 cache_capacity = cfg_cap
+    # Default persistent cache path.
+    _cache_path = None
+    try:
+        import os
+        _data_dir = os.path.expanduser("~/.xmclaw/v2")
+        os.makedirs(_data_dir, exist_ok=True)
+        _cache_path = os.path.join(
+            _data_dir,
+            f"embedding_cache_{provider.name}_{provider.dim}.json.gz",
+        )
+    except Exception:
+        pass
     return EmbeddingService(
         provider,
         cache_capacity=cache_capacity,
         retry_attempts=retry_attempts,
         retry_backoff_s=retry_backoff_s,
+        cache_path=_cache_path,
     )
 
 

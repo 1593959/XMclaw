@@ -143,9 +143,10 @@ async def test_think_calls_llm_when_enabled(fake_svc):
         llm=fake_llm,
         cfg={"think": {"enabled": True}},
     )
+    # Use content that does NOT hit Tier-1 keywords so the LLM path is exercised.
     obs = Observation(
         source="user_msg",
-        content="以后都用中文跟我聊",
+        content="沟通时喜欢用中文",
         turn_id="s1",
         timestamp=0.0,
         metadata={"kind_hint": "preference", "scope_hint": "user"},
@@ -244,13 +245,13 @@ def test_build_think_prompt_no_neighbours():
 
 
 def test_parse_think_response_valid():
-    obs = Observation(source="user_msg", content="原始", turn_id="s1", timestamp=0.0)
+    obs = Observation(source="user_msg", content="原始内容在这里", turn_id="s1", timestamp=0.0)
     digest = _parse_think_response(
-        '{"worth_remembering":true,"synthesized_text":"归纳后","reason":"r"}',
+        '{"worth_remembering":true,"synthesized_text":"用户偏好使用中文进行交流","reason":"r"}',
         obs, [],
     )
     assert digest.worth_remembering is True
-    assert digest.synthesized_text == "归纳后"
+    assert digest.synthesized_text == "用户偏好使用中文进行交流"
     assert digest.reason == "r"
 
 
@@ -411,23 +412,29 @@ async def test_targeted_recall_filters_by_similarity(fake_svc):
 
 @pytest.mark.asyncio
 async def test_targeted_recall_excludes_structural_buckets(fake_svc):
-    """Structural-axis buckets are excluded from similarity recall."""
+    """Static structural-axis buckets are excluded; dynamic ones kept."""
     from xmclaw.memory.v2.models import Fact
-    f1 = Fact(id="f1", kind="identity", scope="user", text="用户叫张三", bucket="user_identity")
-    f2 = Fact(id="f2", kind="lesson", scope="project", text="工具用法", bucket="workflow")
-    fake_svc.facts = [f1, f2]
+    # agent_identity is static (already in system prompt) → excluded.
+    f1 = Fact(id="f1", kind="identity", scope="session", text="我是AI助手", bucket="agent_identity")
+    # user_identity is dynamic (user may tell us new info mid-session) → kept.
+    f2 = Fact(id="f2", kind="identity", scope="user", text="用户叫张三", bucket="user_identity")
+    f3 = Fact(id="f3", kind="lesson", scope="project", text="工具用法", bucket="workflow")
+    fake_svc.facts = [f1, f2, f3]
 
     async def mock_recall_hybrid(query, **kwargs):
         return [
             FakeRecallHit(f1, distance=0.1),
             FakeRecallHit(f2, distance=0.1),
+            FakeRecallHit(f3, distance=0.1),
         ]
 
     fake_svc.recall_hybrid = mock_recall_hybrid
     gw = CognitiveMemoryGateway(memory_service=fake_svc)
     hits = await gw.targeted_recall("query", k=4, min_similarity=0.0)
-    assert len(hits) == 1
-    assert hits[0].text == "工具用法"
+    # agent_identity excluded; user_identity + workflow kept.
+    assert len(hits) == 2
+    assert hits[0].text == "用户叫张三"
+    assert hits[1].text == "工具用法"
 
 
 # ── Phase 5: metrics ─────────────────────────────────────────────

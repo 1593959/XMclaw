@@ -615,6 +615,38 @@ class LanceDBGraphBackend:
         self._schema_cls: Any | None = None
         # 2026-05-29 perf fix: mirror VectorBackend corruption guard.
         self._corrupted: bool = False
+        self._transient_failures: int = 0
+        self._MAX_TRANSIENT_RETRIES: int = 3
+
+    def _is_transient_lance_error(self, exc: RuntimeError) -> bool:
+        """Distinguish recoverable errors from permanent corruption."""
+        msg = str(exc).lower()
+        transient_signatures = [
+            "timeout", "temporarily unavailable", "try again",
+            "resource busy", "lock",
+        ]
+        return any(sig in msg for sig in transient_signatures)
+
+    def _handle_lance_error(self, exc: RuntimeError, context: str) -> None:
+        """Wave-4: transient retry before permanent corruption."""
+        if "lance error" not in str(exc).lower():
+            raise
+        if self._is_transient_lance_error(exc):
+            self._transient_failures += 1
+            if self._transient_failures < self._MAX_TRANSIENT_RETRIES:
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "lancedb.graph_transient_retry attempt=%d/%d context=%s err=%s",
+                    self._transient_failures, self._MAX_TRANSIENT_RETRIES,
+                    context, exc,
+                )
+                return  # caller may retry
+        # Permanent corruption or exhausted retries
+        self._corrupted = True
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).error(
+            "lancedb.graph_permanent_corruption context=%s err=%s", context, exc,
+        )
 
     async def _ensure_ready(self) -> None:
         if self._corrupted:

@@ -662,7 +662,7 @@ class HistoryCompressionMixin:
 
         return subgoals
 
-    def _persist_history(
+    async def _persist_history(
         self, session_id: str, messages: list[Message],
     ) -> dict[str, Any] | None:
         """Save conversation history (system prompt excluded).
@@ -708,6 +708,8 @@ class HistoryCompressionMixin:
             "curriculum-hint",
             "curriculum-strategies",
             "memory-files",
+            "<memory-v2-facts>",
+            "【相关记忆】",
             # 2026-05-17: ``[turn hint]`` is appended to user
             # messages by agent_loop.py when no local skill matched
             # the query. Same "in-flight scaffolding leaking into
@@ -760,15 +762,20 @@ class HistoryCompressionMixin:
         # losing any turn boundaries. Returns (new_history, count) —
         # count is logged at debug level inside the prune helper, no
         # need to expose here.
-        if len(history) > 6:
+        # Wave-28: raised protect_tail_tokens from 6000 → 12000
+        # (protect_tail_count_floor from 6 → 10) so older tool results
+        # survive longer. 6000 tokens ≈ 6 messages; for a session with
+        # heavy tool use that's too aggressive — the agent "forgets"
+        # what it did 3 turns ago.
+        if len(history) > 10:
             try:
                 from xmclaw.context.tool_result_prune import (
                     prune_old_tool_results,
                 )
                 history, _ = prune_old_tool_results(
                     history,
-                    protect_tail_tokens=6000,
-                    protect_tail_count_floor=6,
+                    protect_tail_tokens=12000,
+                    protect_tail_count_floor=10,
                 )
             except Exception:  # noqa: BLE001 — never fail a turn over compression
                 pass
@@ -778,28 +785,14 @@ class HistoryCompressionMixin:
         # token-aware. We just persist the cleaned history.
         self._histories[session_id] = history
         if self._session_store is not None:
-            # 2026-05-24 user-report fix: _persist_history is a SYNC
-            # function called from async hop_loop.py:1308; the inline
-            # ``self._session_store.save(...)`` was a sync sqlite
-            # write inside an async caller, blocking the event loop
-            # while concurrent WorkerSwarm event publishes piled up.
-            # Bounce to a worker thread fire-and-forget — persistence
-            # is best-effort (per the comment below), so we don't even
-            # need to await the result; the in-memory ``_histories``
-            # write above already updated the source of truth.
+            # Wave-28: await the save so we KNOW it lands on disk.
+            # Fire-and-forget created a race where the user refreshes
+            # before the async task runs → "session lost".
             try:
                 import asyncio as _asyncio
-                _loop = _asyncio.get_running_loop()
-                _loop.create_task(_asyncio.to_thread(
+                await _asyncio.to_thread(
                     self._session_store.save, session_id, history,
-                ))
-            except RuntimeError:
-                # No running loop (sync test context) — fall back to
-                # inline sync save.
-                try:
-                    self._session_store.save(session_id, history)
-                except Exception:  # noqa: BLE001
-                    pass
+                )
             except Exception:  # noqa: BLE001
                 # Persistence is best-effort -- a corrupt sessions.db should
                 # never break the live turn. The in-memory copy is the source

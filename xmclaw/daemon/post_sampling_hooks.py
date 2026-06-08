@@ -1,4 +1,4 @@
-"""Post-sampling hook framework (B-112) — free-code parity.
+"""Post-sampling hook framework (B-112) �?free-code parity.
 
 After every successfully completed turn (final assistant response, no
 pending tool calls), fire a chain of registered hooks. Each hook gets
@@ -7,38 +7,37 @@ its own background work asynchronously without blocking the user's
 next prompt.
 
 Free-code uses this to:
-  * extractMemories  — each turn end, scan transcript for durable
+  * extractMemories  �?each turn end, scan transcript for durable
                        facts, append to MEMORY.md
-  * SessionMemory    — maintain a per-session running summary file
-  * autoDream        — schedule MEMORY.md compaction when thresholds met
-  * PromptSuggestion — speculatively pre-warm the next likely prompt
+  * SessionMemory    �?maintain a per-session running summary file
+  * autoDream        �?schedule MEMORY.md compaction when thresholds met
+  * PromptSuggestion �?speculatively pre-warm the next likely prompt
 
 XMclaw already has Auto-Dream as a cron (B-51); this framework makes
 the rest pluggable.
 
 Hook landing order:
-  * B-112  ``ExtractMemoriesHook``  — original 1-bucket extractor
+  * B-112  ``ExtractMemoriesHook``  �?original 1-bucket extractor
                                       (durable MEMORY.md facts only).
                                       Gated default OFF.
-  * B-168  ``ExtractLessonsHook``   — 3-bucket lesson extractor
+  * B-168  ``ExtractLessonsHook``   �?3-bucket lesson extractor
                                       (workflow / tool_quirks /
                                       failure_modes). Default ON.
   * B-303  ExtractLessonsHook gets two more buckets (values / rules)
            so SOUL.md + LEARNING.md stop sitting empty.
-  * B-319  ExtractLessonsHook absorbs the ``preferences`` bucket —
-           now handles all 6 auto-section kinds across the full
+  * B-319  ExtractLessonsHook absorbs the ``preferences`` bucket �?           now handles all 6 auto-section kinds across the full
            7-file persona set in a single LLM call. The hook is
            re-aliased as ``ExtractFactsHook`` to reflect the
            broader scope; the legacy ``ExtractLessonsHook`` name is
            kept as a backward-compat re-export.
-           ``ExtractMemoriesHook`` is now deprecated — its only
+           ``ExtractMemoriesHook`` is now deprecated �?its only
            output (durable failure_modes bullets) is now produced
            by the ``failure_modes`` bucket of the unified extractor,
            so leaving it on costs an extra LLM call for zero new
            coverage.
 
 Cache-sharing optimisation (the main reason free-code uses a "forked
-agent" pattern) is left for a follow-up — the LLM provider needs
+agent" pattern) is left for a follow-up �?the LLM provider needs
 explicit cache_breakpoint support, which is a separate plumbing job.
 The hook can already run today; cache hit-rate is the future
 optimisation.
@@ -56,7 +55,7 @@ from xmclaw.utils.log import get_logger
 
 
 # B-179 (joint audit fix): the LLM extractor sometimes includes a
-# leading "YYYY-MM-DD:" inside the lesson text — when we then prepend
+# leading "YYYY-MM-DD:" inside the lesson text �?when we then prepend
 # our own date, MEMORY.md ends up with "- 2026-05-02: 2026-05-02: ..."
 # duplicates that the joint audit caught. Strip any leading date /
 # colon prefix from the LLM string before prepending our canonical
@@ -74,7 +73,7 @@ def _strip_leading_date(text: str) -> str:
     if not text:
         return text
     out = text
-    # Strip up to 3 leading date prefixes — the LLM has been observed
+    # Strip up to 3 leading date prefixes �?the LLM has been observed
     # producing "2026-05-02: 2026-05-02 (精炼): ..." in evidence dumps.
     for _ in range(3):
         m = _LEADING_DATE_RE.match(out)
@@ -90,7 +89,7 @@ _log = get_logger(__name__)
 class HookContext:
     """Snapshot of the just-finished turn passed to every hook.
 
-    Hooks must NOT mutate the history list — it's the live one
+    Hooks must NOT mutate the history list �?it's the live one
     AgentLoop uses for the next turn. Read-only by convention.
 
     B-197: ``memory_provider`` and ``embedder`` let extractor hooks
@@ -109,24 +108,24 @@ class HookContext:
     cfg: dict[str, Any]
     memory_provider: Any = None  # MemoryProvider | None
     embedder: Any = None         # EmbeddingProvider | None
-    persona_store: Any = None    # PersonaStore | None — B-198 Phase 3
+    persona_store: Any = None    # PersonaStore | None �?B-198 Phase 3
     # Wave-27 follow-up: when set, lesson-kind facts also dual-write
     # to the v2 facts store so the LanceDB dedup pipeline (write-time
     # near-dup merge + bulk dedup + SUPERSEDES graph) covers them.
     # Legacy memory.db kind=lesson rows continue to land so the
     # persona MD render path stays unchanged.
     memory_v2_service: Any = None  # MemoryService | None
-    # Phase 1 (CMP): CognitiveMemoryGateway — unified write entrypoint.
+    # Phase 1 (CMP): CognitiveMemoryGateway �?unified write entrypoint.
     # When wired, facts route through the Gateway instead of direct
     # remember() calls.  Phase 1 is transparent passthrough.
     memory_gateway: Any = None  # CognitiveMemoryGateway | None
 
 
-# 2026-06-06 记忆污染修复：内部会话（CognitiveDaemon 的 goal-from-percept
+# 2026-06-06 记忆污染修复：内部会话（CognitiveDaemon、goal-from-percept
 # 反应目标、reflect:/dream: 反思、autonomous: 自主、_system: 等）的「自言
-# 自语」turn 不该再被抽成新的 lesson/preference 写进用户记忆 —— 否则反思
-# 每轮重跑，近似教训反复入库，把记忆库越积越脏（用户报「重复 → 记忆污染」）。
-# 用户真实对话的 turn 照常抽取。前缀与 agent_loop._INTERNAL_SESSION_PREFIXES
+# 自语」turn 不该再被抽成新的 lesson/preference 写进用户记忆，否则反
+# 复每轮重跑，近似教训反复入库，把记忆库越积越脏（用户报「重复记忆污染」）。
+# 用户真实对话 turn 照常抽取。前缀与 agent_loop._INTERNAL_SESSION_PREFIXES
 # / session_store.is_internal_session_id 保持一致。
 _INTERNAL_SESSION_PREFIXES = (
     "autonomous:", "goal-from-percept-", "reflect:", "dream:",
@@ -147,7 +146,7 @@ class PostSamplingHook(abc.ABC):
 
     @abc.abstractmethod
     async def run(self, ctx: HookContext) -> None:
-        """Do whatever the hook does. Failures must NOT raise — log
+        """Do whatever the hook does. Failures must NOT raise �?log
         and swallow, so one broken hook doesn't break the chain."""
 
     def is_enabled(self, ctx: HookContext) -> bool:
@@ -226,7 +225,7 @@ async def _write_facts_to_memory(
 
     Called by ExtractMemoriesHook / ExtractLessonsHook after their
     markdown append succeeds. Failure here is logged but never
-    propagated — markdown stays the user-visible surface, DB is
+    propagated �?markdown stays the user-visible surface, DB is
     best-effort indexing.
 
     Wave-27 follow-up: when ``ctx.memory_v2_service`` is also wired,
@@ -243,7 +242,7 @@ async def _write_facts_to_memory(
     #   When the model hallucinates "我看不到聊天里的图片", the
     #   extractor would capture that as a high-conf fact, render it
     #   into USER.md, and every subsequent turn would re-inject it
-    #   as ground truth → the model parrots the lie forever. Prior
+    #   as ground truth �?the model parrots the lie forever. Prior
     #   fixes (06d3ba3 anti-poisoning ground-truth note at the
     #   message boundary) only worked at READ time; the persona MD
     #   file kept growing. This is the WRITE-time gate.
@@ -441,14 +440,14 @@ async def _write_facts_to_memory(
 
     # B-198 Phase 3: re-render the affected persona files from DB so
     # the on-disk cache (still read by the assembler) reflects the
-    # newly-upserted rows. We render ALL files for simplicity — disk
+    # newly-upserted rows. We render ALL files for simplicity �?disk
     # write is cheap, the alternative (kind→file mapping inversion)
     # adds complexity for marginal speedup.
     #
     # Phase 3a (2026-05-16): only reached when v2 was NOT wired
     # (the v2-handled fast-return above skips this block). The
     # PersonaStore render path stays for backward compat with
-    # installs that haven't enabled v2 — once cognition.memory_v2
+    # installs that haven't enabled v2 �?once cognition.memory_v2
     # is true everywhere, this branch can be removed entirely.
     if any_wrote and ctx.persona_store is not None:
         try:
@@ -465,7 +464,7 @@ async def _write_facts_to_memory(
 _EXTRACT_PROMPT = (
     "You are reviewing a chat turn that just ended between a user and "
     "the XMclaw agent. Identify any DURABLE facts worth saving to long-"
-    "term memory — user preferences ('prefers Python over Go'), "
+    "term memory �?user preferences ('prefers Python over Go'), "
     "decisions ('we picked sqlite over postgres'), recurring failure "
     "modes ('build always breaks on missing setuptools'), tool-usage "
     "lessons. Skip ephemeral things (status reports, summaries of "
@@ -476,7 +475,7 @@ _EXTRACT_PROMPT = (
 
 
 class ExtractMemoriesHook(PostSamplingHook):
-    """DEPRECATED (B-319) — kept for backward compat / opt-in deeper
+    """DEPRECATED (B-319) �?kept for backward compat / opt-in deeper
     analysis only.
 
     Originally B-112: each turn end, ask the main LLM whether the
@@ -485,7 +484,7 @@ class ExtractMemoriesHook(PostSamplingHook):
 
     Why deprecated: the unified :class:`ExtractFactsHook` (default ON)
     now produces the same MEMORY.md content via its ``failure_modes``
-    bucket — and four other buckets in the same LLM round-trip. Leaving
+    bucket �?and four other buckets in the same LLM round-trip. Leaving
     this hook enabled costs a *second* LLM call per turn for output
     that's already covered. We keep the class around (and the
     ``evolution.memory.extract_memories.enabled`` gate, default OFF)
@@ -502,8 +501,7 @@ class ExtractMemoriesHook(PostSamplingHook):
     def is_enabled(self, ctx: HookContext) -> bool:
         if ctx.persona_dir is None:
             return False
-        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）。
-        if _is_internal_session(ctx.session_id):
+        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）�?        if _is_internal_session(ctx.session_id):
             return False
         section = (
             ((ctx.cfg.get("evolution") or {}).get("memory") or {})
@@ -547,7 +545,7 @@ class ExtractMemoriesHook(PostSamplingHook):
             return
 
         # B-198 Phase 3: when persona_store is wired, the legacy
-        # markdown append is redundant — _write_facts_to_memory will
+        # markdown append is redundant �?_write_facts_to_memory will
         # upsert and re-render the disk cache from DB. Skip it.
         if ctx.persona_store is None:
             # Legacy markdown-only path (tests / installs without store).
@@ -582,7 +580,7 @@ class ExtractMemoriesHook(PostSamplingHook):
                             new_text,
                             section_header="## Auto-extracted",
                             bullet=bullet,
-                            placeholder_title="MEMORY.md — what I want to remember next time",
+                            placeholder_title="MEMORY.md �?what I want to remember next time",
                         )
                     cap = PERSONA_CHAR_CAPS.get("MEMORY.md")
                     if cap is not None and len(new_text) > cap:
@@ -596,14 +594,14 @@ class ExtractMemoriesHook(PostSamplingHook):
         # ExtractFactsHook is also enabled (the default since B-319)
         # it already writes to ``bucket="failure_modes"`` from its own
         # LLM round-trip, so this hook would file SECOND-LLM "memories"
-        # into the SAME bucket → AUTO_SECTIONS renders both extractions
+        # into the SAME bucket �?AUTO_SECTIONS renders both extractions
         # interleaved under the same MEMORY.md heading, defeating the
         # value of running two extractors. Pre-B-341 the user
         # explicitly opting both on got mixed-source bullets with no
         # way to tell them apart.
         #
         # If ExtractFactsHook is on, skip the DB write entirely
-        # (legacy markdown above is enough — the failure_modes bucket
+        # (legacy markdown above is enough �?the failure_modes bucket
         # is already covered). If ExtractFactsHook is OFF, fall
         # through to the original DB write so the legacy hook still
         # works as the sole extractor.
@@ -631,14 +629,14 @@ class ExtractMemoriesHook(PostSamplingHook):
 _LESSONS_PROMPT = (
     "You are reviewing the chat turn that just ended between a user "
     "and the XMclaw agent. Extract anything *future-you* would benefit "
-    "from remembering. Be GENEROUS — pre-B-303 the bar was 'DURABLE "
+    "from remembering. Be GENEROUS �?pre-B-303 the bar was 'DURABLE "
     "lesson only' which produced empty buckets nearly every turn, so "
     "AGENTS.md / TOOLS.md / LEARNING.md / SOUL.md sat empty for weeks. "
     "Now lower the bar: ANY observation, technique, or principle that "
     "could plausibly help a future turn counts. Six buckets:\n\n"
     "  - \"workflow\": procedure / sequencing observations. Anything "
     "from 'grep before reading huge files' to 'when user asks 怎么 X, "
-    "first list_dir to confirm context'. Smaller hints are fine — "
+    "first list_dir to confirm context'. Smaller hints are fine �?"
     "future-you can dedupe via Auto-Dream. Goes to AGENTS.md.\n"
     "  - \"tool_quirks\": tool gotchas, surprises, hidden flags, "
     "unexpected output formats. Even 'memory_search returns dicts not "
@@ -653,7 +651,7 @@ _LESSONS_PROMPT = (
     "'reject ASCII boxart in commit messages'. Goes to SOUL.md.\n"
     "  - \"rules\" (B-303 new): explicit if-then heuristics for future "
     "behaviour. Examples: 'if user asks for time, do not just compute "
-    "from training-cutoff — read ## 当前时刻 block', 'if 0 skill_* "
+    "from training-cutoff �?read ## 当前时刻 block', 'if 0 skill_* "
     "match a query, call skill_browse before bash'. Goes to "
     "LEARNING.md.\n"
     "  - \"preferences\" (B-319 new): user-specific preferences about "
@@ -662,18 +660,28 @@ _LESSONS_PROMPT = (
     "English for code comments', 'user wants concise answers, no "
     "preamble', 'user prefers ruff over black', 'user wants me to "
     "fix lint inline rather than ask first'. Goes to USER.md. This "
-    "subsumes the legacy ProfileExtractor write-path — emit any "
+    "subsumes the legacy ProfileExtractor write-path �?emit any "
     "stable preference signal you see, not only ones the user "
     "explicitly stated.\n\n"
-    "Skip:\n"
-    "  - Pure status restatements ('I just did X', 'opening file Y').\n"
-    "  - Information already in the system prompt.\n"
-    "  - One-off transient context that won't matter next turn.\n"
-    "  - Facts that are substantively identical to ones already "
-    "extracted in previous turns (e.g. repeating the same preference, "
-    "rule, or workflow observation). Only extract genuinely NEW "
-    "insights or materially expanded versions.\n\n"
-    "It's BETTER to extract a small/imperfect bullet than to skip — "
+    "【核心原则】\n"
+    "  - 宁可多记，不可漏记。Auto-Dream 会自动合并重复。\n"
+    "  - 不确定时 → 提取。犹豫就说明有价值。\n\n"
+    "【必须提取的信号 — 逐条检查】\n"
+    "  □ 身份信息：用户名字、称呼、AI该怎么称呼用户\n"
+    "  □ 环境配置：代理端口、网络设置、工具路径、系统配置\n"
+    "  □ 已确认的偏好：语言、代码风格、沟通方式、默认工具\n"
+    "  □ 长期目标/项目：用户在开发什么、计划做什么\n"
+    "  □ 工作流程：用户喜欢的操作顺序、最佳实践\n"
+    "  □ 工具经验：隐藏参数、意外行为、坑点、输出格式\n"
+    "  □ 失败模式：错误模式、修复策略、什么做法不行\n"
+    "  □ 规则/启发式：用户明确说的'如果X就Y'、约束条件\n\n"
+    "【Skip】\n"
+    "  - 临时命令（'帮我改这个文件'）\n"
+    "  - 正在进行中且非长期项目的一次性操作\n"
+    "  - 纯状态重述（'我刚做了X'）\n"
+    "  - 系统提示中已有的信息\n"
+    "  - 和之前已提取的事实完全重复\n\n"
+    "It's BETTER to extract a small/imperfect bullet than to skip �?"
     "Auto-Dream consolidates duplicates, and the cap of 2 per bucket "
     "stops verbose LLMs from spamming. Output strict JSON: "
     "{\"workflow\": [\"...\"], \"tool_quirks\": [\"...\"], "
@@ -684,13 +692,13 @@ _LESSONS_PROMPT = (
 
 
 _LESSON_BUCKETS: dict[str, tuple[str, str, str, str | None]] = {
-    # bucket name → (target file, section header, fact kind, db bucket)
+    # bucket name �?(target file, section header, fact kind, db bucket)
     #
-    # ``fact kind`` is what we tag the DB row with — must match the
+    # ``fact kind`` is what we tag the DB row with �?must match the
     # ``fact_kind`` field in :data:`xmclaw.core.persona.store.AUTO_SECTIONS`
     # for the matching file, otherwise the renderer won't pick the row
     # up. ``db bucket`` is the ``metadata.bucket`` we attach to the row
-    # — ``None`` keeps the row unscoped (for files whose AUTO_SECTIONS
+    # �?``None`` keeps the row unscoped (for files whose AUTO_SECTIONS
     # entry has ``bucket_filter=None``, like USER.md).
     "workflow":      ("AGENTS.md",   "## Auto-extracted",             "lesson",     "workflow"),
     "tool_quirks":   ("TOOLS.md",    "## Auto-extracted",             "lesson",     "tool_quirks"),
@@ -698,7 +706,7 @@ _LESSON_BUCKETS: dict[str, tuple[str, str, str, str | None]] = {
     # B-303: extend to SOUL.md + LEARNING.md so all 7 persona files
     # get auto-coverage instead of just AGENTS / TOOLS / MEMORY +
     # USER (via ProfileExtractor). Pre-B-303 SOUL.md / LEARNING.md
-    # were strictly manual-write — agent rarely did, so they sat
+    # were strictly manual-write �?agent rarely did, so they sat
     # empty even after 100+ turns.
     "values":        ("SOUL.md",     "## Auto-extracted",             "lesson",     "values"),
     "rules":         ("LEARNING.md", "## Auto-extracted",             "lesson",     "rules"),
@@ -708,7 +716,7 @@ _LESSON_BUCKETS: dict[str, tuple[str, str, str, str | None]] = {
     # USER.md's AUTO_SECTIONS entry; ``bucket=None`` because USER.md
     # has ``bucket_filter=None`` (any preference fact qualifies).
     # Net effect: one LLM call per turn now covers all 6 auto-section
-    # routes — the legacy ProfileExtractor + ExtractMemoriesHook are
+    # routes �?the legacy ProfileExtractor + ExtractMemoriesHook are
     # kept for backward compat / opt-in deeper analysis but no
     # longer required for baseline coverage.
     "preferences":   ("USER.md",     "## Auto-extracted preferences", "preference", None),
@@ -722,25 +730,25 @@ class ExtractLessonsHook(PostSamplingHook):
     Originally B-168 covered three buckets (workflow / tool_quirks /
     failure_modes) for AGENTS.md / TOOLS.md / MEMORY.md only. B-303
     added ``values`` (SOUL.md) and ``rules`` (LEARNING.md). B-319
-    absorbs the ``preferences`` bucket — written with
+    absorbs the ``preferences`` bucket �?written with
     ``kind="preference"`` so the persona store renders them under
     USER.md's ``## Auto-extracted preferences`` heading. That makes
     this hook the unified write-path for all 6 auto-section kinds
     across the 7-file persona set.
 
     Six buckets, six target files, one LLM call per turn:
-      * ``workflow``      → ``AGENTS.md``  ``## Auto-extracted``
-      * ``tool_quirks``   → ``TOOLS.md``   ``## Auto-extracted``
-      * ``failure_modes`` → ``MEMORY.md``  ``## Failure Modes``
-      * ``values``        → ``SOUL.md``    ``## Auto-extracted``
-      * ``rules``         → ``LEARNING.md`` ``## Auto-extracted``
-      * ``preferences``   → ``USER.md``    ``## Auto-extracted preferences``
+      * ``workflow``      �?``AGENTS.md``  ``## Auto-extracted``
+      * ``tool_quirks``   �?``TOOLS.md``   ``## Auto-extracted``
+      * ``failure_modes`` �?``MEMORY.md``  ``## Failure Modes``
+      * ``values``        �?``SOUL.md``    ``## Auto-extracted``
+      * ``rules``         �?``LEARNING.md`` ``## Auto-extracted``
+      * ``preferences``   �?``USER.md``    ``## Auto-extracted preferences``
 
     Forward-compat alias: this class is also exported as
-    :class:`ExtractFactsHook` — use that name in new code; the
+    :class:`ExtractFactsHook` �?use that name in new code; the
     "Lessons" name predates the broader scope.
 
-    Default ON — closes the original gap "经验教训也会自己总结的对吧？"
+    Default ON �?closes the original gap "经验教训也会自己总结的对吧？"
     (right, lessons get auto-summarized too?). Pre-B-168 answer was
     "no, only USER.md (via ProfileExtractor), and only manually for
     everything else". Post-B-319 answer is "yes, every persona file
@@ -750,7 +758,7 @@ class ExtractLessonsHook(PostSamplingHook):
     Char caps in :data:`PERSONA_CHAR_CAPS` evict the oldest bullets
     when files outgrow their budget.
 
-    Gate: ``evolution.memory.extract_lessons.enabled`` — flip to false
+    Gate: ``evolution.memory.extract_lessons.enabled`` �?flip to false
     if the extra LLM call per turn isn't worth the latency for this
     particular agent. (Renamed to ``extract_facts.enabled`` is
     accepted as an alias for forward compatibility.)
@@ -759,13 +767,13 @@ class ExtractLessonsHook(PostSamplingHook):
     id = "extract_lessons"
 
     #: Per-turn cap so a verbose LLM can't dump 20 vague "facts".
-    MAX_PER_BUCKET: int = 2
+    #: Wave-28: raised from 2 → 3 to reduce high-signal drops.
+    MAX_PER_BUCKET: int = 3
 
     def is_enabled(self, ctx: HookContext) -> bool:
         if ctx.persona_dir is None:
             return False
-        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）。
-        if _is_internal_session(ctx.session_id):
+        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）�?        if _is_internal_session(ctx.session_id):
             return False
         memory_cfg = ((ctx.cfg.get("evolution") or {}).get("memory") or {})
         # Forward name first; legacy name as backward-compat alias.
@@ -795,7 +803,7 @@ class ExtractLessonsHook(PostSamplingHook):
         ]
         try:
             resp = await ctx.llm.complete(messages, tools=None)
-        except Exception:  # noqa: BLE001 — never let a hook kill the chain
+        except Exception:  # noqa: BLE001 �?never let a hook kill the chain
             return
         raw = (getattr(resp, "content", None) or "").strip()
         if not raw:
@@ -837,14 +845,14 @@ class ExtractLessonsHook(PostSamplingHook):
                 enforce_char_cap,
             )
             from xmclaw.utils.fs_locks import atomic_write_text, get_lock
-        except Exception:  # noqa: BLE001 — startup-order safety, log only
+        except Exception:  # noqa: BLE001 �?startup-order safety, log only
             return
 
         pdir = Path(str(ctx.persona_dir))
         pdir.mkdir(parents=True, exist_ok=True)
 
         # Group facts by destination file so we take one lock per
-        # file, not one per bullet — fewer atomic writes, fewer races.
+        # file, not one per bullet �?fewer atomic writes, fewer races.
         per_file: dict[str, list[tuple[str, str]]] = {}
         for bucket, facts in buckets.items():
             target_file, section, _kind, _db_bucket = _LESSON_BUCKETS[bucket]
@@ -856,7 +864,7 @@ class ExtractLessonsHook(PostSamplingHook):
         date = _t.strftime("%Y-%m-%d")
 
         # B-198 Phase 3: skip legacy markdown writes when the
-        # persona_store is wired — _write_facts_to_memory below
+        # persona_store is wired �?_write_facts_to_memory below
         # upserts to DB + re-renders disk from there.
         if ctx.persona_store is None:
             for target_file, entries in per_file.items():
@@ -872,7 +880,7 @@ class ExtractLessonsHook(PostSamplingHook):
                             # Renamed from ``cleaned`` to avoid colliding with
                             # the ``cleaned: list[str]`` accumulator earlier in
                             # this function (mypy correctly flagged the
-                            # type-shadowing — same name in the same method
+                            # type-shadowing �?same name in the same method
                             # body).
                             cleaned_line = _strip_leading_date(
                                 fact.replace(chr(10), " ").strip()
@@ -883,7 +891,7 @@ class ExtractLessonsHook(PostSamplingHook):
                                 section_header=section,
                                 bullet=bullet,
                                 placeholder_title=(
-                                    f"{target_file} — auto-extracted"
+                                    f"{target_file} �?auto-extracted"
                                 ),
                             )
                         cap = PERSONA_CHAR_CAPS.get(target_file)
@@ -917,8 +925,7 @@ ExtractFactsHook = ExtractLessonsHook
 def build_default_registry() -> HookRegistry:
     """Default hook chain shipped with the daemon.
 
-    B-319: ``ExtractMemoriesHook`` is no longer registered by default —
-    its output (durable failure_modes facts) is now covered by the
+    B-319: ``ExtractMemoriesHook`` is no longer registered by default �?    its output (durable failure_modes facts) is now covered by the
     ``failure_modes`` bucket of :class:`ExtractFactsHook` in the same
     LLM round-trip. Installs that explicitly want the legacy second
     extractor can flip ``evolution.memory.extract_memories.enabled``

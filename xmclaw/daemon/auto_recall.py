@@ -241,28 +241,18 @@ async def recall_for_message(
 
 
 def render_recalled_block(hits: Sequence[RecalledFact]) -> str:
-    """Format hits as a ``<recalled>`` XML-ish block for the LLM.
+    """Format hits as a compact block for LLM context.
 
-    The block format echoes how comparable agents surface auxiliary
-    context — leading tag + one bullet per fact + closing tag. The
-    fid in each bullet lets the agent quote-back / forget / replace
-    a recalled fact without a separate ``memory_search`` round-trip.
-
-    Returns empty string when ``hits`` is empty so the caller can
-    just ``prefix + user_message`` without checking.
+    Wave-28: stripped XML tags and fid noise — they add token cost
+    without improving LLM comprehension.  Uses plain markdown bullets
+    so the block is readable even if newlines are collapsed by the UI.
     """
     if not hits:
         return ""
-    lines = ["<recalled relevance=\"similarity-top-k\">"]
+    lines = ["【相关记忆】"]
     for h in hits:
-        sim = f"{h.similarity:.2f}"
-        bucket = h.bucket
         text = h.text.replace("\n", " ")
-        suffix_fid = f" [fid:{h.fid}]" if h.fid else ""
-        lines.append(
-            f"- ({sim} | {bucket}) {text}{suffix_fid}"
-        )
-    lines.append("</recalled>")
+        lines.append(f"• {text}")
     return "\n".join(lines)
 
 

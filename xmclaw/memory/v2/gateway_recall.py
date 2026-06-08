@@ -41,7 +41,7 @@ def _inc_metric(
 # ── Layer 1: GATE (heuristic) ────────────────────────────────────
 
 
-_SHOULD_RECALL_MIN_CHARS: int = 8
+_SHOULD_RECALL_MIN_CHARS: int = 6
 
 # Greetings / small-talk — never need memory.
 _SHOULD_RECALL_GREETINGS: frozenset[str] = frozenset({
@@ -57,11 +57,23 @@ _SHOULD_RECALL_CONFIRMATIONS: frozenset[str] = frozenset({
 })
 
 
+# Short phrases that signal a memory-worthy intent even when the
+# overall message is short.  Mirrors gateway._TIER1_KEYWORDS.
+_SHOULD_RECALL_SIGNALS: frozenset[str] = frozenset({
+    "名叫", "名字是", "称呼我", "叫我", "我是", "我的名字",
+    "代理端口", "代理地址", "代理设置", "网络代理",
+    "记住", "记下来", "别忘了", "记着",
+    "偏好使用", "习惯使用", "以后都用", "默认使用", "优先使用",
+    "不喜欢", "不想用", "不愿用",
+})
+
+
 def should_recall_heuristic(user_message: str) -> bool:
     """Lightweight gate: should we even try to recall for this message?
 
     Returns False for:
-      * extremely short messages (< 8 chars)
+      * extremely short messages (< 6 chars) UNLESS they contain a
+        memory signal (e.g. "记住" / "代理端口")
       * greetings / small-talk
       * simple confirmations
       * single emoji / punctuation-only
@@ -70,7 +82,11 @@ def should_recall_heuristic(user_message: str) -> bool:
     recall than to inject noise into every turn.
     """
     text = (user_message or "").strip()
-    if len(text) < _SHOULD_RECALL_MIN_CHARS:
+
+    # Wave-29: Tier-1 signals bypass the length gate.
+    has_signal = any(s in text for s in _SHOULD_RECALL_SIGNALS)
+
+    if len(text) < _SHOULD_RECALL_MIN_CHARS and not has_signal:
         return False
 
     # Strip common punctuation for classification.
@@ -136,8 +152,12 @@ _BUCKET_KEYWORDS: dict[str, frozenset[str]] = {
 
 # Buckets that are already injected via the structural axis (.md files).
 # The similarity axis skips them to avoid double-injection.
+# Wave-28: user_identity / user_preference / values are DYNAMIC —
+# they may change mid-session, so they are kept in the recall path
+# (not structural). Only agent_identity (static) and misc (catch-all)
+# are skipped here.
 _STRUCTURAL_BUCKETS: frozenset[str] = frozenset({
-    "agent_identity", "user_identity", "user_preference", "values", "misc",
+    "agent_identity", "misc",
 })
 
 
@@ -155,6 +175,12 @@ _BUCKET_DESCRIPTIONS: dict[str, str] = {
     "rules": "关于规则、约束、限制、必须做什么、禁止做什么、规范要求、硬性规定、底线",
     "values": "关于价值观、原则、理念、文化、信念、追求、使命、愿景、精神内核",
 }
+
+
+# Module-level cache for bucket-description vectors.
+# Populated on first call to classify_buckets_semantic; keyed by
+# embedder identity so switching embedder models invalidates it.
+_bucket_desc_vec_cache: dict[str, dict[str, tuple[float, ...]]] = {}
 
 
 def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
@@ -192,13 +218,22 @@ async def classify_buckets_semantic(
         # Embed the user message.
         qvec = tuple(await embedder.embed(text))
 
-        # Embed bucket descriptions (cached by embedder's LRU).
-        descs = list(_BUCKET_DESCRIPTIONS.items())
-        desc_texts = [d for _, d in descs]
-        desc_vectors = await embedder.embed_batch(desc_texts)
+        # Embed bucket descriptions once per embedder model.
+        global _bucket_desc_vec_cache
+        cache_key = getattr(embedder, "model_name", "default")
+        cached = _bucket_desc_vec_cache.get(cache_key)
+        if cached is None:
+            descs = list(_BUCKET_DESCRIPTIONS.items())
+            desc_texts = [d for _, d in descs]
+            desc_vectors = await embedder.embed_batch(desc_texts)
+            cached = {
+                bucket: tuple(dvec)
+                for (bucket, _), dvec in zip(descs, desc_vectors)
+            }
+            _bucket_desc_vec_cache[cache_key] = cached
 
         scores: list[tuple[str, float]] = []
-        for (bucket, _), dvec in zip(descs, desc_vectors):
+        for bucket, dvec in cached.items():
             sim = _cosine_similarity(qvec, dvec)
             scores.append((bucket, sim))
 
@@ -337,17 +372,20 @@ async def recall_for_message_via_gateway(
 
 
 def render_recalled_block(hits: Sequence[RecallResult]) -> str:
-    """Format recall hits as a ``<recalled>`` XML-ish block."""
+    """Format recall hits as a compact block for LLM context.
+
+    Wave-28: stripped XML tags and fid noise — they add token cost
+    without improving LLM comprehension.  Uses plain markdown bullets
+    so the block is readable even if newlines are collapsed by the UI.
+    """
     if not hits:
         return ""
-    lines = ['<recalled relevance="similarity-top-k">']
+    lines = ["【相关记忆】"]
     for h in hits:
-        sim = f"{h.similarity:.2f}"
-        bucket = h.bucket
         text = h.text.replace("\n", " ")
-        suffix_fid = f" [fid:{h.fid}]" if h.fid else ""
-        lines.append(f"- ({sim} | {bucket}) {text}{suffix_fid}")
-    lines.append("</recalled>")
+        # Wave-28: drop fid suffix — LLM doesn't need it, and it looks
+        # like garbage when newlines are collapsed.
+        lines.append(f"• {text}")
     return "\n".join(lines)
 
 

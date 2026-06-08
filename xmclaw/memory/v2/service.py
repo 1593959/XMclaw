@@ -197,8 +197,15 @@ def _three_factor_score(
     now: float,
 ) -> float:
     """Generative-Agents-style score: weighted relevance + recency +
-    importance. All three sub-scores are normalised to [0, 1] so the
-    weights are comparable. Pure function — no I/O."""
+    importance + layer_boost. All sub-scores are normalised to [0, 1]
+    so the weights are comparable. Pure function — no I/O.
+
+    Wave-29 (survey Phase 3): layer_boost implements storage-tier
+    preference without changing the recall API.  Procedural facts
+    (system rules, persona manuals) are treated as highest-confidence;
+    long_term facts (evidence_count >= 3) get a moderate boost;
+    working facts start at par and must compete on relevance/recency.
+    """
     # relevance — query cosine, clamped to [0, 1] (negative cosine →
     # irrelevant, not anti-relevant).
     relevance = 0.0
@@ -216,10 +223,18 @@ def _three_factor_score(
     # importance — confidence already lives in [0, 1] and climbs with
     # evidence_count, so it's a ready-made importance proxy.
     importance = max(0.0, min(1.0, float(getattr(fact, "confidence", 0.0))))
+    # layer_boost — storage-tier preference (Phase 3).
+    layer = getattr(fact, "layer", "working")
+    layer_boost: float = {
+        "procedural": 0.25,
+        "long_term": 0.10,
+        "working": 0.0,
+    }.get(layer, 0.0)
     return (
         RANK_W_RELEVANCE * relevance
         + RANK_W_RECENCY * recency
         + RANK_W_IMPORTANCE * importance
+        + layer_boost
     )
 
 
@@ -1446,7 +1461,7 @@ class MemoryService:
             source_event_id=None,
             contradicts=(),
             superseded_by=None,
-            layer=FactLayer.LONG_TERM.value,
+            layer=FactLayer.PROCEDURAL.value,
             bucket=basename,          # routing key for v2_renderer
             provenance="persona_file",
             ts_first=ts_first,
@@ -2327,26 +2342,58 @@ class MemoryService:
             return vec_hits[:k]
 
         # Wave-2 fix (2026-06-06): RRF fusion replaces weighted sum.
+        # Wave-29 (survey Phase 2): three-way RRF — vector + BM25 + time.
         # Reciprocal Rank Fusion (k=60) is the cross-industry standard;
         # it ignores raw score magnitudes and fuses by rank position,
         # making it robust across different scoring scales (cosine vs BM25).
+        # Temporal decay (10-15% weight per survey recommendation) prevents
+        # stale facts from dominating recall when the query is ambiguous.
         _RRF_K = 60
+        _RRF_W_VEC = 0.50
+        _RRF_W_BM25 = 0.35
+        _RRF_W_TIME = 0.15
 
-        def _rrf_score(rank_vec: int | None, rank_bm25: int | None) -> float:
+        def _rrf_score(
+            rank_vec: int | None,
+            rank_bm25: int | None,
+            rank_time: int | None,
+        ) -> float:
             score = 0.0
             if rank_vec is not None:
-                score += 1.0 / (_RRF_K + rank_vec)
+                score += _RRF_W_VEC / (_RRF_K + rank_vec)
             if rank_bm25 is not None:
-                score += 1.0 / (_RRF_K + rank_bm25)
+                score += _RRF_W_BM25 / (_RRF_K + rank_bm25)
+            if rank_time is not None:
+                score += _RRF_W_TIME / (_RRF_K + rank_time)
             return score
 
         # Build rank lookups (0-based rank)
         vec_ranks = {h.fact.id: i for i, h in enumerate(vec_hits)}
         bm25_ranks = {fid: i for i, (fid, _) in enumerate(bm25_results)}
 
-        all_ids = set(vec_ranks) | set(bm25_ranks)
+        # Time-decay rank: facts sorted by ts_last DESC (newest first).
+        # This is the third signal in the RRF fusion per the survey report.
+        _now = time.time()
+        all_facts_by_id: dict[str, Any] = {h.fact.id: h.fact for h in vec_hits}
+        for fid, _ in bm25_results:
+            if fid not in all_facts_by_id:
+                all_facts_by_id[fid] = None  # placeholder; resolved below
+        time_sorted = sorted(
+            all_facts_by_id,
+            key=lambda fid: (
+                getattr(all_facts_by_id[fid], "ts_last", 0.0) or 0.0
+            ),
+            reverse=True,
+        )
+        time_ranks = {fid: i for i, fid in enumerate(time_sorted)}
+
+        all_ids = set(vec_ranks) | set(bm25_ranks) | set(time_ranks)
         fused_scores = {
-            fid: _rrf_score(vec_ranks.get(fid), bm25_ranks.get(fid))
+            fid: _rrf_score(
+                vec_ranks.get(fid),
+                bm25_ranks.get(fid),
+                time_ranks.get(fid),
+            )
             for fid in all_ids
         }
 
@@ -2374,6 +2421,92 @@ class MemoryService:
                         related_relations=[],
                     )
 
+        # Wave-29 (survey Phase 2): graph expansion — Hindsight 4th signal.
+        # Multi-hop SAME_TOPIC + CAUSED_BY traversal with progressive
+        # damping.  1-hop gets 0.55×, 2-hop gets 0.30×.  High-centrality
+        # nodes (many connections) get a small bonus — they are likely
+        # hub facts that bridge multiple topics.
+        _GRAPH_DAMP_1HOP = 0.55
+        _GRAPH_DAMP_2HOP = 0.30
+        _CENTRALITY_BONUS = 0.03
+        top_fids = [
+            fid for fid, _ in sorted(
+                fused_scores.items(), key=lambda x: x[1], reverse=True,
+            )
+        ][:k]
+        # hop → set[fid]
+        neighbor_by_hop: dict[int, set[str]] = {1: set(), 2: set()}
+        # Track degree (connection count) for centrality bonus.
+        neighbor_degree: dict[str, int] = {}
+        if self._graph is not None:
+            import asyncio as _asyncio
+            sem = _asyncio.Semaphore(20)
+
+            async def _neighbors(fid: str, max_hops: int) -> list[tuple[int, str]]:
+                """Return (hop, target_id) pairs."""
+                async with sem:
+                    try:
+                        pairs = await self._graph.neighbors(
+                            fid,
+                            relation_types=["SAME_TOPIC", "CAUSED_BY"],
+                            max_hops=max_hops,
+                        )
+                        # pairs is list of (Relation, target_fact_id)
+                        out: list[tuple[int, str]] = []
+                        for rel, tgt in pairs:
+                            # Estimate hop from relation metadata if
+                            # available, otherwise assume 1.
+                            hop = getattr(rel, "hop", 1)
+                            out.append((hop, tgt))
+                            # Count degree per neighbor.
+                            neighbor_degree[tgt] = neighbor_degree.get(tgt, 0) + 1
+                        return out
+                    except Exception:  # noqa: BLE001
+                        return []
+
+            # Fetch 2-hop neighbors in one call; split by hop below.
+            all_nbr_lists = await _asyncio.gather(
+                *(_neighbors(fid, max_hops=2) for fid in top_fids)
+            )
+            for nbr_list in all_nbr_lists:
+                for hop, nid in nbr_list:
+                    if nid not in by_id and hop in neighbor_by_hop:
+                        neighbor_by_hop[hop].add(nid)
+
+        # Fetch neighbor facts and assign damped scores.
+        all_neighbor_ids = neighbor_by_hop[1] | neighbor_by_hop[2]
+        if all_neighbor_ids:
+            import asyncio as _asyncio
+            sem = _asyncio.Semaphore(20)
+
+            async def _fetch_neighbor(nid: str) -> tuple[str, Fact | None]:
+                async with sem:
+                    try:
+                        return nid, await self._vec.get(nid)
+                    except Exception:  # noqa: BLE001
+                        return nid, None
+
+            min_top_score = min(
+                fused_scores[fid] for fid in top_fids if fid in fused_scores
+            ) if top_fids else 0.0
+            for nid, fact in await _asyncio.gather(
+                *(_fetch_neighbor(nid) for nid in all_neighbor_ids)
+            ):
+                if fact is not None:
+                    by_id[nid] = RecallHit(
+                        fact=fact, distance=0.0,
+                        related_relations=[],
+                    )
+                    # Determine hop for damping.
+                    if nid in neighbor_by_hop[1]:
+                        damp = _GRAPH_DAMP_1HOP
+                    else:
+                        damp = _GRAPH_DAMP_2HOP
+                    # Centrality bonus for well-connected nodes.
+                    degree = neighbor_degree.get(nid, 0)
+                    centrality = _CENTRALITY_BONUS * min(degree, 5)
+                    fused_scores[nid] = min_top_score * damp + centrality
+
         # Sort fused descending, take top-K.
         ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
         out: list[RecallHit] = []
@@ -2383,6 +2516,27 @@ class MemoryService:
                 out.append(hit)
             if len(out) >= k:
                 break
+
+        # Wave-29 reranker: re-order the final top-k by the full
+        # three-factor score (relevance + recency + importance +
+        # layer_boost).  This is a lightweight in-process reranker
+        # — no extra model, just the signals we already have.  The
+        # RRF fusion got the candidates right; this step puts the
+        # best ones at the very top for the prompt injection.
+        if out and query:
+            try:
+                qvec = await self._embedder.embed(query)
+                qnorm = sum(v * v for v in qvec) ** 0.5
+            except Exception:  # noqa: BLE001
+                qvec, qnorm = None, 0.0
+            _now = time.time()
+            out = sorted(
+                out,
+                key=lambda h: _three_factor_score(
+                    h.fact, query_vec=qvec, query_norm=qnorm, now=_now,
+                ),
+                reverse=True,
+            )
         return out
 
     async def sweep(
@@ -2481,17 +2635,27 @@ class MemoryService:
             remaining = [
                 f for f in unprotected if f.id not in ttl_victim_ids
             ]
-            remaining.sort(key=lambda f: f.ts_last)  # oldest-first
+            # Wave-32: value-weighted eviction.
+            # Retention score = evidence_count * confidence.
+            # High-score facts (well-established, high-confidence) are
+            # protected; low-score / stale facts are evicted first.
+            # Tie-breaker: older ts_last loses.
+            remaining.sort(
+                key=lambda f: (
+                    -(getattr(f, "evidence_count", 1) * f.confidence),
+                    f.ts_last,
+                ),
+            )
 
             if items_cap is not None and len(remaining) > items_cap:
                 overflow = len(remaining) - items_cap
-                for f in remaining[:overflow]:
+                for f in remaining[-overflow:]:
                     cap_victim_ids.add(f.id)
 
             if bytes_cap is not None:
                 budget = int(bytes_cap)
                 keep: set[str] = set()
-                for f in reversed(remaining):
+                for f in remaining:
                     nbytes = len((f.text or "").encode("utf-8"))
                     if nbytes <= budget:
                         keep.add(f.id)
@@ -2749,48 +2913,64 @@ class MemoryService:
         project_facts = _rank(project_facts)
         decision_facts = _rank(decision_facts)
 
+        # Wave-32: token-budget-aware rendering.
+        # Each section competes for a shared token budget so long facts
+        # don't starve later sections.  Header always reserved; facts
+        # are added best-first until budget exhausted.
+        _TOKEN_BUDGET = getattr(self, "_render_token_budget", 4000)
+
+        class _Budget:
+            __slots__ = ("budget", "used", "dropped")
+
+            def __init__(self, budget: int):
+                self.budget = budget
+                self.used = 0
+                self.dropped = 0
+
+            def _cost(self, text: str) -> int:
+                # Safe upper-bound: 1 char ≈ 1 token for CJK;
+                # English words average slightly less but len(text)
+                # is a cheap conservative estimate.
+                return len(text)
+
+            def fit(self, text: str) -> bool:
+                return self.used + self._cost(text) <= self.budget
+
+            def add(self, text: str) -> None:
+                self.used += self._cost(text)
+
+        _b = _Budget(_TOKEN_BUDGET)
         sections: list[str] = []
 
-        if user_facts:
-            sections.append("### 用户档案 (USER)")
-            for h in user_facts:
-                sections.append(
+        def _sec(title: str, hits: list[RecallHit], max_n: int) -> None:
+            """Add a section under token budget."""
+            lines: list[str] = []
+            dropped = 0
+            for h in hits[:max_n]:
+                line = (
                     f"  - [{h.fact.kind}] {h.fact.text} "
                     f"(conf {h.fact.confidence:.2f})"
                 )
+                if _b.fit(line):
+                    lines.append(line)
+                    _b.add(line)
+                else:
+                    dropped += 1
+            if lines:
+                sections.append(title)
+                sections.extend(lines)
+                if dropped:
+                    sections.append(f"  … 还有 {dropped} 条因上下文限制未显示")
+                    _b.dropped += dropped
 
-        if project_facts:
-            sections.append("### 项目档案 (PROJECT)")
-            for h in project_facts:
-                sections.append(
-                    f"  - [{h.fact.kind}] {h.fact.text} "
-                    f"(conf {h.fact.confidence:.2f})"
-                )
-
-        if decision_facts:
-            sections.append("### 决定记录 (DECISIONS)")
-            for h in decision_facts:
-                sections.append(
-                    f"  - {h.fact.text} (conf {h.fact.confidence:.2f})"
-                )
-
-        # Wave-2 fix: render cross-session task continuity.
-        if task_facts:
-            sections.append("### 进行中任务")
-            for h in task_facts:
-                sections.append(
-                    f"  - [{h.fact.kind}] {h.fact.text} "
-                    f"(conf {h.fact.confidence:.2f})"
-                )
+        # Wave-29: cap always-on sections to avoid context bloat.
+        _sec("### 用户档案 (USER)", user_facts, 10)
+        _sec("### 项目档案 (PROJECT)", project_facts, 10)
+        _sec("### 决定记录 (DECISIONS)", decision_facts, 6)
+        _sec("### 进行中任务", task_facts, 6)
 
         if relevant_hits:
             seen_ids = {h.fact.id for h in (user_facts + project_facts + decision_facts + task_facts)}
-            # 2026-06-06 上下文污染修复：top-k 向量召回原来不带相关性阈值，
-            # 对"需要"这类没有真正相关记忆的输入也会塞 8 条最近邻当"与本轮
-            # 相关"注入，污染上下文导致答非所问。加 cosine 距离阈值
-            # (与 remember() 的 relate_distance 同档，similarity≈0.6)；
-            # 过滤后没有相关项就不渲染这个小节。
-            # Wave-1 fix: threshold now configurable via _recall_distance_threshold.
             _recall_distance_threshold = getattr(
                 self, "_recall_distance_threshold", 0.40
             )
@@ -2799,28 +2979,49 @@ class MemoryService:
                 if h.fact.id not in seen_ids
                 and float(getattr(h, "distance", 0.0) or 0.0) <= _recall_distance_threshold
             ])
-            if new_hits:
-                sections.append("### 与本轮相关的事实 (top-K, 向量召回)")
-            # Phase 8 ⑪ (2026-05-30): reinforcement. These query-relevant
-            # facts were actually useful this turn → bump their ts_last
-            # so recall-frequency feeds back into the recency score
-            # (MemoryBank effect). Fire-and-forget; never blocks render.
+            # Phase 8 ⑪: reinforcement (fire-and-forget).
             self._reinforce_facts([h.fact for h in new_hits])
+            rel_lines: list[str] = []
+            dropped = 0
             for h in new_hits:
-                # Annotate with CONTRADICTS / SUPERSEDES inline so the
-                # agent sees the relation graph at glance.
                 markers = []
                 for rel in h.related_relations:
                     if rel.relation in ("CONTRADICTS", "SUPERSEDES"):
                         markers.append(f"⚠ {rel.relation.lower()} {rel.target_fact_id[:24]}")
                 marker_str = f" [{'; '.join(markers)}]" if markers else ""
-                sections.append(
+                line = (
                     f"  - [{h.fact.kind}] {h.fact.text}{marker_str} "
                     f"(conf {h.fact.confidence:.2f})"
                 )
+                if _b.fit(line):
+                    rel_lines.append(line)
+                    _b.add(line)
+                else:
+                    dropped += 1
+            if rel_lines:
+                sections.append("### 与本轮相关的事实 (top-K, 向量召回)")
+                sections.extend(rel_lines)
+                if dropped:
+                    sections.append(f"  … 还有 {dropped} 条因上下文限制未显示")
+                    _b.dropped += dropped
 
         if not sections:
             return ""
+
+        # Wave-29: lightweight metadata so the LLM knows how much
+        # context it has.  This prevents the "I don't remember"
+        # hallucination when the block is small, and signals when
+        # the block is large so the LLM can prioritise.
+        _counts: dict[str, int] = {}
+        for line in sections:
+            if line.startswith("### "):
+                _counts[line[4:].split("(")[0].strip()] = 0
+            elif line.startswith("  - "):
+                for key in list(_counts):
+                    _counts[key] += 1
+        _meta = " | ".join(
+            f"{k}: {v}" for k, v in _counts.items() if v > 0
+        )
 
         return (
             "\n\n<memory-v2-facts>\n"
@@ -2830,7 +3031,8 @@ class MemoryService:
             "goals / 记住 X / 我是 X / etc) — you do NOT need to call "
             "memorize() for these. Refer to them naturally when "
             "relevant. ⚠ markers mean a related fact contradicts or "
-            "supersedes the marked one; prefer the unmarked source.]\n\n"
+            "supersedes the marked one; prefer the unmarked source. "
+            f"Loaded {_meta}]\n\n"
             + "\n".join(sections)
             + "\n</memory-v2-facts>"
         )
@@ -2840,15 +3042,27 @@ class MemoryService:
         query-relevant, so recall-frequency strengthens their recency
         score (MemoryBank, arXiv:2305.10250). Fire-and-forget — schedules
         a background upsert and returns immediately; never raises into
-        the render path. Skips facts touched within
-        ``REINFORCE_MIN_INTERVAL_S`` to avoid write amplification."""
+        the render path.
+
+        Reinforcement interval is layer-dependent:
+          * working    → 5 min (fresh facts need frequent refresh)
+          * long_term  → 30 min (stable, already promoted)
+          * procedural → 30 min (never expires, minimal churn)
+        """
         if not facts:
             return
         now = time.time()
+
+        def _interval_for(f: Fact) -> float:
+            _layer = getattr(f, "layer", "working")
+            if _layer == FactLayer.WORKING.value:
+                return 60.0 * 5.0   # 5 min
+            return REINFORCE_MIN_INTERVAL_S  # 30 min for long_term / procedural
+
         stale = [
             f for f in facts
             if (now - float(getattr(f, "ts_last", now) or now))
-            >= REINFORCE_MIN_INTERVAL_S
+            >= _interval_for(f)
         ]
         if not stale:
             return

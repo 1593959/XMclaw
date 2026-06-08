@@ -266,6 +266,42 @@ class BuiltinToolsShellMixin:
 
     # ── web tools ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_garbled(text: str, threshold: float = 0.15) -> bool:
+        """Detect if text looks like binary garbage (e.g. undecompressed Brotli)."""
+        if not text or len(text) < 20:
+            return False
+        bad = sum(1 for c in text if ord(c) < 32 and c not in "\t\n\r")
+        return bad / len(text) > threshold
+
+    async def _fetch_via_browser(self, url: str, max_chars: int) -> tuple[str, int, str | None]:
+        """Headless Chromium fallback for bot-blocked or garbled pages."""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return "", 0, "playwright not installed — install with `pip install playwright` and `playwright install chromium`"
+
+        text = ""
+        status = 0
+        err: str | None = None
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            try:
+                resp = await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                status = resp.status if resp else 0
+                # Give JS-heavy SPAs a moment to render
+                await asyncio.sleep(0.5)
+                text = await page.evaluate("() => document.body.innerText")
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+            finally:
+                await browser.close()
+
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n...[truncated]"
+        return text, status, err
+
     async def _web_fetch(self, call: ToolCall, t0: float) -> ToolResult:
         url = call.args.get("url")
         if not isinstance(url, str) or not url.strip():
@@ -356,11 +392,12 @@ class BuiltinToolsShellMixin:
                 call, t0,
                 f"http error after {_MAX_ATTEMPTS} attempts: "
                 f"{type(last_exc).__name__}: {err_msg}. "
-                f"If this is a site that bot-blocks (Cloudflare, "
-                f"Akamai), try ``browser_open(url=..., visible=true)`` "
-                f"or ``browser_use_my_browser(url=...)`` to fetch via "
-                f"a real Chromium — those defeat most fingerprint "
-                f"checks the raw HTTP client trips on.",
+                f"This site may bot-block raw HTTP clients. "
+                f"Use ``browser_open(url=...)`` to drive the AGENT's "
+                f"Chromium (real window, user can assist if needed) — "
+                f"then ``browser_snapshot()`` or ``browser_screenshot()`` to "
+                f"read the page. Do NOT use ``open_in_user_browser()`` — "
+                f"the agent cannot see the user's desktop browser.",
             )
         assert r is not None  # mypy/runtime — guard above ensures this
 
@@ -425,7 +462,48 @@ class BuiltinToolsShellMixin:
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
+        # ── Decode body (garble detection + encoding fallback) ──
         text = r.text
+        # If httpx decoding failed (e.g. missing brotli pre-install),
+        # or the server mis-declared the charset, try manual decode.
+        if self._is_garbled(text):
+            for enc in ["utf-8", "gbk", "gb2312", "latin-1"]:
+                try:
+                    candidate = r.content.decode(enc)
+                    if not self._is_garbled(candidate):
+                        text = candidate
+                        break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+
+        # ── Anti-bot / garble → headless Chromium fallback ──
+        ok = 200 <= r.status_code < 400
+        bot_blocked = False
+        if not ok and r.status_code in (403, 429, 503):
+            lower_body = (text or "")[:2000].lower()
+            bot_blocked = any(
+                needle in lower_body
+                for needle in (
+                    "cloudflare", "just a moment", "captcha",
+                    "ddos protection", "access denied",
+                    "请完成验证", "人机验证",
+                )
+            )
+
+        if self._is_garbled(text) or bot_blocked:
+            fb_text, fb_status, fb_err = await self._fetch_via_browser(url, max_chars)
+            if fb_text and not fb_err:
+                text = fb_text
+                ok = True
+                bot_blocked = False
+            elif fb_err:
+                # Surface the browser fallback error so the agent knows
+                text = (
+                    f"[httpx raw] {r.status_code}\n"
+                    f"{text[:500]}\n\n"
+                    f"[browser fallback failed] {fb_err}"
+                )
+
         truncated = False
         if len(text) > max_chars:
             text = text[:max_chars]
@@ -461,7 +539,6 @@ class BuiltinToolsShellMixin:
             f"[{r.status_code} {r.reason_phrase}] {url}\n"
             f"{text}{suffix}"
         )
-        ok = 200 <= r.status_code < 400
         # 2026-05-28: when a public site returns a 4xx that looks
         # like anti-bot (403 / 429 / 503 with "cloudflare" / "captcha"
         # in body), point the agent at browser_open. Today the agent
@@ -469,22 +546,14 @@ class BuiltinToolsShellMixin:
         err = None
         if not ok:
             err = f"HTTP {r.status_code}"
-            if r.status_code in (403, 429, 503):
-                lower_body = (text or "")[:2000].lower()
-                if any(
-                    needle in lower_body
-                    for needle in (
-                        "cloudflare", "just a moment", "captcha",
-                        "ddos protection", "access denied",
-                        "请完成验证", "人机验证",
-                    )
-                ):
-                    err += (
-                        " — looks like bot-blocked; retry with "
-                        "``browser_open(url=..., visible=true)`` "
-                        "or ``browser_use_my_browser(url=...)`` "
-                        "for a real Chromium session."
-                    )
+            if bot_blocked:
+                err += (
+                    " — looks like bot-blocked; internal headless fallback also "
+                    "failed. Try ``browser_open(url=...)`` to drive the AGENT's "
+                    "Chromium (real window, user can assist if needed), then "
+                    "``browser_snapshot()`` to read content. "
+                    "Do NOT use ``open_in_user_browser()`` — the agent cannot see the user's desktop browser."
+                )
         return ToolResult(
             call_id=call.id,
             ok=ok,

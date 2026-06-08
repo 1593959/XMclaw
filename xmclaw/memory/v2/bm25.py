@@ -37,6 +37,13 @@ from typing import Any
 _LATIN_WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_\-]*")
 _DIGIT_RE = re.compile(r"\d+")
 
+# Chinese stopwords that jieba may produce and we want to ignore.
+_ENTITY_STOPWORDS: frozenset[str] = frozenset({
+    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人",
+    "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去",
+    "你", "会", "着", "没有", "看", "好", "自己", "这", "那",
+})
+
 
 def _is_chinese_char(ch: str) -> bool:
     """Match CJK Unified Ideographs (covers Simplified + Traditional
@@ -224,10 +231,16 @@ class PrebuiltBM25Index:
     build with a cached index that refreshes on a timer. Reduces
     per-query latency by >50% on stores with 5K+ facts.
 
-    The index is rebuilt asynchronously when:
+    Wave-29 improvement: write-burst coalescing.  ``invalidate()``
+    no longer forces an immediate rebuild; instead it increments a
+    dirty counter.  The index is only rebuilt when:
       * First search (cold start)
       * ``refresh_interval_s`` has elapsed since last rebuild
-      * Explicit ``invalidate()`` called (e.g. after bulk write)
+      * Dirty count reaches ``dirty_threshold`` (default 5)
+      * ``force=True`` passed to ``invalidate()``
+
+    This prevents the pathological case where a single turn writes
+    3-5 facts and triggers 3-5 serial rebuilds.
 
     Rebuild uses ``_scan_all(batch_size=5000)`` via the service's
     cursor pagination to avoid loading all facts into memory at once.
@@ -237,11 +250,16 @@ class PrebuiltBM25Index:
         self,
         service: Any,
         refresh_interval_s: float = 300.0,
+        dirty_threshold: int = 5,
+        min_refresh_interval_s: float = 30.0,
     ):
         self._svc = service
         self._index: BM25Index | None = None
         self._last_refresh: float = 0.0
         self._refresh_interval_s = refresh_interval_s
+        self._dirty_threshold = dirty_threshold
+        self._min_refresh_interval_s = min_refresh_interval_s
+        self._dirty_count: int = 0
         self._lock: Any | None = None  # asyncio.Lock created lazily
 
     def _ensure_lock(self) -> Any:
@@ -258,17 +276,21 @@ class PrebuiltBM25Index:
         """Return top-K (fact_id, normalised_score) using cached index."""
         import time as _t
 
-        if (
+        stale = (
             self._index is None
             or _t.time() - self._last_refresh > self._refresh_interval_s
-        ):
+            or self._dirty_count >= self._dirty_threshold
+        )
+        if stale:
             async with self._ensure_lock():
                 # Double-check inside lock
-                if (
+                stale_inner = (
                     self._index is None
                     or _t.time() - self._last_refresh
                     > self._refresh_interval_s
-                ):
+                    or self._dirty_count >= self._dirty_threshold
+                )
+                if stale_inner:
                     await self._rebuild()
 
         if self._index is None:
@@ -298,6 +320,7 @@ class PrebuiltBM25Index:
 
         self._index = BM25Index(facts)
         self._last_refresh = _t.time()
+        self._dirty_count = 0
         try:
             from xmclaw.utils.log import get_logger
             get_logger(__name__).info(
@@ -306,13 +329,19 @@ class PrebuiltBM25Index:
         except Exception:
             pass
 
-    def invalidate(self) -> None:
+    def invalidate(self, force: bool = False) -> None:
         """Mark the index stale so next search triggers rebuild.
+
+        Args:
+            force: when True, force an immediate rebuild on the next
+                search regardless of dirty count or timer.
 
         Call after bulk writes (import, sync, sweep) when you know
         the corpus has changed significantly.
         """
-        self._last_refresh = 0.0
+        self._dirty_count += 1
+        if force:
+            self._dirty_count = self._dirty_threshold
 
 
 __all__ = [
