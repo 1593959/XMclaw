@@ -2422,10 +2422,11 @@ class MemoryService:
                     )
 
         # Wave-29 (survey Phase 2): graph expansion — Hindsight 4th signal.
-        # Multi-hop SAME_TOPIC + CAUSED_BY traversal with progressive
-        # damping.  1-hop gets 0.55×, 2-hop gets 0.30×.  High-centrality
-        # nodes (many connections) get a small bonus — they are likely
-        # hub facts that bridge multiple topics.
+        # Multi-hop SAME_TOPIC traversal with progressive damping.
+        # 1-hop gets 0.55×, 2-hop gets 0.30×.  CAUSED_BY is excluded
+        # because its targets are ``event:<id>`` pseudo-IDs — they are
+        # dead ends that never resolve to a Fact (Wave-33 fix).
+        # High-centrality nodes get a small bonus.
         _GRAPH_DAMP_1HOP = 0.55
         _GRAPH_DAMP_2HOP = 0.30
         _CENTRALITY_BONUS = 0.03
@@ -2442,36 +2443,53 @@ class MemoryService:
             import asyncio as _asyncio
             sem = _asyncio.Semaphore(20)
 
-            async def _neighbors(fid: str, max_hops: int) -> list[tuple[int, str]]:
-                """Return (hop, target_id) pairs."""
+            async def _outgoing(
+                fid: str,
+            ) -> list[tuple[str, str]]:
+                """Return (relation_kind, target_id) pairs.
+                Filters out event pseudo-IDs."""
                 async with sem:
                     try:
                         pairs = await self._graph.neighbors(
                             fid,
-                            relation_types=["SAME_TOPIC", "CAUSED_BY"],
-                            max_hops=max_hops,
+                            relation_types=["SAME_TOPIC"],
+                            max_hops=1,
                         )
-                        # pairs is list of (Relation, target_fact_id)
-                        out: list[tuple[int, str]] = []
+                        out: list[tuple[str, str]] = []
                         for rel, tgt in pairs:
-                            # Estimate hop from relation metadata if
-                            # available, otherwise assume 1.
-                            hop = getattr(rel, "hop", 1)
-                            out.append((hop, tgt))
-                            # Count degree per neighbor.
-                            neighbor_degree[tgt] = neighbor_degree.get(tgt, 0) + 1
+                            # Wave-33: skip event pseudo-IDs.
+                            if tgt.startswith("event:"):
+                                continue
+                            out.append((rel.relation, tgt))
+                            neighbor_degree[tgt] = (
+                                neighbor_degree.get(tgt, 0) + 1
+                            )
                         return out
                     except Exception:  # noqa: BLE001
                         return []
 
-            # Fetch 2-hop neighbors in one call; split by hop below.
-            all_nbr_lists = await _asyncio.gather(
-                *(_neighbors(fid, max_hops=2) for fid in top_fids)
+            # Phase-1: 1-hop from top_fids.
+            hop1_lists = await _asyncio.gather(
+                *(_outgoing(fid) for fid in top_fids)
             )
-            for nbr_list in all_nbr_lists:
-                for hop, nid in nbr_list:
-                    if nid not in by_id and hop in neighbor_by_hop:
-                        neighbor_by_hop[hop].add(nid)
+            hop1_ids: set[str] = set()
+            for lst in hop1_lists:
+                for _rel, tgt in lst:
+                    if tgt not in by_id:
+                        hop1_ids.add(tgt)
+                        neighbor_by_hop[1].add(tgt)
+
+            # Phase-2: 2-hop from 1-hop frontier.
+            if hop1_ids:
+                hop2_lists = await _asyncio.gather(
+                    *(_outgoing(fid) for fid in hop1_ids)
+                )
+                for lst in hop2_lists:
+                    for _rel, tgt in lst:
+                        # Only count as 2-hop if NOT already a 1-hop
+                        # neighbour of any top_fid.
+                        if tgt not in by_id and tgt not in hop1_ids:
+                            neighbor_by_hop[2].add(tgt)
 
         # Fetch neighbor facts and assign damped scores.
         all_neighbor_ids = neighbor_by_hop[1] | neighbor_by_hop[2]
@@ -2497,12 +2515,11 @@ class MemoryService:
                         fact=fact, distance=0.0,
                         related_relations=[],
                     )
-                    # Determine hop for damping.
-                    if nid in neighbor_by_hop[1]:
-                        damp = _GRAPH_DAMP_1HOP
-                    else:
-                        damp = _GRAPH_DAMP_2HOP
-                    # Centrality bonus for well-connected nodes.
+                    damp = (
+                        _GRAPH_DAMP_1HOP
+                        if nid in neighbor_by_hop[1]
+                        else _GRAPH_DAMP_2HOP
+                    )
                     degree = neighbor_degree.get(nid, 0)
                     centrality = _CENTRALITY_BONUS * min(degree, 5)
                     fused_scores[nid] = min_top_score * damp + centrality
@@ -2981,13 +2998,50 @@ class MemoryService:
             ])
             # Phase 8 ⑪: reinforcement (fire-and-forget).
             self._reinforce_facts([h.fact for h in new_hits])
+
+            # Wave-33: preload target facts for CONTRADICTS / SUPERSEDES
+            # markers so the LLM sees actionable text instead of opaque
+            # truncated IDs.
+            _target_ids: set[str] = set()
+            for h in new_hits:
+                for rel in h.related_relations:
+                    if rel.relation in ("CONTRADICTS", "SUPERSEDES"):
+                        _target_ids.add(rel.target_fact_id)
+            _target_texts: dict[str, str] = {}
+            if _target_ids and self._vec is not None:
+                import asyncio as _asyncio
+                sem = _asyncio.Semaphore(20)
+
+                async def _get_text(fid: str) -> tuple[str, str]:
+                    async with sem:
+                        try:
+                            f = await self._vec.get(fid)
+                            return fid, (f.text or "") if f else ""
+                        except Exception:  # noqa: BLE001
+                            return fid, ""
+
+                for fid, txt in await _asyncio.gather(
+                    *(_get_text(fid) for fid in _target_ids)
+                ):
+                    if txt:
+                        _target_texts[fid] = txt
+
             rel_lines: list[str] = []
             dropped = 0
             for h in new_hits:
                 markers = []
                 for rel in h.related_relations:
                     if rel.relation in ("CONTRADICTS", "SUPERSEDES"):
-                        markers.append(f"⚠ {rel.relation.lower()} {rel.target_fact_id[:24]}")
+                        _txt = _target_texts.get(rel.target_fact_id, "")
+                        if _txt:
+                            _preview = _txt[:40] + "…" if len(_txt) > 40 else _txt
+                            markers.append(
+                                f"⚠ {rel.relation.lower()}: {_preview}"
+                            )
+                        else:
+                            markers.append(
+                                f"⚠ {rel.relation.lower()} {rel.target_fact_id[:24]}"
+                            )
                 marker_str = f" [{'; '.join(markers)}]" if markers else ""
                 line = (
                     f"  - [{h.fact.kind}] {h.fact.text}{marker_str} "

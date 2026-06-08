@@ -784,6 +784,62 @@ class LanceDBGraphBackend:
             )
             return []
 
+    async def reverse_neighbors(
+        self,
+        fact_id: str,
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> list[tuple[Relation, str]]:
+        """Return edges where ``fact_id`` is the TARGET (incoming edges).
+
+        Each tuple is ``(Relation, source_fact_id)`` — the source is the
+        node that points TO ``fact_id``.  This is the dual of
+        :meth:`neighbors` which only traverses outgoing edges.
+        """
+        if self._corrupted:
+            return []
+        await self._ensure_ready()
+        if self._corrupted:
+            return []
+        assert self._table is not None
+        seen: set[str] = {fact_id}
+        frontier = [fact_id]
+        out: list[tuple[Relation, str]] = []
+        try:
+            for _ in range(max(1, max_hops)):
+                if not frontier:
+                    break
+                quoted = ", ".join(
+                    f"'{f.replace(chr(39), chr(39) + chr(39))}'"
+                    for f in frontier
+                )
+                where_parts = [f"target_fact_id IN ({quoted})"]
+                if relation_types:
+                    rels = ", ".join(f"'{r}'" for r in relation_types)
+                    where_parts.append(f"relation IN ({rels})")
+                where = " AND ".join(where_parts)
+                rows = await self._table.query().where(where).to_list()
+                next_frontier: list[str] = []
+                for row in rows:
+                    rel = _record_to_relation(row)
+                    out.append((rel, rel.source_fact_id))
+                    if rel.source_fact_id not in seen:
+                        seen.add(rel.source_fact_id)
+                        next_frontier.append(rel.source_fact_id)
+                frontier = next_frontier
+            return out
+        except RuntimeError as exc:
+            self._handle_lance_error(exc, "graph_reverse_neighbors")
+            if not self._corrupted:
+                return []
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted_reverse_neighbors err=%s — disabling",
+                exc,
+            )
+            return []
+
     async def find_related(
         self,
         fact_ids: list[str],
