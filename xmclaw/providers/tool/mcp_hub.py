@@ -178,7 +178,10 @@ def default_settings_path() -> Path:
 
 # Patterns that indicate supply-chain or injection risk in MCP configs.
 _UNPINNED_PKG_RE = re.compile(r"@[^/]+$")
-_SHELL_METACHAR_RE = re.compile(r"[;|&$()`\"]|")
+# 2026-06-08 BUGFIX: 末尾原来多了个 `|`(空串交替)→ 正则匹配**任意**字符串,
+# 于是每个 MCP server 的 command(uvx/npx/node…)都被误判"命令注入风险"启动失败。
+# 去掉末尾 `|`:只匹配字符类里真正的 shell 元字符。
+_SHELL_METACHAR_RE = re.compile(r"[;|&$()`\"]")
 _SUSPICIOUS_URL_RE = re.compile(
     r"https?://[^/\s]*(?:past\.ee|pastebin|transfer\.sh|0x0\.st)",
     re.IGNORECASE,
