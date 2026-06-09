@@ -199,6 +199,81 @@ def _clear_files() -> None:
             pass
 
 
+# ── 2026-06-08 端口属主感知(修"重启没杀旧进程") ──────────────────────
+# 根因:stop/start 只信 daemon.pid;一旦 pid 文件失准(指向已死/错的 pid),
+# stop 杀错进程、真正占着端口的旧 daemon 永远活着,start 又因 _http_healthy 只
+# 看"端口有人应答"而误判成功 → 两个 daemon 并存、旧的霸占端口跑旧代码。
+# 解法:按「谁真正 LISTEN 在这个端口」来杀/判,而不是只认 pid 文件。
+
+def _port_listener_pid(port: int) -> int | None:
+    """返回正在 LISTEN ``port`` 的进程 pid;无则 None。psutil 优先,netstat/lsof 兜底。"""
+    try:
+        import psutil  # 可选依赖(cognition-process extra),有就用
+        for c in psutil.net_connections(kind="inet"):
+            la = getattr(c, "laddr", None)
+            if la and getattr(la, "port", None) == port and c.status == psutil.CONN_LISTEN:
+                return c.pid
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if (len(parts) >= 5 and parts[0] == "TCP"
+                        and parts[1].rsplit(":", 1)[-1] == str(port)
+                        and parts[3].upper() == "LISTENING"):
+                    try:
+                        return int(parts[4])
+                    except ValueError:
+                        continue
+        else:
+            out = subprocess.run(
+                ["lsof", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            for line in out.splitlines():
+                if line.strip().isdigit():
+                    return int(line.strip())
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _force_kill(pid: int) -> None:
+    """强杀一个 pid(及其子树)。best-effort。"""
+    if not pid or pid <= 0:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True, timeout=5)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except (OSError, subprocess.TimeoutExpired, ProcessLookupError):
+        pass
+
+
+def _reclaim_port(port: int | None, *, exclude: int | None = None) -> int | None:
+    """若 ``port`` 被某个(非 exclude 的)进程占着,杀掉它并等端口释放。
+    返回被回收的 pid(或 None)。这是"重启没杀旧进程"的兜底:无论 pid 文件
+    指向谁,真正霸占端口的僵尸都会在这里被清掉。"""
+    if not port:
+        return None
+    owner = _port_listener_pid(int(port))
+    if owner is None or owner == exclude:
+        return None
+    _force_kill(owner)
+    for _ in range(25):  # 等最多 5s 让端口释放
+        if _port_listener_pid(int(port)) in (None, exclude):
+            break
+        time.sleep(0.2)
+    return owner
+
+
 def start_daemon(
     *,
     host: str,
@@ -222,13 +297,30 @@ def start_daemon(
     multiple half-booted daemons fighting for port 8766.
     """
     status = read_status()
-    if status.state == "running":
+    # 2026-06-08: 权威判断用「端口上是否有健康 daemon」,不再只看 daemon.pid 是否
+    # 存活(它可能指向一个不占端口的僵尸/错 pid → 旧逻辑要么误判"已在跑"挡住
+    # start,要么误判"没在跑"起出第二个 daemon 与旧的并存)。
+    if _http_healthy(host, port):
+        owner = _port_listener_pid(port)
         raise RuntimeError(
-            f"daemon already running (pid={status.pid}, "
-            f"http://{status.host}:{status.port})"
+            f"daemon already running (pid={owner or status.pid}, "
+            f"http://{host}:{port})"
         )
-    if status.state == "stale":
+    # 端口上没有健康 daemon:清掉可能失准的 pid/meta,并回收任何「绑着端口但不
+    # 健康」的旧 daemon(否则新进程绑不上端口 → 又一个僵尸)。这就是"重启没杀
+    # 旧进程"的根治:无论 pid 文件指向谁,真正霸占端口的进程都会被清掉。
+    if status.state in ("running", "stale"):
         _clear_files()
+    reclaimed = _reclaim_port(port)
+    if reclaimed is not None:
+        try:
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "daemon.start reclaimed_orphan pid=%s port=%s before spawn",
+                reclaimed, port,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     pid_path = default_pid_path()
     log_path = default_log_path()
@@ -303,25 +395,40 @@ def stop_daemon(*, grace_seconds: float = 5.0) -> DaemonStatus:
             pass
 
     deadline = time.time() + grace_seconds
+    graceful = False
     while time.time() < deadline:
         if not _process_alive(pid):
-            _clear_files()
-            return read_status()
+            graceful = True
+            break
         time.sleep(0.2)
 
-    # Didn't go down gracefully -- escalate to force kill.
-    if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(pid)],
-            capture_output=True, timeout=5,
-        )
-    else:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass
+    if not graceful:
+        # Didn't go down gracefully -- escalate to force kill.
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True, timeout=5,
+            )
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+        time.sleep(0.2)
 
-    # Final cleanup regardless of outcome.
-    time.sleep(0.2)
+    # 2026-06-08: 兜底——**所有路径都跑**(优雅杀成功的早退分支以前漏了这步)。
+    # daemon.pid 可能失准(指向已死/错的 pid),真正占着端口的旧 daemon 还活着。
+    # 按端口属主再回收一次,确保 stop 真的把端口腾出来。
+    reclaimed = _reclaim_port(status.port)
+    if reclaimed is not None:
+        try:
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "daemon.stop reclaimed_orphan pid=%s port=%s "
+                "(pid file pointed at %s) — restart had been leaving this alive",
+                reclaimed, status.port, pid,
+            )
+        except Exception:  # noqa: BLE001
+            pass
     _clear_files()
     return read_status()
