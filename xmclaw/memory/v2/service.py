@@ -172,7 +172,14 @@ LONG_TERM_PROMOTE_THRESHOLD = 3
 # used relevance ALONE, so a stale-but-on-topic fact outranked a
 # fresh high-confidence one. Weights are equal by default like the
 # paper; tune via the constants if one factor should dominate.
-RANK_W_RELEVANCE = 1.0
+# 2026-06-08 RE-BALANCE: equal-weight (1:1:1) is the Generative-Agents
+# autobiographical-stream objective ("what to reflect on"). But this reranker
+# also gates query-driven recall ("which fact answers THIS question"), where
+# relevance must DOMINATE — a fresh-but-off-topic fact must not outrank an
+# older direct hit. Relevance 3× → recency/importance become tie-breakers.
+# This is the ranking half of the "乱召回" fix (the other half was the proxy
+# bug that disabled vector recall entirely).
+RANK_W_RELEVANCE = 3.0
 RANK_W_RECENCY = 1.0
 RANK_W_IMPORTANCE = 1.0
 #: recency half-life — a fact last touched this many seconds ago
@@ -2084,7 +2091,9 @@ class MemoryService:
                 search_query = query
             else:
                 try:
-                    vec = await self._embedder.embed(query)
+                    # 2026-06-08: embed_query → Qwen3 非对称(query 带 instruct
+                    # 前缀，fact 不带)；非 qwen 模型上等价于 embed。
+                    vec = await self._embedder.embed_query(query)
                     search_query = list(vec)
                 except EmbeddingFailure:
                     # Fall back to keyword.
@@ -2542,7 +2551,8 @@ class MemoryService:
         # best ones at the very top for the prompt injection.
         if out and query:
             try:
-                qvec = await self._embedder.embed(query)
+                # 2026-06-08: 同 recall——query 用非对称 embed_query。
+                qvec = await self._embedder.embed_query(query)
                 qnorm = sum(v * v for v in qvec) ** 0.5
             except Exception:  # noqa: BLE001
                 qvec, qnorm = None, 0.0

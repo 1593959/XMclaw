@@ -168,6 +168,29 @@ class EmbeddingService:
         self._cache_put(key, result)
         return result
 
+    async def embed_query(self, text: str) -> tuple[float, ...]:
+        """Embed a **search query** (vs a stored document).
+
+        2026-06-08: Qwen3-Embedding is an *asymmetric* retriever — queries
+        are meant to carry an instruction prefix (``Instruct: …\\nQuery: …``)
+        while documents are embedded raw. Embedding both sides identically
+        (as the old recall path did) throws away the model's retrieval
+        signal. We add the prefix ONLY for qwen-family models; other models
+        (OpenAI text-embedding-3, etc.) are symmetric, so the query text is
+        embedded unchanged. The prefix makes the cache key differ from the
+        same text stored as a document — correct, they SHOULD differ.
+        """
+        return await self.embed(self._query_instruct(text))
+
+    def _query_instruct(self, text: str) -> str:
+        model = str(getattr(self._provider, "model", "") or "").lower()
+        if "qwen" in model:
+            return (
+                "Instruct: 给定用户当前的对话或问题，检索语义上最相关的长期记忆。\n"
+                f"Query: {text}"
+            )
+        return text
+
     async def embed_batch(
         self, texts: list[str],
     ) -> list[tuple[float, ...]]:

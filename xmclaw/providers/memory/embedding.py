@@ -103,6 +103,27 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self._max_batch_size = max(1, int(max_batch_size))
         self._timeout_s = float(timeout_s)
 
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def _is_local(self) -> bool:
+        """True when base_url points at a local server (Ollama/vLLM/…).
+
+        2026-06-08 ROOT-CAUSE FIX: a system proxy (Clash ``HTTP_PROXY=
+        http://127.0.0.1:7897``) made httpx/urllib route ``localhost:11434``
+        THROUGH the proxy, which can't forward to localhost → ConnectTimeout
+        on every embed → recall silently fell back to keyword search (the
+        ``召回全是关键词`` symptom). For a local endpoint we must connect
+        DIRECTLY, never via proxy — independent of whether NO_PROXY happens
+        to be set in the daemon's launch env."""
+        host = self._base_url.lower()
+        for local in ("://localhost", "://127.0.0.1", "://0.0.0.0", "://[::1]"):
+            if local in host:
+                return True
+        return False
+
     def is_available(self) -> bool:
         # B-43: Ollama / vLLM / local servers don't require an API key.
         # Treat a localhost/127.0.0.1 base_url as auth-free — the
@@ -110,11 +131,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         # endpoints (OpenAI / DashScope etc) still need a key.
         if self._api_key:
             return True
-        host = self._base_url.lower()
-        for local in ("://localhost", "://127.0.0.1", "://0.0.0.0", "://[::1]"):
-            if local in host:
-                return True
-        return False
+        return self._is_local
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -187,7 +204,11 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             headers["Authorization"] = f"Bearer {self._api_key}"
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            # 本地端点强制直连(trust_env=False)→ 绕开系统代理,免 ConnectTimeout。
+            async with httpx.AsyncClient(
+                timeout=self._timeout_s,
+                trust_env=not self._is_local,
+            ) as client:
                 resp = await client.post(url, headers=headers, json=body)
                 if resp.status_code >= 400:
                     _log.warning(
@@ -207,13 +228,20 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         import urllib.request as _ur
         import urllib.error as _ue
 
+        # 本地端点用一个无代理 opener(ProxyHandler({}) 显式清空代理),
+        # 与 httpx 直连保持一致;远程端点用默认 opener(尊重系统代理 + NO_PROXY)。
+        _opener = (
+            _ur.build_opener(_ur.ProxyHandler({})) if self._is_local
+            else _ur.build_opener()
+        )
+
         def _sync() -> dict[str, Any] | None:
             req = _ur.Request(
                 url, method="POST", headers=headers,
                 data=_json.dumps(body).encode("utf-8"),
             )
             try:
-                with _ur.urlopen(req, timeout=self._timeout_s) as r:
+                with _opener.open(req, timeout=self._timeout_s) as r:
                     raw = r.read()
             except _ue.HTTPError as exc:
                 _log.warning(
