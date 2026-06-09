@@ -35,6 +35,8 @@ import {
   MarkdownBody,
   ThinkingDots,
   PhaseCard,
+  MediaToolStatus,
+  MediaAttachments,
 } from "./MessageBubbleParts.js";
 import { CanvasArtifact } from "./CanvasArtifact.js";
 import {
@@ -150,6 +152,22 @@ export function MessageBubble({ message, onAnswerQuestion }) {
   // directly. Wrapping <article> keeps it on the same vertical
   // flow as user / assistant bubbles.
   if (message.kind === "tool_use") {
+    // 2026-06-09: media-first rendering. Tools that produce images/videos/
+    // audios (send_media, screen_capture, etc.) should showcase the media
+    // independently — not buried inside a collapsible card.
+    const hasMedia = (
+      (Array.isArray(message.images) && message.images.length > 0) ||
+      (Array.isArray(message.videos) && message.videos.length > 0) ||
+      (Array.isArray(message.audios) && message.audios.length > 0)
+    );
+    if (hasMedia) {
+      return html`
+        <article class="xmc-msg xmc-msg--assistant xmc-msg--media-row" data-msg-id=${message.id}>
+          <${MediaToolStatus} call=${message} />
+          <${MediaAttachments} call=${message} />
+        </article>
+      `;
+    }
     return html`
       <article class="xmc-msg xmc-msg--assistant xmc-msg--tool-row" data-msg-id=${message.id}>
         <${ToolCard} call=${message} />

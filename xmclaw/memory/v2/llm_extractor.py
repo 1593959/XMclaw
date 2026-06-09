@@ -82,13 +82,14 @@ _EXTRACT_PROMPT_TEMPLATE = """\
 }}
 
 kind 含义：
-- preference: 用户偏好（"喜欢简短回复"、"用 PowerShell 不用 bash"）
 - decision: 已做的决定（"决定用 LanceDB"）
 - identity: 身份/身份相关事实（"用户做电商生意"、"Windows 11"、"用户 25 岁"）
 - commitment: 待办/承诺/截止（"agent 下次写测试"、"月底前上线"）
 - correction: 纠正信号（"不要再 X / 永远 Y / 必须 Z"）
 - project: 项目参数 (网址/账号/数字目标/技术栈/团队信息)
-- lesson: 经验教训 / 工作流洞察（"下次应该先备份再改"、"X 工具在 Y 场景下会失败"）
+
+NOTE: preference 和 lesson 已交给 ExtractLessonsHook（后采样钩子）
+统一处理，Layer 2 不再重复提取，避免冗余。
 
 scope 含义：
 - user: 长期跨项目的事实（个人偏好、身份、人际关系）
@@ -123,9 +124,15 @@ scope 含义：
 # ── Extracted fact shape ─────────────────────────────────────────
 
 
+# 2026-06-09 P3: removed "lesson" — ExtractLessonsHook (post-sampling)
+# already covers workflow / tool_quirks / failure_modes / values /
+# rules / preferences. Having Layer 2 also emit "lesson" produced
+# 60+ redundant facts per short conversation. Layer 2 now focuses on
+# the semantic gaps regex can't reach: identity, decision, project,
+# commitment, correction. Preference is also delegated to
+# ExtractLessonsHook (B-319) to keep a single write-path.
 _VALID_KINDS = {
-    "preference", "decision", "identity",
-    "commitment", "correction", "project", "lesson",
+    "decision", "identity", "commitment", "correction", "project",
 }
 _VALID_SCOPES = {"user", "project", "session"}
 

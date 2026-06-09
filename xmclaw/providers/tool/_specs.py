@@ -960,6 +960,55 @@ _MEMORY_GET_SPEC = ToolSpec(
     },
 )
 
+_MEMORY_GRAPH_NEIGHBORS_SPEC = ToolSpec(
+    name="memory_graph_neighbors",
+    read_only=True,
+    description=(
+        "Walk the memory graph starting from a known fact_id to discover "
+        "related facts via semantic relationships.\n\n"
+        "**When to use**\n"
+        "  • After ``memory_search`` returns a key fact and you suspect "
+        "there are related facts (same topic, newer version, or "
+        "contradictions) that weren't in the top-K results.\n"
+        "  • When you see a ``<!-- fid:xxx -->`` marker and want to "
+        "explore what else is connected to that fact.\n"
+        "  • When resolving contradictions: a fact may have a "
+        "``SUPERSEDES`` or ``CONTRADICTS`` edge pointing to another "
+        "fact you need to see.\n\n"
+        "**Parameters**\n"
+        "  • ``fact_id`` — the starting fact id (e.g. ``fid:abc123``).\n"
+        "  • ``relation_types`` — filter by edge type. Common values: "
+        "``SAME_TOPIC``, ``SUPERSEDES``, ``CONTRADICTS``, ``CAUSED_BY``. "
+        "Omit for all relations.\n"
+        "  • ``max_hops`` — how many graph hops to traverse (1-3, default 1). "
+        "Higher hops find more context but cost more.\n\n"
+        "Returns a list of ``{relation, target_fact_id, strength, text_preview}`` "
+        "so you can decide which targets to fetch with ``memory_get`` or "
+        "``memory_search``."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "fact_id": {
+                "type": "string",
+                "description": "Starting fact id, e.g. 'fid:abc123'.",
+            },
+            "relation_types": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional filter. E.g. [\"SAME_TOPIC\", \"SUPERSEDES\"]."
+                ),
+            },
+            "max_hops": {
+                "type": "integer",
+                "description": "Graph hops to traverse (1-3, default 1).",
+            },
+        },
+        "required": ["fact_id"],
+    },
+)
+
 
 _MEMORY_PIN_SPEC = ToolSpec(
     name="memory_pin",
@@ -1605,12 +1654,17 @@ _ASK_USER_QUESTION_SPEC = ToolSpec(
         "this when you genuinely don't know which path to take and the "
         "answer materially changes what you'd do — e.g. \"library A or "
         "library B?\", \"keep the legacy field or drop it?\", \"target "
-        "tomorrow or next week?\". DO NOT use it for trivia or to ask "
-        "permission for things you should just do.\n\n"
+        "tomorrow or next week?\".\n\n"
+        "★★ MUST USE when presenting multiple mutually-exclusive options "
+        "to the user — e.g. \"how would you like to receive this file?\" "
+        "(download directly / upload to cloud / email / other). The UI "
+        "renders these as clickable cards. NEVER list options in plain "
+        "text when ask_user_question is available — the card UI is clearer "
+        "and the user's choice is unambiguous.\n\n"
+        "DO NOT use it for trivia or to ask permission for things you "
+        "should just do.\n\n"
         "The UI shows a card with clickable options; the tool blocks "
-        "until the user picks one. Default timeout 10 minutes — past "
-        "that the tool returns an error and you proceed with your best "
-        "guess.\n\n"
+        "until the user picks one.\n\n"
         "Recommended option ordering: put the option you'd pick first "
         "with `(Recommended)` at the end of its label. Always include "
         "an `Other` escape hatch by setting allow_other=true so the "
@@ -1655,6 +1709,35 @@ _ASK_USER_QUESTION_SPEC = ToolSpec(
             },
         },
         "required": ["question", "options"],
+    },
+)
+
+_SEND_MEDIA_SPEC = ToolSpec(
+    name="send_media",
+    description=(
+        "Send a local media file (image, video, audio) to the user so "
+        "they can view or download it directly in the chat. Use this "
+        "after generating or capturing media — e.g. after creating a "
+        "video with ffmpeg, recording audio, or saving a screenshot. "
+        "Do NOT use this for text files; the user can read those via "
+        "file_read.\n\n"
+        "The file is copied to the chat's media directory and served "
+        "via a secure URL. The UI renders images as thumbnails, videos "
+        "as playable <video> elements, and audio as <audio> controls."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": (
+                    "Absolute filesystem path to the media file. "
+                    "Examples: /home/user/Desktop/intro.mp4, "
+                    "C:\\Users\\Alice\\Desktop\\recording.wav"
+                ),
+            },
+        },
+        "required": ["path"],
     },
 )
 

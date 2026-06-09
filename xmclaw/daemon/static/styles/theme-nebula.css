@@ -2051,6 +2051,96 @@ body {
   text-transform: uppercase;
 }
 
+/* ── Media-first tool output (2026-06-09) ──
+   When send_media / screen_capture etc. produce images/videos/audios,
+   we render the media independently instead of burying it inside a
+   collapsible tool card. The tool status becomes a single subtle line;
+   the media itself is the hero. */
+.nb-media-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--nb-fg-muted);
+  margin-bottom: 6px;
+  user-select: none;
+}
+.nb-media-status__icon {
+  font-size: 10px;
+}
+.nb-media-status[data-status="ok"] .nb-media-status__icon {
+  color: var(--nb-success, #34D399);
+}
+.nb-media-status[data-status="error"] .nb-media-status__icon {
+  color: var(--nb-error, #F87171);
+}
+.nb-media-status__name {
+  font-family: var(--nb-font-mono);
+  opacity: 0.8;
+}
+.nb-media-status__dur {
+  margin-left: auto;
+  opacity: 0.6;
+}
+
+.nb-media-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Images: larger than the 160px thumbnail grid */
+.nb-media-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+.nb-media-image-item {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--nb-radius-md);
+  overflow: hidden;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.nb-media-image-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+}
+.nb-media-image-item img {
+  width: 100%;
+  height: 220px;
+  object-fit: cover;
+  display: block;
+  border-radius: var(--nb-radius-md);
+}
+
+/* Videos: full-width, generous height */
+.nb-media-videos {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.nb-media-videos video {
+  width: 100%;
+  max-height: 420px;
+  border-radius: var(--nb-radius-md);
+  background: #000;
+  display: block;
+}
+
+/* Audios: clean full-width player */
+.nb-media-audios {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nb-media-audios audio {
+  width: 100%;
+  border-radius: var(--nb-radius-md);
+}
+
 /* ── Link Card ── */
 .nb-link-card {
   display: flex;

@@ -109,18 +109,18 @@ class NarrationEnforcer:
         decision = NarrationDecision()
         if self._silent_hops >= self.SOFT_NUDGE_AFTER:
             decision.nudge_message = (
-                "[narration nudge] 已连续 "
-                f"{self._silent_hops} 个 hop 没有给用户的进度更新。"
-                "下一步先用一句 plain text 告诉用户你刚做了什么/"
+                "已连续 "
+                f"{self._silent_hops} 个步骤没有给用户的进度更新。"
+                "下一步先用一句 plain text 告诉用户你刚做了什么、"
                 "接下来要做什么，再继续工具调用。"
             )
         if self._silent_hops >= self.HARD_BUBBLE_AFTER:
             tool_names_str = ", ".join((tool_names or [])[:5])[:120]
             decision.progress_marker = {
                 "content": (
-                    f"[进度] 已连续 {self._silent_hops} 个工具调用 "
-                    f"hop（{tool_names_str}）无文字汇报，已注入"
-                    f"narration 提示。"
+                    f"已连续 {self._silent_hops} 个工具调用 "
+                    f"（{tool_names_str}）无文字汇报，已注入"
+                    f"叙述提示。"
                 ),
                 "kind": "narration_enforcement",
                 "hop": hop,
@@ -129,8 +129,8 @@ class NarrationEnforcer:
             if self._strict:
                 decision.force_text_response = True
                 decision.nudge_message = (
-                    "[narration ENFORCED] 已连续 "
-                    f"{self._silent_hops} 个 hop 没有文字汇报。"
+                    "已连续 "
+                    f"{self._silent_hops} 个步骤没有文字汇报。"
                     "**本回合禁止调用工具** — 你必须先用 1-2 句 plain "
                     "text 告诉用户当前进展，然后本轮结束。"
                 )

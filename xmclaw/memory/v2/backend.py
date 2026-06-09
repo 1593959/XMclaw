@@ -160,6 +160,29 @@ class GraphBackend(Protocol):
         """
         ...
 
+    async def reverse_neighbors(
+        self,
+        fact_id: str,
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> list[tuple[Relation, str]]:
+        """Return incoming edges to ``fact_id`` (dual of :meth:`neighbors`).
+
+        Each element is ``(edge, source_fact_id)`` — the node that
+        points TO ``fact_id``.
+        """
+        ...
+
+    async def all_nodes(self) -> list[str]:
+        """Return every fact_id that appears as source or target in
+        at least one edge.  Empty list when the graph is empty.
+
+        Used by centrality bootstrap to enumerate the full node set
+        without touching the vector backend.
+        """
+        ...
+
     async def contradictions_of(self, fact_id: str) -> list[str]:
         """Convenience: return target_fact_ids reachable from
         ``fact_id`` via a ``CONTRADICTS`` edge. Empty when none.

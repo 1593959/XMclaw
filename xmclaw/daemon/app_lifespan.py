@@ -2418,6 +2418,12 @@ def make_lifespan(
                     bus=bus,
                 )
                 _app.state.memory_v2_service = memory_v2_service
+                # Wave-33: pre-compute graph centrality in background.
+                # Fire-and-forget; failures are non-fatal.
+                try:
+                    asyncio.create_task(memory_v2_service.bootstrap_centrality())
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("memory_v2.bootstrap_centrality_failed err=%s", exc)
                 # 2026-05-29: wire the aux/fast-tier LLM for semantic
                 # (paraphrase-level) dedup. Routes through the fast
                 # tier when registered so llm_dedup_scope doesn't burn

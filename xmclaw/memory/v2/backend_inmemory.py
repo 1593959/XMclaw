@@ -333,6 +333,33 @@ class InMemoryGraphBackend:
             "edges": list(seen_e.values()),
         }
 
+    async def reverse_neighbors(
+        self,
+        fact_id: str,
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> list[tuple[Relation, str]]:
+        """Incoming-edge traversal (dual of :meth:`neighbors`)."""
+        seen: set[str] = {fact_id}
+        frontier = [fact_id]
+        out: list[tuple[Relation, str]] = []
+        for _ in range(max(1, max_hops)):
+            next_frontier: list[str] = []
+            for tgt in frontier:
+                # Scan all relations for ones targeting ``tgt``.
+                for rel in self._rels.values():
+                    if rel.target_fact_id != tgt:
+                        continue
+                    if relation_types and rel.relation not in relation_types:
+                        continue
+                    out.append((rel, rel.source_fact_id))
+                    if rel.source_fact_id not in seen:
+                        seen.add(rel.source_fact_id)
+                        next_frontier.append(rel.source_fact_id)
+            frontier = next_frontier
+        return out
+
     async def contradictions_of(self, fact_id: str) -> list[str]:
         out = []
         for rel_id in self._out.get(fact_id, ()):
@@ -340,6 +367,14 @@ class InMemoryGraphBackend:
             if rel.relation == RelationKind.CONTRADICTS.value:
                 out.append(rel.target_fact_id)
         return out
+
+    async def all_nodes(self) -> list[str]:
+        """Return every fact_id appearing as source or target."""
+        nodes: set[str] = set()
+        for rel in self._rels.values():
+            nodes.add(rel.source_fact_id)
+            nodes.add(rel.target_fact_id)
+        return sorted(nodes)
 
     async def close(self) -> None:
         return None

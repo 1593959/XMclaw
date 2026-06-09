@@ -973,11 +973,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         complexity signal — having tools makes a turn MORE likely to be
         long, not less.
 
-        2026-06-08: message-shape tiering REMOVED — it judged complexity from
-        the opening message but the budget applies per-hop, so a short "继续"
-        that launched a deep task got starved at hop 2. Every call now gets the
-        full configured bound; the wall-clock is a stuck-provider net, not a
-        ration. See body.
+        2026-06-08: tiering removed entirely (see body). Every call gets the
+        full configured bound — the per-call wall-clock is a stuck-provider
+        safety net, not a budget to ration by opening-message heuristics.
         """
         # 2026-06-08: 动态档**作废**。用户指出根本缺陷——这函数只看「第一条
         # 用户消息」判复杂度,但超时是每跳 per-call 的:一句"继续"可以引爆 18 跳
@@ -996,6 +994,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         tools_allowlist: "set[str] | frozenset[str] | None" = None,
         user_images: "tuple[str, ...] | None" = None,
         channel_name: str | None = None,
+        ultrathink: bool = False,
     ) -> AgentTurnResult:
         # B-38: register a fresh per-session cancel event. Cleared via
         # ``cancel_session`` (set by the WS handler when the user clicks
@@ -1036,6 +1035,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     user_images=user_images,
                     channel_name=channel_name,
                     _turn_metrics=_turn_metrics,
+                    ultrathink=ultrathink,
                 )
                 return _result
         finally:
@@ -1138,6 +1138,104 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     pass
 
 
+    async def _run_instant_single_shot(
+        self, *,
+        session_id: str,
+        llm: Any,
+        messages: list[Message],
+        publish: "Callable[..., Awaitable[BehavioralEvent]]",
+        events: list[BehavioralEvent],
+        turn_uuid: str,
+        llm_timeout_s: float,
+        _turn_metrics: "dict[str, Any] | None",
+    ) -> AgentTurnResult:
+        """P2 (2026-06-09): true single-shot for instant mode.
+
+        No hop loop, no tools, no GoalAnchor. Just one LLM call with
+        streaming and a direct return.
+        """
+        import time as _time
+        hop_corr = f"{turn_uuid}-0"
+        await publish(EventType.LLM_REQUEST, {
+            "model": getattr(llm, "model", None),
+            "hop": 0,
+            "messages_count": len(messages),
+            "tools_count": 0,
+            "mode": "instant",
+        })
+
+        chunk_seq = 0
+        async def _emit_chunk(delta: str) -> None:
+            nonlocal chunk_seq
+            await publish(EventType.LLM_CHUNK, {
+                "hop": 0,
+                "delta": delta,
+                "seq": chunk_seq,
+            }, correlation_id=hop_corr)
+            chunk_seq += 1
+
+        t0 = _time.perf_counter()
+        try:
+            response = await asyncio.wait_for(
+                llm.complete_streaming(
+                    messages,
+                    tools=None,
+                    on_chunk=_emit_chunk,
+                    cancel=None,
+                ),
+                timeout=llm_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            await publish(EventType.ANTI_REQ_VIOLATION, {
+                "message": "instant mode LLM call timed out",
+                "kind": "timeout",
+                "hop": 0,
+            })
+            return AgentTurnResult(
+                ok=False, text="",
+                hops=1, tool_calls=[], events=events,
+                error="instant_timeout",
+            )
+        except Exception as exc:  # noqa: BLE001
+            await publish(EventType.ANTI_REQ_VIOLATION, {
+                "message": f"instant mode LLM call failed: {exc}",
+                "kind": "llm_error",
+                "hop": 0,
+            })
+            return AgentTurnResult(
+                ok=False, text="",
+                hops=1, tool_calls=[], events=events,
+                error=f"instant_llm_error: {exc}",
+            )
+
+        _llm_ms = (_time.perf_counter() - t0) * 1000.0
+        if _turn_metrics is not None:
+            _turn_metrics["llm_time_ms"] = _llm_ms
+
+        text = response.content or ""
+        await publish(EventType.LLM_RESPONSE, {
+            "hop": 0,
+            "text": text,
+            "stop_reason": response.stop_reason,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "mode": "instant",
+        }, correlation_id=hop_corr)
+
+        # If the LLM still emitted tool calls despite no tools being
+        # offered, that's a mode-router mis-classification. Surface it
+        # gracefully rather than dropping the text.
+        if response.tool_calls:
+            text += (
+                "\n\n[note: model returned tool calls in instant mode; "
+                "ignored because no tools were offered]"
+            )
+
+        return AgentTurnResult(
+            ok=True, text=text,
+            hops=1, tool_calls=[], events=events,
+        )
+
     async def _run_turn_inner(
         self, *, session_id: str, user_message: str,
         user_correlation_id: str | None,
@@ -1147,6 +1245,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         user_images: "tuple[str, ...] | None" = None,
         channel_name: str | None = None,
         _turn_metrics: "dict[str, Any] | None" = None,
+        ultrathink: bool = False,
     ) -> AgentTurnResult:
         # B-332: per-call tool-name allowlist. When set, the rest of
         # this method routes all ``list_tools()`` / ``invoke()``
@@ -2523,6 +2622,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         if _recall_for_system:
             _parts.append(_recall_for_system)
 
+        # Ultrathink: inject step-by-step reasoning directive into the
+        # system prompt so the model thinks deeply without polluting the
+        # user-visible message content.
+        if ultrathink:
+            _parts.append(
+                "## Deep reasoning mode (Ultrathink)\n\n"
+                "Before answering, think step-by-step. Enumerate the "
+                "subproblems, consider alternatives, evaluate trade-offs, "
+                "and only then give your final answer. Show your reasoning "
+                "process explicitly in the thinking block if the provider "
+                "supports it; otherwise include it in the response."
+            )
+
         system_content = (
             "\n\n" + CACHE_BREAKPOINT_MARKER + "\n\n"
         ).join(_parts)
@@ -2796,11 +2908,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 content=(
                     continuation_anchor
                     + time_block
-                    + "\n\n"
-                    + user_message
                     + memory_ctx_block
                     + memory_files_block
                     + unified_recall_block
+                    + "\n\n"
+                    + user_message
                     + curriculum_hint_block
                     + curriculum_strategies_block
                     + skill_router_hint
@@ -3195,6 +3307,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             has_image=bool(user_images),
             tool_count=len(tool_specs) if tool_specs else 0,
         )
+
+        # 2026-06-09 P2: instant mode — true single-shot, no hop loop.
+        if self._active_run_mode == "instant":
+            return await self._run_instant_single_shot(
+                session_id=session_id,
+                llm=llm,
+                messages=messages,
+                publish=publish,
+                events=events,
+                turn_uuid=turn_uuid,
+                llm_timeout_s=_dynamic_llm_timeout,
+                _turn_metrics=_turn_metrics,
+            )
 
         _hop_result = await self._run_hop_loop(
             session_id=session_id,

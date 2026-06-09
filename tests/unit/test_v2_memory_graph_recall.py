@@ -134,3 +134,88 @@ async def test_reverse_neighbors_with_relation_filter(graph_backend):
         "f3", relation_types=["CONTRADICTS"], max_hops=1,
     )
     assert {src for _rel, src in rev_contra} == {"f2"}
+
+
+@pytest.mark.asyncio
+async def test_contradicts_recall_expansion():
+    """If vector recall hits a stale fact B, and A CONTRADICTS B,
+    then A must be pulled into the result set with a boost."""
+    from xmclaw.memory.v2 import InMemoryVectorBackend, InMemoryGraphBackend
+    from xmclaw.memory.v2.embedding import EmbeddingService, StubEmbedder
+
+    vec = InMemoryVectorBackend()
+    graph = InMemoryGraphBackend()
+    svc = MemoryService(
+        vector_backend=vec,
+        graph_backend=graph,
+        embedder=EmbeddingService(StubEmbedder(dim=4)),
+    )
+
+    # Seed vector backend directly (remember() triggers relation scan
+    # which may merge near-dups and change IDs).
+    await vec.upsert([
+        Fact(
+            id="old", kind="lesson", scope="project",
+            text="旧策略：使用 X 方案",
+            embedding=[1.0, 0.0, 0.0, 0.0],
+        ),
+        Fact(
+            id="new", kind="correction", scope="project",
+            text="新策略：改用 Y 方案",
+            embedding=[0.9, 0.1, 0.0, 0.0],
+        ),
+    ])
+
+    # Manually add CONTRADICTS edge: new → old
+    await graph.add_relation(
+        Relation(
+            id="r_contra", source_fact_id="new", target_fact_id="old",
+            relation=RelationKind.CONTRADICTS.value, strength=0.85,
+        )
+    )
+
+    # Query similar to old fact — should recall old, then pull in new
+    hits = await svc.recall_hybrid("使用 X 方案", k=3)
+    ids = {h.fact.id for h in hits}
+    assert "old" in ids, "stale fact should be recalled by vector similarity"
+    assert "new" in ids, "contradicting corrective fact should be pulled in"
+
+    # The corrective fact should outrank the stale one (boost > 1.0)
+    idx_old = next(i for i, h in enumerate(hits) if h.fact.id == "old")
+    idx_new = next(i for i, h in enumerate(hits) if h.fact.id == "new")
+    assert idx_new < idx_old, "corrective fact should rank above stale fact"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_centrality():
+    """MemoryService.bootstrap_centrality should compute degree scores."""
+    from xmclaw.memory.v2 import InMemoryVectorBackend, InMemoryGraphBackend
+    from xmclaw.memory.v2.embedding import EmbeddingService, StubEmbedder
+
+    vec = InMemoryVectorBackend()
+    graph = InMemoryGraphBackend()
+    svc = MemoryService(
+        vector_backend=vec,
+        graph_backend=graph,
+        embedder=EmbeddingService(StubEmbedder(dim=4)),
+    )
+
+    # Create a star topology: hub (a) connects to b, c, d, e
+    await graph.add_relations([
+        Relation(id="r1", source_fact_id="a", target_fact_id="b",
+                 relation=RelationKind.SAME_TOPIC.value, strength=0.6),
+        Relation(id="r2", source_fact_id="a", target_fact_id="c",
+                 relation=RelationKind.SAME_TOPIC.value, strength=0.6),
+        Relation(id="r3", source_fact_id="a", target_fact_id="d",
+                 relation=RelationKind.SAME_TOPIC.value, strength=0.6),
+        Relation(id="r4", source_fact_id="a", target_fact_id="e",
+                 relation=RelationKind.SAME_TOPIC.value, strength=0.6),
+    ])
+
+    await svc.bootstrap_centrality()
+    assert "a" in svc._centrality_scores
+    assert "b" in svc._centrality_scores
+    # Hub 'a' has degree 4 (4 outgoing); leaves have degree 1 (1 incoming).
+    # Max degree = 4, so a gets 0.15, leaves get 0.15/4 = 0.0375.
+    assert svc._centrality_scores["a"] == pytest.approx(0.15, abs=1e-6)
+    assert svc._centrality_scores["b"] == pytest.approx(0.0375, abs=1e-6)

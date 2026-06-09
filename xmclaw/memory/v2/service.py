@@ -170,15 +170,16 @@ LONG_TERM_PROMOTE_THRESHOLD = 3
 # decay on ts_last, importance = the fact's own confidence (which
 # already rises with evidence_count). Pre-Phase-8 the prompt ranker
 # used relevance ALONE, so a stale-but-on-topic fact outranked a
-# fresh high-confidence one. Weights are equal by default like the
-# paper; tune via the constants if one factor should dominate.
-# 2026-06-08 RE-BALANCE: equal-weight (1:1:1) is the Generative-Agents
-# autobiographical-stream objective ("what to reflect on"). But this reranker
-# also gates query-driven recall ("which fact answers THIS question"), where
-# relevance must DOMINATE — a fresh-but-off-topic fact must not outrank an
-# older direct hit. Relevance 3× → recency/importance become tie-breakers.
-# This is the ranking half of the "乱召回" fix (the other half was the proxy
-# bug that disabled vector recall entirely).
+# fresh high-confidence one.
+#
+# 2026-06-08 RE-BALANCE: the equal-weight (1:1:1) blend is the Generative-
+# Agents *autobiographical-stream* objective ("what should the agent
+# reflect on"). But this reranker also gates **query-driven recall** ("which
+# fact answers THIS user question"), where relevance must DOMINATE — a fresh
+# but off-topic fact must not outrank an older fact that's a direct hit.
+# Bump relevance to 3× so recency/importance act as tie-breakers, not
+# co-equals. This is the user-reported "乱召回" fix's ranking half (the
+# other half was the proxy bug that disabled vectors entirely).
 RANK_W_RELEVANCE = 3.0
 RANK_W_RECENCY = 1.0
 RANK_W_IMPORTANCE = 1.0
@@ -202,19 +203,19 @@ def _three_factor_score(
     query_vec: list[float] | None,
     query_norm: float,
     now: float,
+    centrality: float = 0.0,
 ) -> float:
     """Generative-Agents-style score: weighted relevance + recency +
-    importance + layer_boost. All sub-scores are normalised to [0, 1]
-    so the weights are comparable. Pure function — no I/O.
+    importance + layer_boost + centrality. All sub-scores are
+    normalised to [0, 1] so the weights are comparable.
 
     Wave-29 (survey Phase 3): layer_boost implements storage-tier
-    preference without changing the recall API.  Procedural facts
-    (system rules, persona manuals) are treated as highest-confidence;
-    long_term facts (evidence_count >= 3) get a moderate boost;
-    working facts start at par and must compete on relevance/recency.
+    preference without changing the recall API.
+
+    Wave-33: centrality boost from offline graph-degree analysis.
+    Hub facts (connected to many topics) get a small global bonus.
     """
-    # relevance — query cosine, clamped to [0, 1] (negative cosine →
-    # irrelevant, not anti-relevant).
+    # relevance — query cosine, clamped to [0, 1].
     relevance = 0.0
     if query_vec and query_norm > 0:
         emb = getattr(fact, "embedding", None)
@@ -223,25 +224,28 @@ def _three_factor_score(
             emb_norm = sum(v * v for v in emb) ** 0.5
             if emb_norm > 0:
                 relevance = max(0.0, dot / (query_norm * emb_norm))
-    # recency — exponential decay on ts_last (0.5 at one half-life).
+    # recency — exponential decay.
     ts_last = float(getattr(fact, "ts_last", now) or now)
     age = max(0.0, now - ts_last)
     recency = 0.5 ** (age / RANK_RECENCY_HALFLIFE_S)
-    # importance — confidence already lives in [0, 1] and climbs with
-    # evidence_count, so it's a ready-made importance proxy.
+    # importance — confidence proxy.
     importance = max(0.0, min(1.0, float(getattr(fact, "confidence", 0.0))))
-    # layer_boost — storage-tier preference (Phase 3).
+    # layer_boost — storage-tier preference.
     layer = getattr(fact, "layer", "working")
     layer_boost: float = {
         "procedural": 0.25,
         "long_term": 0.10,
         "working": 0.0,
     }.get(layer, 0.0)
+    # centrality — offline graph-degree bonus (Wave-33).
+    # Normalised to [0, 0.15] by refresh_centrality().
+    centrality_boost = max(0.0, min(0.15, float(centrality)))
     return (
         RANK_W_RELEVANCE * relevance
         + RANK_W_RECENCY * recency
         + RANK_W_IMPORTANCE * importance
         + layer_boost
+        + centrality_boost
     )
 
 
@@ -544,6 +548,49 @@ class MemoryService:
         # Wave-4 (M-7): pre-built BM25 index with background refresh.
         # Reduces per-query latency by >50% on 5K+ fact stores.
         self._bm25_index: Any | None = None
+        # Wave-33: offline graph centrality scores.
+        # Keyed by fact_id; value in [0, 0.15]. Refreshed on startup
+        # and after bulk writes (sweep / dedup).
+        self._centrality_scores: dict[str, float] = {}
+
+    async def bootstrap_centrality(self) -> None:
+        """Wave-33: pre-compute global degree-centrality scores.
+
+        Walks every node in the graph, counts total incident edges,
+        normalises by the max degree seen, and stores the result in
+        ``self._centrality_scores`` (range [0, 0.15]).
+
+        Called once at daemon startup (fire-and-forget) and after
+        bulk mutations (sweep / dedup_scope) that reshape topology.
+        """
+        try:
+            all_ids = await self._graph.all_nodes()
+        except Exception:  # noqa: BLE001
+            return
+        if not all_ids:
+            self._centrality_scores.clear()
+            return
+        degrees: dict[str, int] = {}
+        for fid in all_ids:
+            try:
+                out_edges = await self._graph.neighbors(
+                    fid, relation_types=None, max_hops=1,
+                )
+                in_edges = await self._graph.reverse_neighbors(
+                    fid, relation_types=None, max_hops=1,
+                )
+                degrees[fid] = len(out_edges) + len(in_edges)
+            except Exception:  # noqa: BLE001
+                degrees[fid] = 0
+        max_deg = max(degrees.values()) if degrees else 1
+        if max_deg == 0:
+            max_deg = 1
+        # Normalise to [0, 0.15] so centrality is a modest tie-breaker.
+        _CENTRALITY_CEIL = 0.15
+        self._centrality_scores = {
+            fid: (deg / max_deg) * _CENTRALITY_CEIL
+            for fid, deg in degrees.items()
+        }
 
     def _ensure_bm25_index(self) -> Any | None:
         """Lazy-init the pre-built BM25 index."""
@@ -2091,8 +2138,8 @@ class MemoryService:
                 search_query = query
             else:
                 try:
-                    # 2026-06-08: embed_query → Qwen3 非对称(query 带 instruct
-                    # 前缀，fact 不带)；非 qwen 模型上等价于 embed。
+                    # 2026-06-08: 用 embed_query（Qwen3 非对称：query 带 instruct
+                    # 前缀，fact 不带）。embed_query 在非 qwen 模型上等价于 embed。
                     vec = await self._embedder.embed_query(query)
                     search_query = list(vec)
                 except EmbeddingFailure:
@@ -2533,6 +2580,40 @@ class MemoryService:
                     centrality = _CENTRALITY_BONUS * min(degree, 5)
                     fused_scores[nid] = min_top_score * damp + centrality
 
+            # ── CONTRADICTS-aware recall expansion ────────────────────
+            # If a recalled fact B is contradicted by A (A→B via CONTRADICTS),
+            # pull in A with a boost so the corrective version outranks the
+            # stale one.  This prevents the agent from acting on obsolete info.
+            _CONTRA_BOOST = 1.15
+            contra_ids: set[str] = set()
+            for fid in top_fids:
+                try:
+                    rev = await self._graph.reverse_neighbors(
+                        fid, relation_types=["CONTRADICTS"], max_hops=1,
+                    )
+                    for _rel, src_id in rev:
+                        if src_id not in by_id and src_id not in fused_scores:
+                            contra_ids.add(src_id)
+                except Exception:  # noqa: BLE001
+                    continue
+            if contra_ids:
+                async def _fetch_contra(cid: str) -> tuple[str, Any]:
+                    try:
+                        return cid, await self._vec.get(cid)
+                    except Exception:  # noqa: BLE001
+                        return cid, None
+                for cid, fact in await _asyncio.gather(
+                    *(_fetch_contra(c) for c in contra_ids)
+                ):
+                    if fact is not None:
+                        by_id[cid] = RecallHit(
+                            fact=fact, distance=0.0,
+                            related_relations=[],
+                        )
+                        # Give contradicting source at least min_top_score;
+                        # then boost above the stale target.
+                        fused_scores[cid] = min_top_score * _CONTRA_BOOST
+
         # Sort fused descending, take top-K.
         ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
         out: list[RecallHit] = []
@@ -2551,8 +2632,7 @@ class MemoryService:
         # best ones at the very top for the prompt injection.
         if out and query:
             try:
-                # 2026-06-08: 同 recall——query 用非对称 embed_query。
-                qvec = await self._embedder.embed_query(query)
+                qvec = await self._embedder.embed(query)
                 qnorm = sum(v * v for v in qvec) ** 0.5
             except Exception:  # noqa: BLE001
                 qvec, qnorm = None, 0.0
@@ -2561,10 +2641,64 @@ class MemoryService:
                 out,
                 key=lambda h: _three_factor_score(
                     h.fact, query_vec=qvec, query_norm=qnorm, now=_now,
+                    centrality=self._centrality_scores.get(h.fact.id, 0.0),
                 ),
                 reverse=True,
             )
         return out
+
+    async def refresh_centrality(self) -> dict[str, float]:
+        """Wave-33: offline graph-degree centrality computation.
+
+        Counts SAME_TOPIC edges (both directions) per fact.
+        Normalises to [0, 0.15] by the max degree in the graph.
+        Called on startup and after bulk mutations (sweep / dedup).
+        """
+        if self._graph is None:
+            self._centrality_scores = {}
+            return {}
+
+        degree: dict[str, int] = {}
+
+        # Fast path: InMemoryGraphBackend has direct _rels access.
+        if hasattr(self._graph, "_rels"):
+            for rel in self._graph._rels.values():
+                if rel.relation != RelationKind.SAME_TOPIC.value:
+                    continue
+                degree[rel.source_fact_id] = degree.get(rel.source_fact_id, 0) + 1
+                degree[rel.target_fact_id] = degree.get(rel.target_fact_id, 0) + 1
+        else:
+            # LanceDB path: full table scan of SAME_TOPIC rows.
+            try:
+                rows = await self._graph._table.query().where(
+                    "relation = 'SAME_TOPIC'",
+                ).to_list()
+                for row in rows:
+                    src = row.get("source_fact_id", "")
+                    tgt = row.get("target_fact_id", "")
+                    if src:
+                        degree[src] = degree.get(src, 0) + 1
+                    if tgt:
+                        degree[tgt] = degree.get(tgt, 0) + 1
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("refresh_centrality.scan_failed err=%s", exc)
+                self._centrality_scores = {}
+                return {}
+
+        if not degree:
+            self._centrality_scores = {}
+            return {}
+
+        max_deg = max(degree.values())
+        self._centrality_scores = {
+            fid: round(0.15 * (d / max_deg), 4)
+            for fid, d in degree.items()
+        }
+        _log.info(
+            "memory_service.centrality_refreshed facts=%d max_degree=%d",
+            len(self._centrality_scores), max_deg,
+        )
+        return self._centrality_scores
 
     async def sweep(
         self,
@@ -2801,6 +2935,10 @@ class MemoryService:
 
     # ── Graph walk ──────────────────────────────────────────────
 
+    async def get(self, fact_id: str) -> "Fact | None":
+        """Fetch a single fact by id. Returns None if not found."""
+        return await self._vec.get(fact_id)
+
     async def neighbors(
         self,
         fact_id: str,
@@ -2932,6 +3070,7 @@ class MemoryService:
                 hits,
                 key=lambda h: _three_factor_score(
                     h.fact, query_vec=_qvec, query_norm=_qnorm, now=_now,
+                    centrality=self._centrality_scores.get(h.fact.id, 0.0),
                 ),
                 reverse=True,
             )

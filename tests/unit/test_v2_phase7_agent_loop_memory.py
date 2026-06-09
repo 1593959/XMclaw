@@ -233,12 +233,14 @@ async def test_auto_extract_calls_remember_per_candidate() -> None:
         e for e in bus.captured
         if getattr(e, "type", None) == EventType.MEMORY_PUT_AUTO
     ]
-    assert len(put_events) == 2
+    # 2026-06-09 P3: preference now handled by ExtractLessonsHook,
+    # so Layer 2 LLMFactExtractor only emits decision.
+    assert len(put_events) == 1
     kinds = {e.payload["kind"] for e in put_events}
-    assert kinds == {"decision", "preference"}
+    assert kinds == {"decision"}
     # Facts actually landed in the store.
     n = await svc.count()
-    assert n >= 2
+    assert n >= 1
 
 
 @pytest.mark.asyncio

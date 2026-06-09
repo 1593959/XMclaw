@@ -1996,13 +1996,33 @@ def create_app(
             # Only SqliteEventBus (the production durable bus) exposes
             # query(); a pure in-memory bus has nothing on disk to recover.
             try:
+                # B-XXX: bus.query defaults to ``ORDER BY ts ASC LIMIT N``,
+                # which returns the *oldest* N events. For a long session
+                # ( > 400 events) this replays stale ancient events and
+                # drops the latest terminal frames (llm_response etc),
+                # leaving the client with abandoned "thinking" bubbles
+                # that tick forever ("正在回复 · 19058s"). We must skip
+                # the early tail and recover the *recent* window — same
+                # semantics as the in-memory ring buffer.
+                offset = 0
+                if isinstance(bus, SqliteEventBus):
+                    import sqlite3
+                    try:
+                        with bus._read_lock:
+                            row = bus._conn.execute(
+                                "SELECT event_count FROM sessions WHERE session_id = ?",
+                                (session_id,),
+                            ).fetchone()
+                            total = row[0] if row else 0
+                            offset = max(0, total - _SESSION_LOG_CAP)
+                    except sqlite3.Error:
+                        pass
                 disk_events = bus.query(
-                    session_id=session_id, limit=_SESSION_LOG_CAP,
+                    session_id=session_id,
+                    limit=_SESSION_LOG_CAP,
+                    offset=offset,
                 )
-                prior_events = [
-                    e for e in disk_events
-                    if getattr(e, "session_id", "") == session_id
-                ]
+                prior_events = list(disk_events)
             except Exception:  # noqa: BLE001 — replay is best-effort
                 prior_events = []
         if prior_events:
@@ -2284,18 +2304,6 @@ def create_app(
                                 "image_routing failed, fallback to raw "
                                 "passthrough: %s", exc,
                             )
-                    # Ultrathink (borrowed from the /ultrathink pattern):
-                    # when set, prepend a directive to make the model
-                    # slow down and think step-by-step before answering.
-                    # Works on any chat model -- we don't need provider
-                    # support for extended-thinking parameters.
-                    if ultrathink:
-                        content = (
-                            "Before answering, think step-by-step. "
-                            "Enumerate the subproblems, consider alternatives, "
-                            "and only then give your final answer.\n\n"
-                            f"User: {content}"
-                        )
                     if active_agent is not None:
                         # Phase 4.1: run the full LLM ↔ tool loop. The
                         # AgentLoop publishes USER_MESSAGE + every LLM /
@@ -2329,6 +2337,7 @@ def create_app(
                                         # C2: per-turn tool-allowlist
                                         # from /<command> frontmatter.
                                         tools_allowlist=md_tools_allowlist,
+                                        ultrathink=ultrathink,
                                     )
                                 else:
                                     await active_agent.run_turn(
@@ -2340,6 +2349,7 @@ def create_app(
                                             if user_image_paths else None
                                         ),
                                         tools_allowlist=md_tools_allowlist,
+                                        ultrathink=ultrathink,
                                     )
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the

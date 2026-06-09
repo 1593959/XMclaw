@@ -114,12 +114,15 @@ class BuiltinToolsUserMixin:
                 pass
 
         try:
-            answer = await asyncio.wait_for(future, timeout=600.0)
-        except asyncio.TimeoutError:
+            # No timeout — the user may take as long as they need.
+            # The future is resolved when the WS handler receives an
+            # answer_question frame or the session is cancelled.
+            answer = await future
+        except asyncio.CancelledError:
             return _fail(
                 call, t0,
-                "user did not respond within 10 minutes — proceed with "
-                "your best guess or ask again differently",
+                "question was cancelled — proceed with your best guess "
+                "or ask again differently",
             )
         finally:
             _PENDING_QUESTIONS.pop(question_id, None)
@@ -140,6 +143,86 @@ class BuiltinToolsUserMixin:
             content=str(answer),
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _send_media(self, call: ToolCall, t0: float) -> ToolResult:
+        """Send a local media file to the chat UI as a viewable attachment."""
+        import shutil
+        from pathlib import Path
+
+        path_str = str(call.args.get("path") or "").strip()
+        if not path_str:
+            return _fail(call, t0, "missing 'path'")
+
+        src = Path(path_str)
+        if not src.is_file():
+            return _fail(call, t0, f"file not found: {path_str}")
+
+        # Copy to the uploads directory so /api/v2/media/<basename>
+        # can serve it. Use the original basename so the URL is stable.
+        from xmclaw.utils.paths import data_dir
+        uploads_dir = Path(data_dir()) / "v2" / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        dst = uploads_dir / src.name
+
+        # If a file with the same name already exists, append a counter.
+        counter = 1
+        original_dst = dst
+        while dst.exists():
+            stem = original_dst.stem
+            suffix = original_dst.suffix
+            dst = uploads_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+
+        try:
+            shutil.copy2(str(src), str(dst))
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"copy failed: {exc}")
+
+        # Determine MIME from extension.
+        ext = dst.suffix.lower()
+        mime_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+            ".ogg": "audio/ogg",
+            ".m4a": "audio/mp4",
+            ".mp4": "video/mp4",
+            ".webm": "video/webm",
+            ".mov": "video/quicktime",
+            ".mkv": "video/x-matroska",
+            ".avi": "video/x-msvideo",
+            ".m4v": "video/mp4",
+        }
+        mime = mime_map.get(ext)
+
+        # Determine kind for the attachment metadata.
+        kind = "image"
+        if ext in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"):
+            kind = "video"
+        elif ext in (".mp3", ".wav", ".ogg", ".m4a"):
+            kind = "audio"
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=f"Media sent: {dst.name}",
+            side_effects=(str(dst),),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={
+                "attachments": [
+                    {
+                        "kind": kind,
+                        "path": str(dst),
+                        "mime": mime,
+                        "bytes_size": dst.stat().st_size,
+                    }
+                ]
+            },
         )
 
     async def _agent_status(self, call: ToolCall, t0: float) -> ToolResult:

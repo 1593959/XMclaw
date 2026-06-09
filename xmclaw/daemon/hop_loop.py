@@ -80,7 +80,7 @@ def _check_memory_honesty(
     if actually_called:
         return None
     return (
-        "[B-302 honesty check] 你刚才说记住了/记下了，但我没有检测到 "
+        "你刚才说记住了/记下了，但我没有检测到 "
         "`remember` 或 `learn_about_user` 工具的调用。"
         "如果信息确实需要长期保存，请立即调用对应工具；"
         "如果只是口头确认，请改说'了解了'或'收到'，"

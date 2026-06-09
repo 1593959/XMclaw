@@ -876,6 +876,32 @@ class LanceDBGraphBackend:
             out.append(target)
         return out
 
+    async def all_nodes(self) -> list[str]:
+        """Return every fact_id appearing as source or target in any edge."""
+        if self._corrupted:
+            return []
+        await self._ensure_ready()
+        if self._corrupted or self._table is None:
+            return []
+        try:
+            # LanceDB doesn't have a distinct "select distinct" in the
+            # async Python SDK; we read all rows and deduplicate in memory.
+            rows = await self._table.query().limit(100_000).to_list()
+            nodes: set[str] = set()
+            for row in rows:
+                nodes.add(str(row.get("source_fact_id", "")))
+                nodes.add(str(row.get("target_fact_id", "")))
+            return sorted(nodes)
+        except RuntimeError as exc:
+            self._handle_lance_error(exc, "graph_all_nodes")
+            if not self._corrupted:
+                return []
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted_all_nodes err=%s — disabling", exc,
+            )
+            return []
+
     async def close(self) -> None:
         self._table = None
         self._db = None

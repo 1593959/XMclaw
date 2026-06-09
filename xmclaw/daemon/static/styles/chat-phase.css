@@ -151,6 +151,11 @@
 
 /* ── QuestionCard (B-92) — agent-asks-user multi-choice ─────────────── */
 
+@keyframes xmc-questioncard-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--xmc-warn, #c8a86a), 0 4px 12px rgba(0,0,0,0.15); }
+  50% { box-shadow: 0 0 0 2px var(--xmc-warn, #c8a86a), 0 6px 18px rgba(0,0,0,0.22); }
+}
+
 .xmc-questioncard {
   border: 1px solid var(--xmc-border);
   border-radius: var(--xmc-radius-md);
@@ -162,7 +167,9 @@
 
 .xmc-questioncard--pending {
   border-left: 3px solid var(--xmc-warn, #c8a86a);
-  background: rgba(200, 168, 106, 0.06);
+  background: rgba(200, 168, 106, 0.10);
+  box-shadow: 0 0 0 1px var(--xmc-warn, #c8a86a), 0 4px 12px rgba(0,0,0,0.15);
+  animation: xmc-questioncard-pulse 2s ease-in-out infinite;
 }
 
 .xmc-questioncard--answered {

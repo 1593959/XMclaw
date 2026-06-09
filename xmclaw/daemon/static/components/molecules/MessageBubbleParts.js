@@ -265,6 +265,90 @@ function AttachmentGrid({ images }) {
   `;
 }
 
+// 2026-06-09: media-first tool rendering. When a tool (send_media,
+// screen_capture, etc.) produces images/videos/audios, the media should
+// be showcased independently — not buried inside a collapsible tool card.
+// Users want to see the video/photo immediately, like a direct message.
+
+export function MediaToolStatus({ call }) {
+  const _st = call.status || "running";
+  const statusIcon = _st === "ok" ? "✓"
+    : _st === "error" ? "✗"
+    : _st === "running" ? "◌"
+    : "·";
+  const durTxt = call.elapsedSeconds != null ? `${call.elapsedSeconds}s`
+    : (call.duration_ms != null ? `${(call.duration_ms / 1000).toFixed(1)}s` : null);
+  const displayName = call.name || "tool";
+  return html`
+    <div class="nb-media-status" data-status=${_st}>
+      <span class="nb-media-status__icon">${statusIcon}</span>
+      <span class="nb-media-status__name">${displayName}</span>
+      ${durTxt ? html`<span class="nb-media-status__dur">${durTxt}</span>` : null}
+    </div>
+  `;
+}
+
+export function MediaAttachments({ call }) {
+  const hasImages = Array.isArray(call.images) && call.images.length > 0;
+  const hasVideos = Array.isArray(call.videos) && call.videos.length > 0;
+  const hasAudios = Array.isArray(call.audios) && call.audios.length > 0;
+  if (!hasImages && !hasVideos && !hasAudios) return null;
+
+  return html`
+    <div class="nb-media-attachments">
+      ${hasImages
+        ? html`
+            <div class="nb-media-images">
+              ${call.images.map((src, i) => html`
+                <button
+                  key=${"mi_" + i}
+                  type="button"
+                  class="nb-media-image-item"
+                  onClick=${() => openLightbox(src, {
+                    alt: `image ${i + 1}`,
+                    items: call.images,
+                    index: i,
+                  })}
+                >
+                  <img src=${src} alt=${"image " + (i + 1)} loading="lazy" />
+                </button>
+              `)}
+            </div>
+          `
+        : null}
+      ${hasVideos
+        ? html`
+            <div class="nb-media-videos">
+              ${call.videos.map((src, i) => html`
+                <video
+                  key=${"mv_" + i}
+                  src=${src}
+                  controls
+                  preload="metadata"
+                  playsinline
+                />
+              `)}
+            </div>
+          `
+        : null}
+      ${hasAudios
+        ? html`
+            <div class="nb-media-audios">
+              ${call.audios.map((src, i) => html`
+                <audio
+                  key=${"ma_" + i}
+                  src=${src}
+                  controls
+                  preload="metadata"
+                />
+              `)}
+            </div>
+          `
+        : null}
+    </div>
+  `;
+}
+
 
 // 2026-05-19: strip server-side fences that agent_loop splices into the
 // user message content (memory_ctx, unified_recall, curriculum hint /
@@ -291,6 +375,22 @@ const _SYSTEM_FENCES = [
   "curriculum-strategies",  // strategy-bank inject
   "recalled-memory-files",  // relevant file picker (agent_loop:1519)
 ];
+// 2026-06-07: backend nudge prompts (narration_enforcer, B-302 honesty
+// guard) are injected as synthetic user messages for the LLM. They
+// carry no XML fence, so _FENCE_RE won't catch them. Strip by prefix.
+const _HIDDEN_PREFIXES = [
+  "已连续 ",                 // narration enforcer (中文)
+  "**本回合禁止调用工具**", // narration enforcer strict mode
+];
+function _stripHiddenPrefixes(s) {
+  if (!s || typeof s !== "string") return s || "";
+  for (const p of _HIDDEN_PREFIXES) {
+    if (s.startsWith(p)) return "";
+  }
+  // B-302 honesty guard (no prefix, but begins with this specific phrase)
+  if (s.startsWith("你刚才说记住了/记下了，但我没有检测到")) return "";
+  return s;
+}
 const _FENCE_RE = new RegExp(
   "\\n*(" + _SYSTEM_FENCES.join("|") + ")\\b[^>]*>[\\s\\S]*?<\\/\\1>\\n*",
   "g",
@@ -306,7 +406,8 @@ export function MarkdownBody({ content }) {
   // re-renders with the same content are O(1). When a new chunk arrives,
   // only the LAST token's html string changes, so Preact's keyed diff
   // touches a single child node — no flicker, no cursor jump.
-  const cleaned = _stripSystemFences(content || "");
+  let cleaned = _stripSystemFences(content || "");
+  cleaned = _stripHiddenPrefixes(cleaned);
   const tokens = lex(cleaned);
   if (!tokens.length) {
     return html`<div class="nb-md"></div>`;

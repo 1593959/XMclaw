@@ -125,7 +125,7 @@ async def test_extract_empty_input() -> None:
 async def test_extract_rejects_invalid_kind() -> None:
     llm = _StubLLM([
         {"text": "X", "kind": "garbage", "scope": "user", "confidence": 0.8},
-        {"text": "Y", "kind": "preference", "scope": "user", "confidence": 0.8},
+        {"text": "Y", "kind": "decision", "scope": "user", "confidence": 0.8},
     ])
     ex = LLMFactExtractor(llm)
     facts = await ex.extract("test message with content here")
@@ -136,7 +136,7 @@ async def test_extract_rejects_invalid_kind() -> None:
 @pytest.mark.asyncio
 async def test_extract_coerces_invalid_scope() -> None:
     llm = _StubLLM([
-        {"text": "X", "kind": "preference", "scope": "BOGUS", "confidence": 0.8},
+        {"text": "X", "kind": "decision", "scope": "BOGUS", "confidence": 0.8},
     ])
     ex = LLMFactExtractor(llm)
     facts = await ex.extract("test message with content here")
@@ -147,9 +147,9 @@ async def test_extract_coerces_invalid_scope() -> None:
 @pytest.mark.asyncio
 async def test_extract_clamps_confidence() -> None:
     llm = _StubLLM([
-        {"text": "low", "kind": "preference", "scope": "user", "confidence": -0.5},
-        {"text": "high", "kind": "preference", "scope": "user", "confidence": 1.7},
-        {"text": "bad", "kind": "preference", "scope": "user", "confidence": "abc"},
+        {"text": "low", "kind": "decision", "scope": "user", "confidence": -0.5},
+        {"text": "high", "kind": "decision", "scope": "user", "confidence": 1.7},
+        {"text": "bad", "kind": "decision", "scope": "user", "confidence": "abc"},
     ])
     ex = LLMFactExtractor(llm)
     facts = await ex.extract("test message with content here")
@@ -160,9 +160,9 @@ async def test_extract_clamps_confidence() -> None:
 @pytest.mark.asyncio
 async def test_extract_empty_text_rejected() -> None:
     llm = _StubLLM([
-        {"text": "", "kind": "preference", "scope": "user", "confidence": 0.8},
-        {"text": "   ", "kind": "preference", "scope": "user", "confidence": 0.8},
-        {"text": "valid", "kind": "preference", "scope": "user", "confidence": 0.8},
+        {"text": "", "kind": "decision", "scope": "user", "confidence": 0.8},
+        {"text": "   ", "kind": "decision", "scope": "user", "confidence": 0.8},
+        {"text": "valid", "kind": "decision", "scope": "user", "confidence": 0.8},
     ])
     ex = LLMFactExtractor(llm)
     facts = await ex.extract("test message with content here")
@@ -193,7 +193,7 @@ async def test_extract_bad_json_returns_empty() -> None:
 async def test_extract_strips_markdown_fence() -> None:
     """LLM sometimes wraps in ```json ``` despite instruction."""
     llm = _StubLLM(
-        '```json\n[{"text": "X", "kind": "preference", "scope": "user", "confidence": 0.8}]\n```'
+        '```json\n[{"text": "X", "kind": "decision", "scope": "user", "confidence": 0.8}]\n```'
     )
     ex = LLMFactExtractor(llm)
     facts = await ex.extract("test message with content here")
@@ -203,7 +203,7 @@ async def test_extract_strips_markdown_fence() -> None:
 @pytest.mark.asyncio
 async def test_extract_non_array_returns_empty() -> None:
     """LLM might return a single object instead of array."""
-    llm = _StubLLM('{"text": "X", "kind": "preference", "scope": "user", "confidence": 0.8}')
+    llm = _StubLLM('{"text": "X", "kind": "decision", "scope": "user", "confidence": 0.8}')
     ex = LLMFactExtractor(llm)
     facts = await ex.extract("test message with content here")
     # We require array — reject single object.
@@ -213,7 +213,7 @@ async def test_extract_non_array_returns_empty() -> None:
 @pytest.mark.asyncio
 async def test_extract_timeout_returns_empty() -> None:
     """LLM stalls past timeout_s → empty list, no exception."""
-    llm = _StubLLM([{"text": "X", "kind": "preference", "scope": "user", "confidence": 0.8}], delay=2.0)
+    llm = _StubLLM([{"text": "X", "kind": "decision", "scope": "user", "confidence": 0.8}], delay=2.0)
     ex = LLMFactExtractor(llm, timeout_s=0.1)
     facts = await ex.extract("test message with content here")
     assert facts == []

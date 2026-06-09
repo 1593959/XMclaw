@@ -1384,6 +1384,72 @@ class BuiltinToolsMemoryMixin:
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
+    async def _memory_graph_neighbors(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """B-240: graph walk from a known fact_id."""
+        svc = self._resolve_memory_v2_service()
+        if svc is None:
+            return _fail(
+                call, t0,
+                "memory_graph_neighbors unavailable: v2 memory service not wired",
+            )
+        fact_id = str(call.args.get("fact_id") or "").strip()
+        if not fact_id:
+            return _fail(call, t0, "missing or empty 'fact_id'")
+
+        relation_types = call.args.get("relation_types")
+        if isinstance(relation_types, str):
+            relation_types = [relation_types]
+        elif not isinstance(relation_types, (list, tuple)):
+            relation_types = None
+
+        max_hops = max(1, min(3, int(call.args.get("max_hops") or 1)))
+
+        try:
+            edges = await svc.neighbors(
+                fact_id,
+                relation_types=relation_types,
+                max_hops=max_hops,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _fail(call, t0, f"graph_neighbors failed: {exc}")
+
+        # Hydrate target facts in parallel (cap to avoid flooding).
+        limit = 20
+        trimmed = edges[:limit]
+        import asyncio as _asyncio
+
+        async def _hydrate(rel: Any, target_id: str) -> dict[str, Any]:
+            try:
+                fact = await svc.get(target_id)
+                text = (fact.text or "")[:200] if fact is not None else ""
+            except Exception:  # noqa: BLE001
+                text = ""
+            return {
+                "relation": rel.relation,
+                "target_fact_id": target_id,
+                "strength": round(float(rel.strength or 0.0), 3),
+                "text_preview": text,
+            }
+
+        items = await _asyncio.gather(*[
+            _hydrate(rel, tid) for rel, tid in trimmed
+        ])
+
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content={
+                "fact_id": fact_id,
+                "max_hops": max_hops,
+                "relation_types": relation_types,
+                "total_edges": len(edges),
+                "returned": len(items),
+                "neighbors": items,
+            },
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
     async def _memory_compact(self, call: ToolCall, t0: float) -> ToolResult:
         """B-52: trigger Auto-Dream now (instead of waiting for the
         daily cron). Reaches the running compactor via the same

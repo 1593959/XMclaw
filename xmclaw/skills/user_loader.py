@@ -343,12 +343,20 @@ class UserSkillsLoader:
     def _load_one(self, skill_dir: Path) -> LoadResult:
         skill_py = skill_dir / "skill.py"
         skill_md = skill_dir / "SKILL.md"
+        plugin_json = skill_dir / "plugin.json"
 
         # SKILL.md branch (Epic #24 Phase 5 immediate fix). Python
         # ``skill.py`` takes priority when both exist — the user
         # signaled they want code, not a procedure.
         if not skill_py.is_file() and skill_md.is_file():
             return self._load_markdown(skill_dir, skill_md)
+
+        # Claude Desktop plugin bridge (2026-06-08). If a directory
+        # contains ``plugin.json`` (no skill.py / SKILL.md), treat it
+        # as a Claude Desktop / IDE plugin and wrap it into a callable
+        # Skill so the agent can read its instructions.
+        if not skill_py.is_file() and not skill_md.is_file() and plugin_json.is_file():
+            return self._load_claude_plugin(skill_dir, plugin_json)
 
         if not skill_py.is_file():
             return LoadResult(
@@ -700,6 +708,66 @@ class UserSkillsLoader:
         return LoadResult(
             skill_id=skill_id, ok=True, skill_path=skill_md,
             kind="markdown", version=1,
+        )
+
+    def _load_claude_plugin(
+        self, skill_dir: Path, plugin_json: Path,
+    ) -> LoadResult:
+        """Wrap a Claude Desktop ``plugin.json`` as a :class:`ClaudePluginSkill`.
+
+        The plugin's JS/TS code is NOT executed — XMclaw is a Python
+        runtime.  The agent receives the plugin's instructions and tool
+        definitions as a markdown procedure and emulates the behaviour
+        using its own tools.
+        """
+        skill_id = skill_dir.name
+        try:
+            from xmclaw.skills.claude_plugin_skill import (
+                build_skill_from_plugin_json,
+            )
+            skill, err = build_skill_from_plugin_json(skill_dir, plugin_json)
+            if skill is None or err:
+                return LoadResult(
+                    skill_id=skill_id, ok=False, skill_path=plugin_json,
+                    kind="claude_plugin",
+                    error=err or "unknown plugin.json parse failure",
+                )
+        except Exception as exc:  # noqa: BLE001
+            return LoadResult(
+                skill_id=skill_id, ok=False, skill_path=plugin_json,
+                kind="claude_plugin",
+                error=f"claude_plugin bridge failed: {exc}",
+            )
+
+        # Build a manifest from the skill wrapper; prefer plugin.json
+        # description so the LLM can actually match against it.
+        _plugin_desc = ""
+        try:
+            _plugin_data = json.loads(plugin_json.read_text(encoding="utf-8"))
+            if isinstance(_plugin_data, dict):
+                _plugin_desc = (_plugin_data.get("description") or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+        manifest = SkillManifest(
+            id=skill_id,
+            version=skill.version,
+            created_by="installed",  # came from external ecosystem
+            title=_plugin_desc or skill_id,
+            description=_plugin_desc or "Claude Desktop plugin (bridged)",
+            trust_level=self._trust_for(skill_id),
+        )
+        try:
+            self._registry.register(skill, manifest, set_head=True)
+        except ValueError as exc:
+            if "already registered" not in str(exc):
+                return LoadResult(
+                    skill_id=skill_id, ok=False, skill_path=plugin_json,
+                    kind="claude_plugin",
+                    error=f"register failed: {exc}",
+                )
+        return LoadResult(
+            skill_id=skill_id, ok=True, skill_path=plugin_json,
+            kind="claude_plugin", version=skill.version,
         )
 
     def _instantiate(self, module: object) -> Skill | None:

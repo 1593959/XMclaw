@@ -52,11 +52,16 @@ class TrustLevel(str, Enum):
 #   "allow" — load into prompt
 #   "block" — drop the skill, agent never sees it
 #   "warn"  — load but emit an event so the user sees it in /trace
+# 2026-06-09: relaxed policy — CAUTION no longer blocks installation.
+# Real-world data showed prompt_scanner's HIGH→critical elevation was
+# too aggressive for SKILL.md prose (e.g. a skill teaching the agent
+# how to use bash legitimately triggered "tool_hijack" patterns).
+# DANGEROUS still blocks; CAUTION now warns or allows depending on trust.
 _POLICY: dict[TrustLevel, dict[Verdict, str]] = {
     TrustLevel.BUILTIN:       {Verdict.SAFE: "allow",  Verdict.CAUTION: "allow",  Verdict.DANGEROUS: "allow"},
     TrustLevel.TRUSTED:       {Verdict.SAFE: "allow",  Verdict.CAUTION: "allow",  Verdict.DANGEROUS: "block"},
-    TrustLevel.AGENT_CREATED: {Verdict.SAFE: "allow",  Verdict.CAUTION: "warn",   Verdict.DANGEROUS: "block"},
-    TrustLevel.COMMUNITY:     {Verdict.SAFE: "allow",  Verdict.CAUTION: "block",  Verdict.DANGEROUS: "block"},
+    TrustLevel.AGENT_CREATED: {Verdict.SAFE: "allow",  Verdict.CAUTION: "allow",  Verdict.DANGEROUS: "block"},
+    TrustLevel.COMMUNITY:     {Verdict.SAFE: "allow",  Verdict.CAUTION: "warn",   Verdict.DANGEROUS: "block"},
 }
 
 

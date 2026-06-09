@@ -219,8 +219,8 @@ def test_default_prompt_size_bounded() -> None:
     message. If a refactor accidentally bloats it past ~30k chars
     we want a test failure, not a silent 2x cost regression."""
     p = _DEFAULT_SYSTEM
-    assert len(p) < 30_000, (
-        f"default system prompt grew to {len(p)} chars — over 30k "
+    assert len(p) < 32_000, (
+        f"default system prompt grew to {len(p)} chars — over 32k "
         "is a yellow flag for prompt bloat. Audit the latest "
         "section additions before bumping this cap."
     )
@@ -245,6 +245,7 @@ _EXPECTED_SECTIONS = [
     "self_management",
     "notes_journal",
     "self_evolution",
+    "task_lifecycle",
     "constraints",
 ]
 

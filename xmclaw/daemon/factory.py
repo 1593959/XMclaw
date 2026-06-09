@@ -1187,6 +1187,20 @@ def build_tools_from_config(
             # bad config), daemon still boots — the tools just don't list.
             pass
 
+    # Epic #2 Phase 2: merge external tool plugins from entry points.
+    # Third-party pip packages register ToolProvider subclasses under
+    # ``[project.entry-points."xmclaw.plugins"]``; we discover + load
+    # them here so they join the agent's tool catalogue alongside builtins.
+    try:
+        from xmclaw.plugins.loader import discover_plugins
+        plugin_result = discover_plugins()
+        for lp in plugin_result.tools:
+            children.append(lp.instance)
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(
+            ErrorSeverity.INFO, __name__, "plugin_discovery", _exc,
+        )
+
     if len(children) == 1:
         provider = builtins  # no extras wired -- skip the composite wrapper
     else:
@@ -2064,7 +2078,7 @@ def build_agent_from_config(
     # Override via ``llm.timeout_s`` in config.json — set lower for
     # fast local Ollama, higher for slow vision-heavy providers.
     _llm_timeout_s = float(
-        (cfg.get("llm") or {}).get("timeout_s", 300.0)
+        (cfg.get("llm") or {}).get("timeout_s", 600.0)
     )
 
     # Wave-27 fix-17 (2026-05-16): per-TOOL-call wall-clock cap.

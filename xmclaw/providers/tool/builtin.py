@@ -75,6 +75,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _MEMORY_DEDUP_SPEC as _MEMORY_DEDUP_SPEC,
     _MEMORY_FORGET_SPEC as _MEMORY_FORGET_SPEC,
     _MEMORY_GET_SPEC as _MEMORY_GET_SPEC,
+    _MEMORY_GRAPH_NEIGHBORS_SPEC as _MEMORY_GRAPH_NEIGHBORS_SPEC,
     _MEMORY_INSPECT_SPEC as _MEMORY_INSPECT_SPEC,
     _MEMORY_SPEC as _MEMORY_SPEC,
     _MEMORY_PIN_SPEC as _MEMORY_PIN_SPEC,
@@ -84,6 +85,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _RECALL_USER_PREFS_SPEC as _RECALL_USER_PREFS_SPEC,
     _REMEMBER_SPEC as _REMEMBER_SPEC,
     _SCHEDULE_FOLLOWUP_SPEC as _SCHEDULE_FOLLOWUP_SPEC,
+    _SEND_MEDIA_SPEC as _SEND_MEDIA_SPEC,
     _SET_OUTPUT_STYLE_SPEC as _SET_OUTPUT_STYLE_SPEC,
     _SQLITE_QUERY_SPEC as _SQLITE_QUERY_SPEC,
     _TODO_READ_SPEC as _TODO_READ_SPEC,
@@ -434,6 +436,9 @@ class BuiltinTools(
         # Always advertised — daemon-process-local resolver works
         # even without persona / memory wiring.
         specs.append(_ASK_USER_QUESTION_SPEC)
+        # Wave-34: send_media — let the agent push generated media
+        # (video, audio, image) into the chat as viewable attachments.
+        specs.append(_SEND_MEDIA_SPEC)
         # B-94: free-code parity — let the agent spin up an isolated
         # git worktree for risky / experimental changes. Always
         # advertised; ``enter_worktree`` itself errors out cleanly
@@ -470,6 +475,7 @@ class BuiltinTools(
         # isn't wired so the agent gets a clean diagnostic.
         specs.append(_MEMORY_SPEC)
         specs.append(_MEMORY_GET_SPEC)
+        specs.append(_MEMORY_GRAPH_NEIGHBORS_SPEC)
         # B-ContextLoss: chronological history browser.
         # Only advertised when a session_store is wired.
         if self._session_store is not None:
@@ -619,6 +625,8 @@ class BuiltinTools(
                 return await self._memory_multi_action(call, t0)
             if call.name == "memory_get":
                 return await self._memory_get(call, t0)
+            if call.name == "memory_graph_neighbors":
+                return await self._memory_graph_neighbors(call, t0)
             if call.name == "read_conversation_history":
                 if self._session_store is None:
                     return _fail(
@@ -633,6 +641,8 @@ class BuiltinTools(
                 return await self._memory_pin(call, t0)
             if call.name == "ask_user_question":
                 return await self._ask_user_question(call, t0)
+            if call.name == "send_media":
+                return await self._send_media(call, t0)
             if call.name == "enter_worktree":
                 return await self._enter_worktree(call, t0)
             if call.name == "exit_worktree":

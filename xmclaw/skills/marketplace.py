@@ -769,11 +769,28 @@ def detect_mcp_server(install_path: Path) -> dict[str, Any] | None:
     return None
 
 
+# 2026-06-09: allow-listed CRITICAL rule_ids that are known to
+# produce false positives on legitimate skill code.  These still
+# surface as warnings (returned in findings_out) but do NOT block
+# installation.  Rationale:
+#   - PATH_TRAVERSAL_OPEN: normal Python file I/O (open(f"...{var}"))
+#     is extremely common in skills that read/write user data.
+#   - COMMAND_INJECTION_EVAL (compile only): compile() is used by
+#     many libraries (py_compile, marshal, etc) and the regex lacks
+#     enough negative look-behinds to exclude all safe call sites.
+_CRITICAL_INSTALL_ALLOWLIST: frozenset[str] = frozenset({
+    "PATH_TRAVERSAL_OPEN",
+})
+
+
 def _scan_for_critical(install_path: Path) -> list[dict[str, Any]]:
     """Run :func:`xmclaw.security.skill_scanner.scan_directory` on the
     install. Any CRITICAL finding raises :class:`InstallScanFailed` so we
     fail-closed. Lower-severity findings are returned to the caller for
     surfacing — they don't block install.
+
+    2026-06-09: a small allowlist prevents false-positive blocks on
+    common Python idioms (see ``_CRITICAL_INSTALL_ALLOWLIST``).
     """
     # Lazy import: keeps ``import xmclaw.skills.marketplace`` cheap when
     # the caller only needs index parsing (e.g. the daemon router's
@@ -794,6 +811,8 @@ def _scan_for_critical(install_path: Path) -> list[dict[str, Any]]:
             }
             findings_out.append(entry)
             if finding.severity == GuardSeverity.CRITICAL:
+                if finding.rule_id in _CRITICAL_INSTALL_ALLOWLIST:
+                    continue
                 critical_msgs.append(
                     f"{finding.rule_id} in {finding.tool_name}: {finding.title}"
                 )

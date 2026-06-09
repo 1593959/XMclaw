@@ -256,3 +256,39 @@ async def test_graph_remove_relation() -> None:
     await g.remove_relation(r.id)
     n = await g.neighbors("a")
     assert n == []
+
+
+@pytest.mark.asyncio
+async def test_graph_reverse_neighbors() -> None:
+    g = InMemoryGraphBackend()
+    await g.add_relations([
+        _mk_rel("a", "b", "SAME_TOPIC"),
+        _mk_rel("c", "b", "CONTRADICTS"),
+        _mk_rel("d", "b", "SAME_TOPIC"),
+        _mk_rel("e", "c", "SAME_TOPIC"),
+    ])
+    # All incoming edges to "b"
+    rev = await g.reverse_neighbors("b")
+    sources = {src for _, src in rev}
+    assert sources == {"a", "c", "d"}
+
+    # Filtered by relation type
+    rev_contra = await g.reverse_neighbors("b", relation_types=["CONTRADICTS"])
+    assert len(rev_contra) == 1
+    assert rev_contra[0][1] == "c"
+
+    # 2-hop reverse: e → c → b
+    rev2 = await g.reverse_neighbors("b", max_hops=2)
+    sources2 = {src for _, src in rev2}
+    assert sources2 == {"a", "c", "d", "e"}
+
+
+@pytest.mark.asyncio
+async def test_graph_all_nodes() -> None:
+    g = InMemoryGraphBackend()
+    assert await g.all_nodes() == []
+    await g.add_relations([
+        _mk_rel("a", "b", "SAME_TOPIC"),
+        _mk_rel("c", "b", "CONTRADICTS"),
+    ])
+    assert sorted(await g.all_nodes()) == ["a", "b", "c"]
