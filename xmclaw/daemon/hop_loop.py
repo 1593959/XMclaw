@@ -33,6 +33,23 @@ _MEMORY_HONESTY_TRIGGERS: tuple[str, ...] = (
 )
 _MEMORY_TOOLS: frozenset[str] = frozenset({"remember", "learn_about_user"})
 
+# 2026-06-08 动态 per-call 超时:按 hop 深度递增(代替按开场消息分档)。
+# 有效超时 = min(llm_timeout_s 上限, BASE + hop×STEP)。深一跳 = 任务更复杂、
+# 上下文更大 → 给更多时间,只增不减。BASE 给推理模型 hop0 留足首 token 时间。
+_HOP_BASE_TIMEOUT_S = 240.0
+_HOP_STEP_TIMEOUT_S = 120.0
+
+
+def _hop_timeout(hop: int, bound: float) -> float:
+    """Per-call wall-clock for a given hop depth, capped at ``bound``.
+
+    hop0=240s, +120s/hop, capped at the configured ``llm.timeout_s``.
+    Deeper hop = task has proven it's complex + context is bigger → more
+    time. Replaces the old "judge complexity from the opening message"
+    tiering that starved short-message-launched deep tasks at hop 2.
+    """
+    return min(float(bound), _HOP_BASE_TIMEOUT_S + max(0, int(hop)) * _HOP_STEP_TIMEOUT_S)
+
 
 def _messages_hash(messages: list[Message]) -> int:
     """Cheap fingerprint for message-list caching."""
@@ -451,7 +468,7 @@ class HopLoopMixin:
         events: list[BehavioralEvent],
         tool_calls_made: list[dict[str, Any]],
         turn_uuid: str,
-        llm_timeout_s: float = 300.0,
+        llm_timeout_s: float = 600.0,
         _turn_metrics: "dict[str, Any] | None" = None,
     ) -> AgentTurnResult | None:
         """Execute the LLM ↔ tool hop loop.
@@ -539,6 +556,14 @@ class HopLoopMixin:
 
         for hop in range(self._max_hops):
             hop_corr = f"{turn_uuid}-{hop}"
+            # 2026-06-08 动态超时(按 hop 深度,不按开场消息)。
+            # 根因(用户报):旧逻辑在 turn 开头按「第一条用户消息」算一次超时,
+            # 整个 hop 循环共用——一句"继续"引爆的深任务到 hop 2 早就不简单了,
+            # 却还锁在短消息定的短档被掐。真实复杂度是「跑出来的」:到了第 N 跳
+            # = 任务已被证明越复杂 + 上下文越大,就该给越多时间。
+            # eff = min(配置上限, 基线 + hop×步长),只增不减,封顶 llm_timeout_s。
+            #   hop0=240s, hop1=360, hop2=480, hop3=600, hop≥3 封顶。
+            _eff_timeout = _hop_timeout(hop, llm_timeout_s)
             # B-38: cancel fence — if the user clicked Stop, bail out
             # cleanly before doing more LLM/tool work. Checked AT
             # HOP BOUNDARIES (cheap, doesn't interrupt in-flight
@@ -782,7 +807,7 @@ class HopLoopMixin:
                 # 2026-06-04: first-token timeout = max(total/3, 5s).
                 # If the first chunk doesn't arrive within this window,
                 # we try a fallback profile before giving up.
-                _first_token_timeout = max(llm_timeout_s / 3.0, 5.0)
+                _first_token_timeout = max(_eff_timeout / 3.0, 5.0)
 
                 async def _call_llm_with_first_token_guard(
                     _llm: Any,
@@ -887,7 +912,7 @@ class HopLoopMixin:
                                     pass
                                 raise asyncio.TimeoutError("first_token")
                             # Fallback first token arrived, wait for completion
-                            await asyncio.wait_for(_task, timeout=llm_timeout_s)
+                            await asyncio.wait_for(_task, timeout=_eff_timeout)
                             if _err is not None:
                                 raise _err
                             return _resp
@@ -895,7 +920,7 @@ class HopLoopMixin:
                             raise asyncio.TimeoutError("first_token")
 
                     # First token arrived from primary, wait for completion
-                    await asyncio.wait_for(_task, timeout=llm_timeout_s)
+                    await asyncio.wait_for(_task, timeout=_eff_timeout)
                     if _err is not None:
                         raise _err
                     return _resp
@@ -1136,14 +1161,14 @@ class HopLoopMixin:
                 await publish(EventType.ANTI_REQ_VIOLATION, {
                     "message": (
                         f"LLM provider call exceeded "
-                        f"{llm_timeout_s:.0f}s wall-clock at hop {hop} "
+                        f"{_eff_timeout:.0f}s wall-clock at hop {hop} "
                         "— aborting turn rather than blocking forever."
                     ),
                     "hop": hop,
                     "category": "llm_timeout",
                 })
                 err = (
-                    f"LLM call timed out after {llm_timeout_s:.0f}s "
+                    f"LLM call timed out after {_eff_timeout:.0f}s "
                     "(hop {hop}). Provider may be overloaded or stuck."
                 ).format(hop=hop)
                 await publish(EventType.LLM_RESPONSE, {
