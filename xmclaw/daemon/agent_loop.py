@@ -319,7 +319,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # ``run_turn`` computes a dynamic per-turn timeout (30s / 60s /
         # 120s) capped at this value, so simple greetings don't wait
         # 300s while vision-heavy turns still get headroom.
-        llm_timeout_s: float = 300.0,
+        llm_timeout_s: float = 600.0,
         # Sprint 3 #6: optional ReasoningBank-style strategy bank.
         # When wired, ``run_turn`` calls ``bank.retrieve(user_message,
         # limit=strategy_top_k)`` at the start of each turn and injects
@@ -973,51 +973,20 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         complexity signal — having tools makes a turn MORE likely to be
         long, not less.
 
-        New signal: short, simple-looking messages get a trimmed budget
-        so a "你好" doesn't reserve 300s; everything else (long prompts,
-        explicit work verbs, or images) gets the full configured bound.
-        ``tool_count`` is intentionally NOT used to *lower* the budget.
-
-        Tiers (each capped at the configured upper bound):
-          * Vision-heavy (any image attachment): 120s
-          * Trivially short message (< 50 chars, no work verbs): 150s
-            (was 60s — too tight for reasoning models' slow first token)
-          * Everything else: full configured bound (default 300s)
+        2026-06-08: message-shape tiering REMOVED — it judged complexity from
+        the opening message but the budget applies per-hop, so a short "继续"
+        that launched a deep task got starved at hop 2. Every call now gets the
+        full configured bound; the wall-clock is a stuck-provider net, not a
+        ration. See body.
         """
-        msg = (user_message or "").strip()
-        msg_len = len(msg)
-
-        # Vision-heavy: image decoding + reasoning is slower, but bounded.
-        if has_image:
-            return min(120.0, self._llm_timeout_s)
-
-        # Heuristic: does this look like real work (vs. a greeting)?
-        # Work verbs / task markers => never trim, even if the message
-        # is short ("分析这个", "fix the bug", "重构 X").
-        _work_markers = (
-            "分析", "整理", "分类", "重构", "实现", "修复", "生成", "总结",
-            "对比", "查", "搜", "写", "改", "列", "拉", "导出", "扫描", "审计",
-            "analyze", "refactor", "implement", "fix", "generate", "summar",
-            "compare", "search", "list", "export", "scan", "audit", "build",
-            "debug", "review", "explain", "find", "extract",
-        )
-        _looks_like_work = any(m in msg.lower() for m in _work_markers)
-
-        # Trivially short and not obviously a task: trim somewhat so a
-        # bare greeting doesn't reserve the full budget — but NOT down to
-        # 60s. 2026-06-06: a 60s floor false-aborted reasoning models
-        # (deepseek-v4-pro / K2.6) at hop 0 on short messages: those models
-        # "think" before the first token, and with a non-trivial context
-        # even "继续" can exceed 60s. The timeout is only an upper bound
-        # (a fast reply still finishes fast), so trimming this aggressively
-        # only kills legitimate slow first-tokens. 150s keeps a runaway
-        # guard while giving reasoning models room.
-        if msg_len < 50 and not _looks_like_work:
-            return min(150.0, self._llm_timeout_s)
-
-        # Everything else — anything that looks like real work, or any
-        # non-trivial prompt — gets the full configured wall-clock.
-        # Tool availability deliberately does NOT cap this (the old bug).
+        # 2026-06-08: 动态档**作废**。用户指出根本缺陷——这函数只看「第一条
+        # 用户消息」判复杂度,但超时是每跳 per-call 的:一句"继续"可以引爆 18 跳
+        # 的复杂任务,到 hop 2 早就不简单了,预算却锁在开场短消息定的短档,于是
+        # 被误掐("LLM call exceeded 150s at hop 2,任务明明不简单")。任务的真实
+        # 复杂度是**跑出来的**,不是开场白能判的。而超时只是「防 provider 卡死的
+        # 上限」(快就快返回,给足上限零成本),不该按开场白 ration。
+        # 一律给满 self._llm_timeout_s(= config llm.timeout_s,默认 600s/10min)。
+        # has_image / user_message / tool_count 参数保留仅为签名兼容。
         return self._llm_timeout_s
 
     async def run_turn(
