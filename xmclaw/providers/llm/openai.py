@@ -292,7 +292,17 @@ class OpenAILLM(LLMProvider):
             # don't support images on the OpenAI shape (Anthropic does
             # but we route those through anthropic_native), so we never
             # multimodal-encode a non-user message.
-            if m.role == "user" and m.images:
+            # 2026-06-08: vision capability gate. Pre-fix we emitted
+            # ``image_url`` blocks for ANY user message with images,
+            # regardless of the target model. Switching an existing chat
+            # (which has image messages in history) from a vision model
+            # (Kimi) to a text-only one (DeepSeek-V4-Pro) then 400'd the
+            # WHOLE turn: ``unknown variant `image_url`, expected `text```
+            # — one stale image block poisoned every subsequent request.
+            # When the model can't see images, degrade them to a text
+            # placeholder so history stays valid instead of exploding.
+            _vision_ok = _model_supports_vision(model, base_url)
+            if m.role == "user" and m.images and _vision_ok:
                 content_blocks: list[dict[str, Any]] = []
                 if m.content:
                     content_blocks.append({"type": "text", "text": m.content})
@@ -334,6 +344,16 @@ class OpenAILLM(LLMProvider):
                 continue
 
             content_str = m.content or ""
+            # 2026-06-08: image degradation. A user message that carried
+            # images but is NOT going to a vision model (gate above)
+            # falls through here as plain text. If it had no text body,
+            # substitute a placeholder so the message isn't empty (some
+            # endpoints reject empty user content) and the model has a
+            # hint that an image was present but isn't visible to it.
+            if m.role == "user" and m.images and not _model_supports_vision(model, base_url):
+                _n = len(m.images)
+                _placeholder = f"[图片 ×{_n}（当前模型不支持图像，未传入）]" if _n else ""
+                content_str = (content_str + ("\n" if content_str else "") + _placeholder).strip()
             # Wave-30: strip CACHE_BREAKPOINT_MARKER for endpoints that
             # don't honor cache_control. Without this strip, system
             # messages on standard OpenAI / DeepSeek / unknown shims

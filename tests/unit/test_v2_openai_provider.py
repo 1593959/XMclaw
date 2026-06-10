@@ -31,6 +31,56 @@ def test_messages_to_openai_keeps_system_inline() -> None:
     assert msgs[0]["content"] == "you are a helper"
 
 
+# A tiny valid data: URL (pass-through path of _img_to_data_url — no
+# Pillow / disk I/O needed for the serialization-shape assertions).
+_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+
+
+def test_image_dropped_for_non_vision_model() -> None:
+    """REGRESSION (2026-06-08): switching a chat with image history from a
+    vision model (Kimi) to a text-only one (DeepSeek-V4-Pro) 400'd the
+    whole turn — ``unknown variant `image_url`, expected `text```. A
+    text-only model must NOT receive image_url blocks; the image degrades
+    to a text placeholder so history stays valid."""
+    msgs = [Message(role="user", content="看这张图", images=(_DATA_URL,))]
+    out = OpenAILLM._messages_to_openai(
+        msgs, model="DeepSeek-V4-Pro", base_url="https://api.deepseek.com/v1",
+    )
+    assert len(out) == 1
+    blob = json.dumps(out, ensure_ascii=False)
+    assert "image_url" not in blob, f"image_url leaked to text-only model: {out}"
+    # content stays a plain string (not a multimodal block list) and is
+    # non-empty (placeholder appended).
+    assert isinstance(out[0]["content"], str)
+    assert "看这张图" in out[0]["content"]
+    assert "图片" in out[0]["content"]  # placeholder present
+
+
+def test_image_kept_for_vision_model() -> None:
+    """A vision-capable model (gpt-4o) still gets a proper image_url
+    multimodal block — the gate must not over-strip."""
+    msgs = [Message(role="user", content="看这张图", images=(_DATA_URL,))]
+    out = OpenAILLM._messages_to_openai(
+        msgs, model="gpt-4o", base_url="https://api.openai.com/v1",
+    )
+    assert len(out) == 1
+    assert isinstance(out[0]["content"], list)  # multimodal block list
+    kinds = {b.get("type") for b in out[0]["content"]}
+    assert "image_url" in kinds, f"vision model lost its image block: {out}"
+
+
+def test_image_only_message_not_empty_for_non_vision() -> None:
+    """A user message that was ONLY an image (no text) must still produce
+    non-empty content for a text-only model — some endpoints 400 on empty
+    user content."""
+    msgs = [Message(role="user", content="", images=(_DATA_URL,))]
+    out = OpenAILLM._messages_to_openai(
+        msgs, model="DeepSeek-V4-Pro", base_url="https://api.deepseek.com/v1",
+    )
+    assert out[0]["content"].strip(), "image-only message degraded to empty content"
+    assert "image_url" not in json.dumps(out)
+
+
 def test_messages_to_openai_emits_tool_calls_on_assistant() -> None:
     tc = ToolCall(name="foo", args={"k": 1}, provenance="synthetic", id="call-1")
     msgs = [Message(role="assistant", content="", tool_calls=(tc,))]
