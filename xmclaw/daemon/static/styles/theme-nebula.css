@@ -1095,6 +1095,70 @@ body {
   letter-spacing: 0.3px;
 }
 
+/* 2026-06-10: staged-attachment previews. These had NO css at all, so a
+   pasted screenshot rendered at its native pixel width (2560px+),
+   blowing the composer out to full screen and pushing the input box off
+   the viewport (user report: "发送图片占满屏幕、对话框都顶没了"). Cap
+   each preview to a small fixed thumbnail and lay them out in a wrapping
+   row above the textarea. */
+.nb-composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.nb-composer__attachment {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--nb-radius-sm, 8px);
+  overflow: hidden;
+  border: 1px solid var(--nb-border, rgba(255,255,255,0.12));
+  background: var(--nb-bg-elevated, rgba(255,255,255,0.04));
+  flex: 0 0 auto;
+}
+.nb-composer__attachment img,
+.nb-composer__attachment video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.nb-composer__attachment-audio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 11px;
+  text-align: center;
+  padding: 4px;
+  color: var(--nb-fg-muted);
+  word-break: break-all;
+}
+.nb-composer__attachment-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+}
+.nb-composer__attachment-remove:hover {
+  background: rgba(220,40,40,0.85);
+}
+
 /* ── Separator ── */
 .nb-sep {
   display: flex;
@@ -2971,7 +3035,12 @@ body {
 .nb-lightbox {
   position: fixed;
   inset: 0;
-  z-index: 300;
+  /* 2026-06-10: was z-index:300 — below the sidebar (500/1000),
+     sessions panel (1000) and toast (9999). The lightbox is a full-screen
+     modal preview; at 300 those higher layers covered its content and the
+     close button (user report: "图片占满屏幕、对话框被顶没 / 关闭按钮被顶部覆盖").
+     Sit above everything (toast is 9999). */
+  z-index: 10001;
   display: none;
   align-items: center;
   justify-content: center;
