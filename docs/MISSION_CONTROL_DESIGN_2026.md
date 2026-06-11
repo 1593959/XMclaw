@@ -64,13 +64,28 @@
 |---|---|
 | `llm_chunk` / `llm_response` | agent 陈述（流式 markdown） |
 | `llm_thinking_chunk` | 折叠的思考块 |
-| `tool_call_emitted` → `tool_invocation_started/finished` | 工具卡：名称+参数摘要 → 状态翻转 ✓/✗ + 耗时；输出大体折叠 |
+| `tool_call_emitted` → `tool_invocation_started/finished` | 工具卡：名称+参数摘要 → 状态翻转 ✓/✗ + 耗时；**按工具类型特化渲染**（见 §2.3.1），输出大体折叠 |
 | `agent_asked_question` | 内联审批/提问卡（按钮直接回 `answer_question` 帧） |
 | `workspace_file_changed` | 时间线小条目 + 右栏 Diff 标签亮点 |
 | `plan_*` | 顶部步骤条状态翻转（不进时间线刷屏） |
 | `cost_tick` / `context_compressed` | HUD 数字更新（不进时间线） |
 | `prompt_injection_detected` / `anti_req_violation` | 红色安全条目 |
 | `skill_invoked` / `proactive_proposal` / `inner_monologue` | 默认折叠的"agent 内部活动"组 |
+
+#### 2.3.1 工具卡按类型特化渲染（Claude Code 级细节，M2 核心验收项）
+
+通用"名称 + JSON 参数"卡只是兜底。常用工具必须有专属渲染器：
+
+| 工具类 | 时间线内联渲染 |
+|---|---|
+| `file_edit` / `file_write` | **内联语法高亮 diff 卡**：头部 `✎ 编辑 service.py +30 −3` + 折叠箭头 + 「预览」切换；体部带行号 gutter、删除行红底/新增行绿底、上下文行原色、语法着色叠加（按扩展名选 lexer）；超过 ~40 行默认折叠中段；「预览」切到编辑后全文视图；点击文件名 → 右栏工作区定位该文件 |
+| `bash` / `code_python` | 终端式卡：`$ 命令` 头 + 等宽输出流（流式 append），退出码徽章，长输出折叠尾部展开 |
+| `file_read` | 单行摘要卡：`📄 读取 auth.py (1-120 行)`，点击 → 右栏文件标签打开 |
+| `browser_*` / computer-use | 截图缩略卡（点击 lightbox），动作描述为标题 |
+| `canvas_*` | 直接内联渲染 artifact（复用 Phase 9 渲染链） |
+| 其他 | 兜底卡：名称 + 参数摘要 + 折叠 JSON |
+
+实现要点：diff 数据优先取自工具结果里的结构化 diff/patch 字段；没有则前端用 before/after 文本跑 diff 算法（diff-match-patch 或 jsdiff，vendor 进 dist）。语法高亮用与右栏工作区同一套 highlighter（Shiki 或 highlight.js，统一主题 token）。TUI 侧同构：Textual 里 diff 卡用 `rich.syntax` + 红绿行底色降级呈现。
 
 ### 2.4 20+ 页面收编（M3）
 

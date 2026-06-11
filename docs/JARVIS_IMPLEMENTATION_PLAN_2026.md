@@ -2229,6 +2229,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 ### 10.M2 执行视图
 
 - [ ] **10.M2.1 活动时间线**：§2.3 全事件映射（工具卡折叠/思考块/安全条目/内部活动组）。
+- [ ] **10.M2.1b 工具卡类型特化渲染**（设计文档 §2.3.1，2026-06-11 用户补充要求）：file_edit/file_write → 内联语法高亮 diff 卡（行号 gutter + `+N −M` 统计 + 红删绿增 + 预览切换 + 点击文件名联动右栏）；bash → 终端式流式输出卡；file_read → 单行摘要卡联动右栏；browser/computer-use → 截图缩略卡；canvas → 内联 artifact；其余兜底 JSON 卡。TUI 侧用 rich.syntax 同构降级。
 - [ ] **10.M2.2 计划步骤条**：`plan_*` + `todo_updated` 驱动。
 - [ ] **10.M2.3 内联审批**：`agent_asked_question` → 审批卡（允许/总是/拒绝）→ `answer_question` 帧。
 - [ ] **10.M2.4 工作区四标签**：Diff/文件（复用 session_workspaces API）+ 终端（xterm.js）+ 预览（Phase 9 canvas 桥）。
@@ -2248,6 +2249,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 - [ ] 打开 `/ui/` 第一眼是任务列表与执行状态，而非聊天记录（P1）
 - [ ] 一次多工具长任务中：计划步骤实时翻转、工具卡流式出现、审批内联可点、Diff 在右栏实时亮起——全程不需要切页面
+- [ ] file_edit 工具卡内联展示语法高亮 diff（行号 + `+N −M` + 红删绿增 + 预览切换），达到 Claude Code 同级观感（§2.3.1）
 - [ ] 断网/重连后：队列消息冲洗、历史水化、pending 审批恢复（与旧 UI 行为对照零回归）
 - [ ] 最终用户 `pip install xmclaw` 后零 Node、零 CDN 运行新 UI
 - [ ] `xmclaw chat` 进入 Textual 全屏：任务/时间线/审批快捷键可用，回合终止不再依赖静默期猜测
@@ -2255,7 +2257,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
-- 2026-06-11: Phase 10 立项（本 commit）。M0 完成：设计文档 + 三项方向决策 + ADR-010 + 用户视觉方向认可。下一步 10.M1 Web 骨架。
+- 2026-06-11: Phase 10 立项（commit d13bbd2）。M0 完成：设计文档 + 三项方向决策 + ADR-010 + 用户视觉方向认可。下一步 10.M1 Web 骨架。
+- 2026-06-11: 设计补充（用户出 Claude Code diff 卡截图点名要求）：工具卡按类型特化渲染入规格（设计文档新增 §2.3.1，M2 新增 10.M2.1b + 对应验收项）。file_edit 内联语法高亮 diff 卡是 M2 核心验收观感。
 
 ---
 
