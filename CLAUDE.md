@@ -40,8 +40,13 @@ xmclaw/              Python package — see per-subdir AGENTS.md for contracts
 │                    → xmclaw/memory/AGENTS.md
 └── plugins/         Third-party plugins
 
-xmclaw/daemon/static/ Web UI (Preact + htm via ESM, no build step) — served at
-                     `/ui/` via FastAPI `StaticFiles`. No Node.js required.
+xmclaw/daemon/static/ 旧 Web UI (Preact + htm via ESM, no build step) — served at
+                     `/ui/` via FastAPI `StaticFiles`. ⚠ Phase 10 (2026-06-11) 起
+                     进入退役轨道：冻结，只修崩溃级 bug。
+webui/               新 Mission Control UI（Phase 10，Vite + React + TS — ADR-010
+                     取代 ADR-001 "无 Node 构建"约束）。构建产物提交到
+                     `xmclaw/daemon/webui_dist/`，最终用户安装运行仍零 Node、
+                     运行时零 CDN。设计规格: docs/MISSION_CONTROL_DESIGN_2026.md
 daemon/              Runtime config (config.json gitignored; config.example.json is the template)
 docs/                JARVIS_IMPLEMENTATION_PLAN_2026.md = single source of truth
                      (architecture, Phase roadmap, module status, design decisions).
@@ -129,4 +134,4 @@ The workflow also accepts `workflow_dispatch` for re-builds against an existing 
 
 - Python 3.10+ (see `pyproject.toml`).
 - Optional: `playwright install chromium` for browser tools; `pyautogui` + `mss` for computer-use.
-- No Node.js required. The web UI under `xmclaw/daemon/static/` is plain HTML/CSS/JS served by FastAPI — edit the files directly and refresh the browser.
+- No Node.js required **for end users**（构建产物随包分发）. 旧 UI `xmclaw/daemon/static/` 仍是 plain HTML/CSS/JS 直接编辑；新 UI `webui/` 的开发需要 Node 20+（`npm run dev` / `npm run build`，Phase 10 起）。

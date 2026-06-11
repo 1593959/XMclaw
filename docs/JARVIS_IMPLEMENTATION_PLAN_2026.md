@@ -2202,6 +2202,63 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ---
 
+## Phase 10: Mission Control（Web UI / TUI 整体重设计）
+
+> **状态**: 🟡 进行中 (2026-06-11 起)
+> **目标**: 把"聊天网页"形态的 Web UI / TUI 重设计为任务中心 Mission Control——任务取代 session 成为一等公民，执行过程（工具/计划/审批）是主舞台，对话降级为指挥通道，工作区（Diff/文件/终端/预览）常驻右栏。Web 与 TUI 同构，共用 WS 协议与事件→条目映射。
+> **设计规格**: [docs/MISSION_CONTROL_DESIGN_2026.md](MISSION_CONTROL_DESIGN_2026.md)（信息架构 / 任务聚合模型 / 事件映射表 / 技术栈 / ADR-010）
+> **时间**: M1 约 3-5 天；M2 约 5-7 天；M3 约 3-5 天；M4 约 3-4 天
+> **风险**: 高（全量 UI 重做；上一轮尝试 ce7a172 因"效果不好"被 cd528c4 整体 revert）
+> **前置**: 无（Phase 9 M3 实况面板可在新 UI 上实现，反向不阻塞）
+> **决策记录**: 2026-06-11 用户拍板三项：① 核心形态 = 任务中心 Mission Control；② 技术路线 = 引入 Vite + React + TS 现代构建链（**ADR-010 取代 ADR-001/002 "无 Node 构建"约束**，缓解：产物提交进 git/PyPI，最终用户仍零 Node，运行时零 CDN）；③ TUI = Textual 全屏应用（重建既有 `xmclaw/tui/` 骨架）。流程级修正：每个里程碑先给用户看真实运行效果、认可后再进下一步。
+
+### 10.M0 设计冻结
+
+- [x] **10.M0.1 设计文档**：docs/MISSION_CONTROL_DESIGN_2026.md（诊断 / 原则 / 三栏信息架构 / 任务聚合模型 / 事件→时间线映射 / 20+ 页四域收编 / 技术栈 / TUI 规格 / ADR-010）。
+- [x] **10.M0.2 约束更新**：CLAUDE.md 标注 Phase 10 构建链决策与 webui/ 工程；`static/AGENTS.md` 加 deprecation 指针。
+- [x] **10.M0.3 视觉方向认可**：2026-06-11 用户确认 Web 三栏 + TUI 设计稿方向（"Mission Control 这个设计方向我认可"）。
+
+### 10.M1 Web 骨架
+
+- [ ] **10.M1.1 脚手架**：`webui/` Vite 6 + React 19 + TS + Tailwind 4 + shadcn/ui + zustand；构建产物 → `xmclaw/daemon/webui_dist/`（提交进 git）；daemon 挂载 `/ui-next/`；`vite dev` 反代 `/api` + `/agent` WS。
+- [ ] **10.M1.2 数据层移植**：`lib/ws.js`（重连补发/队列冲洗）+ chat reducer（历史水化/pending question 恢复/取消回合追踪）按语义移植为 TS，WS 协议零改动。
+- [ ] **10.M1.3 任务聚合 router**：`GET /api/v2/tasks` 只读聚合（session × plan/todo/approval/cron/sleep 事件 → 任务快照）；增量走既有 WS 事件，不动 AgentLoop。
+- [ ] **10.M1.4 三栏布局**：任务栏 / 任务视图 / 工作区骨架 + HUD；跨前后端测试（TestClient 真实 URL + dist 可达性）。
+- [ ] **10.M1.5 CI**：`webui-build` job（npm ci + build + diff 校验 dist 一致性）。
+
+### 10.M2 执行视图
+
+- [ ] **10.M2.1 活动时间线**：§2.3 全事件映射（工具卡折叠/思考块/安全条目/内部活动组）。
+- [ ] **10.M2.2 计划步骤条**：`plan_*` + `todo_updated` 驱动。
+- [ ] **10.M2.3 内联审批**：`agent_asked_question` → 审批卡（允许/总是/拒绝）→ `answer_question` 帧。
+- [ ] **10.M2.4 工作区四标签**：Diff/文件（复用 session_workspaces API）+ 终端（xterm.js）+ 预览（Phase 9 canvas 桥）。
+
+### 10.M3 收编与切换
+
+- [ ] **10.M3.1 四域收编**：任务/记忆/能力/系统，20+ 旧页按驾驶舱仪表重组（见设计文档 §2.4），不 1:1 搬家。
+- [ ] **10.M3.2 切换**：`/ui/` 指向 webui_dist；旧 `static/` 移入 archive，留一个 tag 周期后删除；更新 static/AGENTS.md → webui/AGENTS.md。
+
+### 10.M4 TUI（Textual 重建）
+
+- [ ] **10.M4.1 布局**：HUD + 任务列表 + 计划条 + 活动时间线 + 指挥通道；Diff/文件 modal screen。
+- [ ] **10.M4.2 审批快捷键**：y/a/n → `answer_question` 帧；[Esc] 打断。
+- [ ] **10.M4.3 废除 QUIET_MS**：回合终止改事件语义判定（与 web reducer 共享逻辑）；`--plain` REPL 同步换判定；textual 收进 `xmclaw[tui]` extra。
+
+### 10.V 验收标准
+
+- [ ] 打开 `/ui/` 第一眼是任务列表与执行状态，而非聊天记录（P1）
+- [ ] 一次多工具长任务中：计划步骤实时翻转、工具卡流式出现、审批内联可点、Diff 在右栏实时亮起——全程不需要切页面
+- [ ] 断网/重连后：队列消息冲洗、历史水化、pending 审批恢复（与旧 UI 行为对照零回归）
+- [ ] 最终用户 `pip install xmclaw` 后零 Node、零 CDN 运行新 UI
+- [ ] `xmclaw chat` 进入 Textual 全屏：任务/时间线/审批快捷键可用，回合终止不再依赖静默期猜测
+- [ ] 每里程碑有用户视觉认可记录（进度日志留痕）
+
+### 10.L 进度日志
+
+- 2026-06-11: Phase 10 立项（本 commit）。M0 完成：设计文档 + 三项方向决策 + ADR-010 + 用户视觉方向认可。下一步 10.M1 Web 骨架。
+
+---
+
 ## 附录 A: 竞品差异化总结
 
 | 维度 | OpenClaw | Claude Code | Hermes | Letta | **XMclaw** |
