@@ -3129,6 +3129,26 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # through the shared reference; rebinds (compression) are
         # re-stashed at each hop top in _run_hop_loop.
         self._inflight_messages[session_id] = messages
+        # Fix Bug D (audit 2026-06-11): backup inflight to disk so
+        # mid-turn progress survives daemon crash. JSON temp file
+        # under ~/.xmclaw/v2/inflight/ — loaded on next startup.
+        try:
+            import json, os
+            from xmclaw.utils.paths import data_dir
+            _inf_dir = data_dir() / "v2" / "inflight"
+            _inf_dir.mkdir(parents=True, exist_ok=True)
+            _inf_path = _inf_dir / f"{session_id}.json"
+            from xmclaw.daemon.session_store import _message_to_dict
+            _inf_payload = json.dumps(
+                [_message_to_dict(m) for m in messages],
+                ensure_ascii=False,
+            )
+            # Atomic write: tmp file + rename
+            _tmp = _inf_path.with_suffix(".tmp")
+            _tmp.write_text(_inf_payload, encoding="utf-8")
+            _tmp.replace(_inf_path)
+        except Exception:
+            pass
 
         # Per-hop turn id so every LLM_CHUNK + LLM_RESPONSE event in this
         # hop shares a correlation_id. The chat reducer keys the assistant

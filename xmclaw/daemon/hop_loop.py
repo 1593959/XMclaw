@@ -562,6 +562,16 @@ class HopLoopMixin:
                         )
                         if _did_compress:
                             messages = _new_msgs
+                            # Fix Bug A (audit 2026-06-11): re-stash inflight
+                            # after compression so the finally block sees
+                            # post-compression messages. Previously the
+                            # local rebind was invisible to inflight.
+                            try:
+                                _ims = getattr(self, "_inflight_messages", None)
+                                if _ims is not None and session_id in _ims:
+                                    _ims[session_id] = messages
+                            except Exception:
+                                pass
                             _last_compress_hash = _compress_hash
                             _last_compressed_messages = list(messages)
                             await publish(EventType.CONTEXT_COMPRESSED, {

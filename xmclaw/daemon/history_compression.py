@@ -719,6 +719,12 @@ class HistoryCompressionMixin:
             "[turn hint]",
             # Jarvis Phase 1-2: time_block moved system → user msg.
             "## 当前时刻",
+            # Fix Bug C (audit 2026-06-11): continuation anchor leaks into
+            # persisted history on "继续"/"go on" turns. Also scrub git
+            # status and output schema blocks that are turn scaffolding.
+            "[System note:",
+            "</output_schema>",
+            "git status:",
         )
         for m in history:
             # 2026-05-17: drop GOAL-ANCHOR user messages entirely from

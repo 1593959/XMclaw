@@ -114,9 +114,13 @@ def _message_to_dict(m: Message) -> dict[str, Any]:
         "tool_calls": [_toolcall_to_dict(tc) for tc in m.tool_calls],
         "tool_call_id": m.tool_call_id,
     }
-    # B-Vision: persist image attachments so session reload + cross-
-    # turn context retains visual history. Empty tuple → omit field
-    # for backwards-compat with old persisted rows.
+    # Fix Bug B (audit 2026-06-11): persist thinking/thinking_signature
+    # for providers (DeepSeek V4) that require echo on subsequent turns.
+    # Previously dropped on every save/load cycle, causing 400 errors.
+    if m.thinking:
+        out["thinking"] = m.thinking
+    if m.thinking_signature:
+        out["thinking_signature"] = m.thinking_signature
     if m.images:
         out["images"] = list(m.images)
     return out
@@ -127,6 +131,8 @@ def _message_from_dict(d: dict[str, Any]) -> Message:
         role=d["role"],
         content=d.get("content", "") or "",
         tool_calls=tuple(_toolcall_from_dict(tc) for tc in d.get("tool_calls") or ()),
+        thinking=d.get("thinking"),
+        thinking_signature=d.get("thinking_signature"),
         tool_call_id=d.get("tool_call_id"),
         images=tuple(d.get("images") or ()),
     )
