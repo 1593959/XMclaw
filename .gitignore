@@ -148,3 +148,4 @@ var/
 wheels/
 .installed.cfg
 MEMORY.md
+webui/tsconfig.tsbuildinfo
