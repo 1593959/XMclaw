@@ -29,6 +29,7 @@ const HANDLED = new Set([
   "skill_rolled_back",
   "prompt_injection_detected",
   "llm_stream_fallback",
+  "workspace_file_changed",
   "canvas_artifact_created",
   "canvas_artifact_updated",
   "canvas_artifact_closed",
@@ -122,15 +123,22 @@ export function applySecondaryEvent(chat, envelope, helpers) {
       const ct = Number(payload.completion_tokens) || 0;
       // ``spent_usd`` is the daemon-side running total — replace,
       // don't sum, so we stay in sync if the daemon resets.
+      const totalTokens = (prev.prompt_tokens || 0) + pt + (prev.completion_tokens || 0) + ct;
       return {
         ...chat,
         tokenUsage: {
           prompt_tokens: prev.prompt_tokens + pt,
           completion_tokens: prev.completion_tokens + ct,
+          // Agent UI compatible camelCase aliases
+          promptTokens: prev.prompt_tokens + pt,
+          completionTokens: prev.completion_tokens + ct,
+          totalTokens,
           spent_usd: typeof payload.spent_usd === "number"
             ? payload.spent_usd : prev.spent_usd,
           budget_usd: typeof payload.budget_usd === "number"
             ? payload.budget_usd : prev.budget_usd,
+          costUsd: typeof payload.spent_usd === "number"
+            ? payload.spent_usd : prev.spent_usd,
           last_model: payload.model || prev.last_model,
           turns: prev.turns + 1,
         },
@@ -358,6 +366,36 @@ export function applySecondaryEvent(chat, envelope, helpers) {
         skillProposals: (chat.skillProposals || []).filter(
           (p) => p.skill_id !== sid,
         ),
+      };
+    }
+
+    case "workspace_file_changed": {
+      // F1 (2026-05-30): a file in the session workspace was
+      // created/modified/deleted. Bump a counter + stash the last
+      // change so the WorkspacePanel can refetch tree + auto-open
+      // its drawer on the first event. No inline bubble — the panel
+      // is the surface, not the chat stream.
+      const action = payload.action || "modified";
+      const rel = payload.rel_path || "?";
+      const ts2 = ts;
+      const cur = chat.workspace || { version: 0, lastChange: null, opened: false };
+      return {
+        ...chat,
+        workspace: {
+          version: (cur.version || 0) + 1,
+          lastChange: {
+            rel_path: rel,
+            action,
+            tool: payload.tool || "",
+            commit_sha: payload.commit_sha || "",
+            ts: ts2,
+          },
+          // First change in this session auto-opens the drawer. Once
+          // the user explicitly closes it, ``opened`` stays false even
+          // through more events (they signalled "not interested").
+          opened: cur.userClosed ? false : true,
+          userClosed: !!cur.userClosed,
+        },
       };
     }
 

@@ -535,8 +535,12 @@ class BuiltinToolsShellMixin:
             pass
 
         suffix = f"\n...[truncated to {max_chars} chars]" if truncated else ""
+        # Citation header (audit 2026-06-11): include the fetch timestamp
+        # so the agent can cite sources with retrieval time.
+        _ts = __import__("datetime").datetime.now().isoformat()[:19]
         content = (
             f"[{r.status_code} {r.reason_phrase}] {url}\n"
+            f"Fetched: {_ts} | Chars: {len(text)} | Content-Type: {r.headers.get('content-type', '')[:60]}\n"
             f"{text}{suffix}"
         )
         # 2026-05-28: when a public site returns a 4xx that looks

@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from .base import BaseToolGuardian
+from .computer_use_guardian import MUTATING_GUI_TOOLS
 from .models import GuardFinding, ToolGuardResult
 
 
@@ -33,6 +34,12 @@ _DEFAULT_GUARDED_TOOLS: set[str] = {
     "browser_click",
     "browser_fill",
 }
+
+# Phase 9 M2.2: GUI 操作类 computer-use 工具进 guarded 集合。此前这批
+# "agent 直接驱动用户鼠标键盘"的工具不在集合里 → 只跑 always-run 的
+# file_path guardian → ComputerUseActionGuardian 永远不会被咨询。
+# 名单收口在 computer_use_guardian.MUTATING_GUI_TOOLS（单一来源）。
+_DEFAULT_GUARDED_TOOLS |= set(MUTATING_GUI_TOOLS)
 
 # Tools that are unconditionally blocked.
 _DEFAULT_DENIED_TOOLS: set[str] = set()
@@ -97,8 +104,14 @@ class ToolGuardEngine:
             try:
                 batch = g.guard(tool_name, params)
             except Exception:  # noqa: BLE001
-                # Guardian failure must not block the tool call.
-                # Logged by the caller if desired.
+                # Guardian failure must not block the tool call,
+                # but MUST be logged so operators can detect
+                # silent security degradation (audit 2026-06-11).
+                from xmclaw.utils.log import get_logger as _gl
+                _gl(__name__).warning(
+                    "tool_guard.guardian_failed guardian=%s tool=%s",
+                    g.name, tool_name, exc_info=True,
+                )
                 batch = []
             if batch:
                 findings.extend(batch)

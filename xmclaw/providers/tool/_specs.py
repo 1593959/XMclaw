@@ -817,7 +817,7 @@ def _bucket_enum() -> list[str]:
 
 _MEMORY_SPEC = ToolSpec(
     name="memory",
-    read_only=True,
+    read_only=False,  # Fix audit 2026-06-11: add/replace/forget/pin are all writes
     description=_build_memory_spec_description(),
     parameters_schema={
         "type": "object",
@@ -1651,10 +1651,15 @@ _ASK_USER_QUESTION_SPEC = ToolSpec(
     name="ask_user_question",
     description=(
         "Stop the turn and ask the user a multiple-choice question. Use "
-        "this when you genuinely don't know which path to take and the "
-        "answer materially changes what you'd do — e.g. \"library A or "
+        "this when:\n"
+        "  1. You genuinely don't know which path to take and the answer "
+        "materially changes what you'd do — e.g. \"library A or "
         "library B?\", \"keep the legacy field or drop it?\", \"target "
-        "tomorrow or next week?\".\n\n"
+        "tomorrow or next week?\".\n"
+        "  2. The user's request involves ≥2 UNSTATED key parameters that "
+        "would dramatically change the output (audience, format, depth, "
+        "style, platform). NEVER guess and start building — pause and "
+        "confirm with this tool first.\n\n"
         "★★ MUST USE when presenting multiple mutually-exclusive options "
         "to the user — e.g. \"how would you like to receive this file?\" "
         "(download directly / upload to cloud / email / other). The UI "

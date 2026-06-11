@@ -199,6 +199,7 @@ class Fact:
     # Values: "user_confirmed" | "auto_extract_regex" | "auto_extract_llm"
     # | "tool_invoked" | "manual_ui" | "persona_file" | "unknown"
     provenance: str = "unknown"
+    _distance: float = 0.0  # populated by backend search, used by recall()
     ts_first: float = field(default_factory=time.time)
     ts_last: float = field(default_factory=time.time)
     # Phase 8 ⑩ (2026-05-30): bi-temporal validity, Zep/Graphiti

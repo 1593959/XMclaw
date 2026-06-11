@@ -555,7 +555,32 @@ class OpenAILLM(LLMProvider):
             kwargs["tools"] = tool_defs
 
         t0 = time.perf_counter()
-        response = await client.chat.completions.create(**kwargs)
+        # Exponential backoff for transient API errors (audit 2026-06-11).
+        _max_retries = 3
+        _base_delay = 1.0
+        for _attempt in range(_max_retries + 1):
+            try:
+                response = await client.chat.completions.create(**kwargs)
+                break
+            except Exception as _e:
+                _etype = type(_e).__name__
+                _msg = str(_e)[:200]
+                if (
+                    "429" not in _msg
+                    and "529" not in _msg
+                    and "overloaded" not in _msg.lower()
+                    and "rate" not in _msg.lower()
+                    and "capacity" not in _msg.lower()
+                    and _attempt >= _max_retries
+                ):
+                    raise
+                _delay = _base_delay * (2 ** _attempt)
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).warning(
+                    "openai.retry attempt=%d/%d delay=%.1fs err=%s",
+                    _attempt + 1, _max_retries, _delay, _etype,
+                )
+                await asyncio.sleep(_delay)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         choices = getattr(response, "choices", None) or []

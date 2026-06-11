@@ -280,6 +280,18 @@ export function applyStreamingEvent(chat, envelope, helpers) {
           content: (() => {
             const streamed = m.content || "";
             if (!finalText) return streamed || errBody;
+            // B-STREAM-FINAL: defensive guard against truncated finalText.
+            // Empirical case: streamed text looks complete during chunks,
+            // but the terminal llm_response carries a truncated payload
+            // (provider dropped trailing chars). If streamed starts with
+            // finalText and has strictly more content, streamed is the
+            // more complete rendition — keep it.
+            if (
+              streamed.length > finalText.length
+              && streamed.startsWith(finalText)
+            ) {
+              return streamed;
+            }
             return finalText.length >= streamed.length ? finalText : streamed;
           })(),
           // Mid-multi-hop: stay in "thinking" so the bubble keeps

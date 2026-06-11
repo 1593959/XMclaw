@@ -61,6 +61,7 @@ class AnthropicLLM(LLMProvider):
         *,
         context_length: int | None = None,
         max_tokens: int | None = None,
+        extended_thinking: bool = False,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -74,27 +75,18 @@ class AnthropicLLM(LLMProvider):
         # The SDK client is created lazily so tests that don't touch it can
         # run without the anthropic dependency installed.
         self._client: Any = None
-        # Wave-27 fix-6: explicit context-window override. See the
-        # OpenAILLM counterpart for the rationale — any 3rd-party
-        # Anthropic-compatible endpoint (api.minimaxi.com,
-        # custom-portal aggregators, self-hosted shims) can declare
-        # its true window via config without code edits.
+        # Wave-27 fix-6: explicit context-window override.
         self.context_length: int | None = (
             int(context_length) if context_length and context_length > 0 else None
         )
-        # Epic #27 sweep #14 (2026-05-19): configurable max output
-        # tokens. Pre-fix three call sites (stream / complete /
-        # complete_streaming) all hard-coded 4096. Anthropic accepts
-        # up to 8192 default + much more for extended-thinking
-        # endpoints; users with vision-heavy turns or long-reasoning
-        # workflows hit silent mid-output truncation (B-229 partial
-        # tool-call drop). Now configurable per-instance; default
-        # 8192 matches Anthropic's documented default for opus/sonnet.
-        # Config block ``llm.anthropic.max_tokens`` flows in via
-        # factory.py → __init__ kwarg.
+        # Operational params.
         self.max_tokens: int = (
             int(max_tokens) if max_tokens and max_tokens > 0 else 8192
         )
+        # Fix audit 2026-06-11: ``_extended_thinking`` was previously
+        # never initialised; the ``getattr`` guard in complete_streaming
+        # always returned False, making the feature unreachable.
+        self._extended_thinking = extended_thinking
 
     # ── lazy client ──
 
@@ -582,7 +574,34 @@ class AnthropicLLM(LLMProvider):
             kwargs["tools"] = tool_defs
 
         t0 = time.perf_counter()
-        response = await client.messages.create(**kwargs)
+        # Exponential backoff for transient API errors (audit 2026-06-11).
+        # 429 rate-limit and 529 overload are retried up to 3 times;
+        # non-transient errors (auth, bad request, model_not_found)
+        # propagate immediately.
+        _max_retries = 3
+        _base_delay = 1.0
+        for _attempt in range(_max_retries + 1):
+            try:
+                response = await client.messages.create(**kwargs)
+                break
+            except Exception as _e:
+                _etype = type(_e).__name__
+                _msg = str(_e)[:200]
+                if (
+                    "429" not in _msg
+                    and "529" not in _msg
+                    and "overloaded" not in _msg.lower()
+                    and "rate" not in _msg.lower()
+                    and "capacity" not in _msg.lower()
+                    and _attempt >= _max_retries
+                ):
+                    raise
+                _delay = _base_delay * (2 ** _attempt)
+                _log.warning(
+                    "anthropic.retry attempt=%d/%d delay=%.1fs err=%s",
+                    _attempt + 1, _max_retries, _delay, _etype,
+                )
+                await asyncio.sleep(_delay)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         # Extract text + tool calls from the content blocks.
@@ -666,20 +685,9 @@ class AnthropicLLM(LLMProvider):
         tool_defs = self._tools_to_anthropic(tools)
         if tool_defs:
             kwargs["tools"] = tool_defs
-        # B-216: optionally request extended thinking. Was default-ON
-        # in the first cut, but real-data trace (turn 65f9ec, kimi
-        # k2.6 via api.kimi.com/coding/) showed hop 0 streaming OK
-        # then hops 1-9 ALL hitting the streaming fallback path —
-        # the Kimi Coding-Plan endpoint rejects ``thinking`` kwarg
-        # once a tool_use block is in the conversation history.
-        # Made opt-in via ``self._extended_thinking`` (default
-        # False) so streaming always works; users with a real
-        # Claude-on-Anthropic-direct endpoint can flip the flag
-        # to surface thinking content. The thinking_delta event
-        # iteration below is unconditional — if the endpoint
-        # ever sends one, we'll catch it with or without the
-        # opt-in flag.
-        if getattr(self, "_extended_thinking", False):
+        # B-216: optionally request extended thinking (audit 2026-06-11:
+        # was dead code; _extended_thinking is now initialised in __init__).
+        if self._extended_thinking:
             kwargs["max_tokens"] = max(int(kwargs.get("max_tokens", 4096)), 8192)
             kwargs["thinking"] = {
                 "type": "enabled",

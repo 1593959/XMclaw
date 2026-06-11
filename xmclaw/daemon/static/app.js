@@ -81,6 +81,8 @@ import { AppShell as HermesAppShell } from "./components/organisms/AppShell.js";
 // to :root before the first paint. Mirrors the theme provider.
 import "./lib/theme-engine.js";
 import { ChatPage } from "./pages/Chat.js";
+import { AgentChatPage } from "./pages/AgentChat.js";
+import { ObservabilityPage } from "./pages/Observability.js";
 import { SettingsPage } from "./pages/Settings.js";
 // Phase F (2026-05-12): Doctor / Backup / Config 合并进 Settings 后死代码删除。
 // 旧路由 /doctor /backup /config 在 ``routes`` 表里仍 redirect 到 /settings —
@@ -318,6 +320,49 @@ const toggleUltrathink = _COMPOSER.toggleUltrathink;
 const cycleOutputStyle = _COMPOSER.cycleOutputStyle;
 const addImages = _COMPOSER.addImages;
 const removeImage = _COMPOSER.removeImage;
+const setWorkspaceClosed = _COMPOSER.setWorkspaceClosed;
+
+// ── Agent UI panel actions ─────────────────────────────────────
+function toggleThinking() {
+  store.setState(s => ({ chat: { ...s.chat, thinkingCollapsed: !s.chat.thinkingCollapsed } }));
+}
+function toggleMemoryRecall() {
+  store.setState(s => ({ chat: { ...s.chat, memoryRecallExpanded: !s.chat.memoryRecallExpanded } }));
+}
+function toggleShowAllTools() {
+  store.setState(s => ({ chat: { ...s.chat, showAllToolCalls: !s.chat.showAllToolCalls } }));
+}
+function confirmPlan() {
+  store.setState(s => ({ chat: { ...s.chat, planConfirmed: true } }));
+  // TODO: send plan_confirm WS frame to daemon
+}
+function rejectPlan() {
+  store.setState(s => ({
+    chat: { ...s.chat, planSteps: [], planGenerated: false, activePlanStep: null },
+  }));
+}
+function openArtifact(artifact) {
+  // Navigate to a full-page artifact viewer or trigger download
+  if (artifact.filePath && artifact.filePath.startsWith("/api")) {
+    const tok = store.getState().auth.token;
+    window.open(artifact.filePath + (tok ? "?token=" + encodeURIComponent(tok) : ""), "_blank");
+  }
+}
+
+// Message retry: re-send the last user message (edit-and-retry pattern).
+function retryLastMessage() {
+  const s = store.getState();
+  const msgs = s.chat.messages;
+  const lastUser = [...msgs].reverse().find(m => m.role === "user");
+  if (!lastUser || !lastUser.content) return;
+  // Remove the last assistant response(s) after the last user message
+  const lastUserIdx = msgs.indexOf(lastUser);
+  const keep = msgs.slice(0, lastUserIdx + 1);
+  store.setState({
+    chat: { ...s.chat, messages: keep, pendingAssistantId: null, thinkingSegments: [] },
+  });
+  sendComposer(lastUser.content);
+}
 
 function startNewSession() {
   const sid = newSid();
@@ -469,11 +514,11 @@ function Redirect({ to }) {
 
 const routes = {
   "/chat": (state) => html`
-    <${ChatPage}
+    <${AgentChatPage}
       chat=${state.chat}
       session=${state.session}
       connection=${state.connection}
-      token=${state.auth.token}
+      workspace=${state.workspace}
       onSend=${sendComposer}
       onCancel=${cancelComposer}
       onAnswerQuestion=${answerQuestion}
@@ -482,13 +527,16 @@ const routes = {
       onTogglePlan=${togglePlan}
       onCycleOutputStyle=${cycleOutputStyle}
       onToggleUltrathink=${toggleUltrathink}
-      onNewSession=${startNewSession}
-      onResumeSession=${resumeSession}
       onChangeModel=${setLlmProfile}
-      onSwitchAgent=${switchAgent}
-      slashStore=${CHAT_ACTIONS}
       onAddImages=${addImages}
       onRemoveImage=${removeImage}
+      onToggleThinking=${toggleThinking}
+      onToggleMemoryRecall=${toggleMemoryRecall}
+      onToggleShowAllTools=${toggleShowAllTools}
+      onConfirmPlan=${confirmPlan}
+      onRejectPlan=${rejectPlan}
+      onOpenArtifact=${openArtifact}
+      onRetryLast=${retryLastMessage}
     />
   `,
   "/sessions": (state) => html`<${SessionsPage} token=${state.auth.token} />`,
@@ -516,6 +564,7 @@ const routes = {
   "/doctor":  () => html`<${Redirect} to="/settings" />`,
   "/files":   (state) => html`<${FilesPage}   token=${state.auth.token} />`,
   "/dashboard": (state) => html`<${DashboardPage} token=${state.auth.token} />`,
+  "/observability": (state) => html`<${ObservabilityPage} token=${state.auth.token} />`,
   // B-159: /insights 整合到 /trace。route 留通配符兜底，不再注册。
   "/settings": (state) => html`<${SettingsPage} token=${state.auth.token} />`,
   "*": () => html`<${Placeholder} title="未找到" subtitle="未匹配的路由" />`,
@@ -562,7 +611,24 @@ function renderApp() {
 
 const { navigate } = installRouter(store, routes);
 _navigate = navigate;
-store.subscribe(renderApp);
+
+// P0 selector-based subscriptions (audit 2026-06-11): replace the old
+// full-app re-render with per-slice listeners. Each only fires when its
+// slice reference changes, avoiding the ~96%-wasted render cycles during
+// streaming and keystroke-driven composer updates.
+//
+// Route + session changes must re-render (sidebar, page switch).
+store.subscribe(renderApp, s => s.route);
+store.subscribe(renderApp, s => s.session);
+// Chat slice carries messages, draft, planMode, etc. — the hot path.
+store.subscribe(renderApp, s => s.chat);
+// Connection changes must re-render (WS status banner).
+store.subscribe(renderApp, s => s.connection);
+// UI (theme, density) changes must re-render.
+store.subscribe(renderApp, s => s.ui);
+// Bootstrap diag (one-shot on boot, rarely changes).
+store.subscribe(renderApp, s => s.bootstrap);
+
 renderApp();
 
 // Kick off WS / token boot AFTER the first paint so the user sees the

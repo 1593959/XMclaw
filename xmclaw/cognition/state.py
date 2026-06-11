@@ -270,6 +270,14 @@ class CognitiveState:
                     "source": g.source,
                     "created_at": g.created_at,
                     "status": g.status,
+                    "success_criteria": g.success_criteria,
+                    "deadline": g.deadline,
+                    "parent_goal_id": g.parent_goal_id,
+                    "sub_goal_ids": list(g.sub_goal_ids),
+                    "task_ids": list(g.task_ids),
+                    "assigned_agent": g.assigned_agent,
+                    "estimated_cost_usd": g.estimated_cost_usd,
+                    "updated_at": g.updated_at,
                 }
                 for g in self.current_goals
             ],
@@ -320,6 +328,14 @@ class CognitiveState:
                     source=g.get("source", "user"),
                     created_at=g.get("created_at", 0.0),
                     status=g.get("status", "active"),
+                    success_criteria=g.get("success_criteria"),
+                    deadline=g.get("deadline"),
+                    parent_goal_id=g.get("parent_goal_id"),
+                    sub_goal_ids=list(g.get("sub_goal_ids", [])),
+                    task_ids=list(g.get("task_ids", [])),
+                    assigned_agent=g.get("assigned_agent", "main"),
+                    estimated_cost_usd=g.get("estimated_cost_usd"),
+                    updated_at=g.get("updated_at", g.get("created_at", 0.0)),
                 )
             )
         for f in data.get("attention_focus", []):

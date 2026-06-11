@@ -275,184 +275,6 @@ class HopLoopMixin:
             hook_engine=getattr(self, "_hook_engine", None),
             agent_id=getattr(self, "_agent_id", "main"),
         )
-        """Invoke one tool with defensive error handling and retry.
-
-        Returns the raw ``ToolResult``. Event publishing and loop-state
-        mutation are the caller's responsibility so that multiple calls
-        can be executed in parallel.
-
-        Wave-27 fix-17 (2026-05-16): wraps ``effective_tools.invoke``
-        in an ``asyncio.wait_for`` so a tool that hangs internally
-        (Playwright waiting for a navigation that never fires,
-        subprocess stuck on stdin read, MCP server unresponsive)
-        cannot block the agent loop forever. Pre-fix the user saw
-        a ``browser_click running...`` state that never returned —
-        no internal timeout caught it. Default 180s; configurable
-        via ``tools.invoke_timeout_s`` in daemon config. On timeout
-        we return a structured failed ToolResult so the LLM can
-        decide what to do next.
-        """
-        import dataclasses as _dc
-        import asyncio as _asyncio
-        from xmclaw.core.ir import ToolResult as _ToolResult
-        call_with_sid = _dc.replace(call, session_id=session_id)
-        tool_timeout_s = float(
-            getattr(self, "_tool_invoke_timeout_s", 180.0),
-        )
-
-        # Wave-32: PreToolUse hook dispatch. Hooks can deny the tool
-        # call (returns a structured error result the LLM sees) or
-        # rewrite the args via ``updated_input``. Mirrors Claude
-        # Code's PreToolUse semantics.
-        _hook_engine = getattr(self, "_hook_engine", None)
-        if _hook_engine is not None:
-            try:
-                from xmclaw.core.hooks import HookEvent as _HE
-                _pre = await _hook_engine.dispatch(
-                    _HE.PRE_TOOL_USE,
-                    session_id=session_id,
-                    agent_id=getattr(self, "_agent_id", "main"),
-                    payload={
-                        "tool_name": call_with_sid.name,
-                        "args": dict(call_with_sid.args or {}),
-                        "call_id": call_with_sid.id,
-                    },
-                )
-                if (
-                    _pre.decision == "deny"
-                    or _pre.continue_ is False
-                ):
-                    return _ToolResult(
-                        call_id=call.id,
-                        ok=False,
-                        content=None,
-                        error=(
-                            f"[hook denied] {_pre.block_reason or ''}".strip()
-                        ),
-                    )
-                if isinstance(_pre.updated_input, dict):
-                    call_with_sid = _dc.replace(
-                        call_with_sid, args=_pre.updated_input,
-                    )
-            except Exception as _exc:  # noqa: BLE001
-                from xmclaw.utils.log import get_logger as _gl
-                _gl(__name__).warning(
-                    "pre_tool_use_hook.failed tool=%s err=%s",
-                    call.name, _exc,
-                )
-
-        try:
-            result = await _asyncio.wait_for(
-                effective_tools.invoke(call_with_sid),
-                timeout=tool_timeout_s,
-            )
-        except _asyncio.TimeoutError:
-            from xmclaw.utils.log import get_logger as _gl
-            _gl(__name__).warning(
-                "tool.invoke_wall_clock_exceeded tool=%s timeout=%.1fs",
-                call.name, tool_timeout_s,
-            )
-            result = _ToolResult(
-                call_id=call.id,
-                ok=False,
-                content=None,
-                error=(
-                    f"tool '{call.name}' exceeded {tool_timeout_s:.0f}s "
-                    f"wall-clock and was aborted. The tool was likely "
-                    f"stuck waiting for an external event (page nav, "
-                    f"subprocess stdout, MCP server reply). Try a "
-                    f"different approach or add an explicit shorter "
-                    f"timeout in the tool args if it supports one."
-                ),
-            )
-        except Exception as _invoke_exc:  # noqa: BLE001
-            from xmclaw.utils.log import get_logger as _gl
-            _gl(__name__).warning(
-                "tool.invoke_uncaught_exception tool=%s err=%s",
-                call.name, _invoke_exc,
-            )
-            result = _ToolResult(
-                call_id=call.id,
-                ok=False,
-                content=None,
-                error=(
-                    f"{type(_invoke_exc).__name__}: {_invoke_exc} "
-                    f"(uncaught — ToolProvider contract violation; "
-                    f"the tool's ``invoke`` should have returned "
-                    f"a failed ToolResult instead of raising)"
-                ),
-            )
-        # B-17: retry once on transient failures.
-        if not result.ok and result.error and _is_transient_tool_error(result.error):
-            await _asyncio.sleep(0.5)
-            try:
-                retry = await _asyncio.wait_for(
-                    effective_tools.invoke(call_with_sid),
-                    timeout=tool_timeout_s,
-                )
-            except _asyncio.TimeoutError:
-                retry = _ToolResult(
-                    call_id=call.id,
-                    ok=False,
-                    content=None,
-                    error=(
-                        f"tool '{call.name}' retry also exceeded "
-                        f"{tool_timeout_s:.0f}s wall-clock"
-                    ),
-                )
-            except Exception as _retry_exc:  # noqa: BLE001
-                retry = _ToolResult(
-                    call_id=call.id,
-                    ok=False,
-                    content=None,
-                    error=(
-                        f"{type(_retry_exc).__name__}: {_retry_exc} "
-                        f"(retry also raised uncaught — "
-                        f"ToolProvider contract violation)"
-                    ),
-                )
-            if retry.ok:
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).info(
-                    "tool.retry_succeeded tool=%s first_error=%s",
-                    call.name, (result.error or "")[:120],
-                )
-                result = retry
-
-        # Wave-32: PostToolUse hook dispatch. Fire-and-forget on the
-        # decision-level — hooks at this stage observe + can emit
-        # system_message into the next LLM call but can't unwind a
-        # tool call that already ran. ``updated_input`` here rewrites
-        # the ToolResult content (e.g. for redaction).
-        if _hook_engine is not None:
-            try:
-                from xmclaw.core.hooks import HookEvent as _HE2
-                _post = await _hook_engine.dispatch(
-                    _HE2.POST_TOOL_USE,
-                    session_id=session_id,
-                    agent_id=getattr(self, "_agent_id", "main"),
-                    payload={
-                        "tool_name": call.name,
-                        "call_id": call.id,
-                        "ok": result.ok,
-                        "error": result.error or "",
-                    },
-                )
-                if (
-                    isinstance(_post.updated_input, (str, dict))
-                    and result.ok
-                ):
-                    result = _dc.replace(
-                        result, content=_post.updated_input,
-                    )
-            except Exception as _exc:  # noqa: BLE001
-                from xmclaw.utils.log import get_logger as _gl
-                _gl(__name__).warning(
-                    "post_tool_use_hook.failed tool=%s err=%s",
-                    call.name, _exc,
-                )
-
-        return result
 
     async def _run_hop_loop(
         self, *,
@@ -485,6 +307,9 @@ class HopLoopMixin:
         # B-302: honesty guard — max 1 correction per turn to avoid loops.
         _B302_MAX_CORRECTIONS = 1
         _b302_corrected = 0
+        # Reset fallback chain tracking each turn so every provider
+        # gets a fresh chance (audit 2026-06-11).
+        object.__setattr__(self, "_fallback_tried_models", set())
         # 2026-05-26 (audit G1 phase 2): narration tracking moved to
         # ``narration_enforcer.NarrationEnforcer``. Hop loop just
         # observes per-hop and gets back a NarrationDecision.
@@ -991,27 +816,41 @@ class HopLoopMixin:
                                 # reason as category.
                                 raise
 
-                            # 2026-06-04: if we have a fallback profile,
-                            # switch immediately instead of sleeping on the
-                            # same profile.
+                            # Multi-provider fallback chain (audit 2026-06-11):
+                            # when primary LLM fails, iterate through ALL
+                            # available profiles in the registry before
+                            # giving up. Previously only switched to the
+                            # default once, then slept-and-retried the
+                            # same failing endpoint.
                             _registry = getattr(self, "_llm_registry", None)
+                            _tried = getattr(self, "_fallback_tried_models", None)
+                            if _tried is None:
+                                object.__setattr__(self, "_fallback_tried_models", set())
+                                _tried = getattr(self, "_fallback_tried_models")
+                            _tried.add(getattr(llm, "model", "") or "")
                             if _registry is not None and _b227_attempts > 0:
-                                _default = _registry.default()
-                                if _default is not None and _default.llm is not llm:
+                                _next_llm = None
+                                for _prof in _registry:
+                                    _pm = getattr(_prof.llm, "model", "") if _prof.llm else ""
+                                    if _prof.llm is not None and _pm not in _tried:
+                                        _next_llm = _prof.llm
+                                        break
+                                if _next_llm is not None:
                                     try:
                                         from xmclaw.utils.log import get_logger
                                         get_logger(__name__).info(
                                             "agent_loop.llm_fallback_switch "
-                                            "hop=%d from=%s to=%s",
+                                            "hop=%d from=%s to=%s tried=%d",
                                             hop,
                                             getattr(llm, "model", "") or "",
-                                            getattr(_default.llm, "model", "") or "",
+                                            getattr(_next_llm, "model", "") or "",
+                                            len(_tried),
                                         )
                                     except Exception:  # noqa: BLE001
                                         pass
-                                    llm = _default.llm
-                                    _b227_attempts = 0  # reset retry budget for new profile
-                                    continue  # retry immediately with new profile
+                                    llm = _next_llm
+                                    _b227_attempts = 0
+                                    continue
 
                             sleep_ms = schedule[_b227_attempts]
                             try:

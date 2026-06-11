@@ -105,6 +105,17 @@ def _run_plain_chat(url: str, session_id: str | None) -> None:
         typer.secho("已获取 pairing token", fg=typer.colors.GREEN)
 
     sid = session_id or f"cli_{asyncio.get_event_loop().time():.0f}"
+
+    # Try prompt_toolkit REPL first (audit 2026-06-11), fall back to
+    # the legacy typer.prompt loop if not installed.
+    try:
+        from xmclaw.cli.prompt_toolkit_repl import PromptToolkitRepl
+        repl = PromptToolkitRepl(ws_url=ws_url, session_id=sid)
+        asyncio.run(repl.run())
+        return
+    except ImportError:
+        pass
+
     typer.echo(f"Session: {sid}")
     typer.echo("输入消息后回车发送 (Ctrl+C 退出).\n")
 
@@ -125,7 +136,6 @@ def _run_plain_chat(url: str, session_id: str | None) -> None:
                     "session_id": sid,
                     "message": text,
                 }))
-                # Simple blocking read of one response.
                 raw = await ws.recv()
                 msg = json.loads(raw)
                 payload = msg.get("payload", {})

@@ -560,6 +560,15 @@ def classify_model_tier(model: str | None) -> str:
     for pat, tier in _TIER_PATTERNS:
         if pat in lowered:
             return tier
+    # Fix audit 2026-06-11: OpenRouter model IDs use ``provider/model``
+    # format (e.g. ``anthropic/claude-opus-4-7``). The bare substring
+    # pass above misses these because no _TIER_PATTERNS entry contains
+    # a ``/``. Retry with just the model name portion.
+    if "/" in lowered:
+        _bare = lowered.rsplit("/", 1)[-1]
+        for pat, tier in _TIER_PATTERNS:
+            if pat in _bare:
+                return tier
     return "unknown"
 
 

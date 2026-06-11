@@ -133,6 +133,9 @@ def _record_to_fact(row: dict[str, Any]) -> Fact:
     emb = row.get("embedding")
     if emb is not None and hasattr(emb, "tolist"):
         emb = emb.tolist()
+    # Capture LanceDB's _distance from the search result so recall()
+    # and downstream callers can compute actual relevance (audit 2026-06-11).
+    _dist = row.get("_distance", 0.0)
     return Fact(
         id=row["id"],
         kind=row["kind"],
@@ -141,6 +144,7 @@ def _record_to_fact(row: dict[str, Any]) -> Fact:
         confidence=float(row["confidence"]),
         evidence_count=int(row["evidence_count"]),
         embedding=tuple(emb) if emb else None,
+        _distance=float(_dist) if _dist is not None else 0.0,
         source_event_id=row["source_event_id"] or None,
         contradicts=tuple(json.loads(row.get("contradicts_json") or "[]")),
         superseded_by=row["superseded_by"] or None,
@@ -472,10 +476,13 @@ class LanceDBVectorBackend:
         try:
             if query is None:
                 # Pure-filter listing — order by ts_last DESC.
+                # F2 fix: fetch WITHOUT limit first, sort in Python,
+                # THEN truncate. Previously limit() ran before sort(),
+                # so callers like dedup_scope got a random subset.
                 builder = self._table.query()
                 if where:
                     builder = builder.where(where)
-                rows = await builder.limit(limit).to_list()
+                rows = await builder.to_list()
                 rows.sort(key=lambda r: r.get("ts_last", 0.0), reverse=True)
                 return [_record_to_fact(r) for r in rows[:limit]]
 

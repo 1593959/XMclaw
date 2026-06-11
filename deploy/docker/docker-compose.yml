@@ -1,0 +1,59 @@
+# XMclaw production deployment
+#
+# Quick start:
+#   1. Set XMC_LLM_API_KEY in .env:  echo "XMC_LLM_API_KEY=sk-ant-..." > .env
+#   2. Start:                         docker compose up -d
+#   3. Open:                          http://localhost:8766/ui/
+#
+# Configuration:
+#   - Mount ~/.xmclaw to persist events, memory, and persona files
+#   - Mount your workspace directory so the agent can read/write files
+#   - Set API keys via .env or environment variables
+
+version: "3.9"
+
+services:
+  xmclaw:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: xmclaw
+    restart: unless-stopped
+    ports:
+      - "${XMC_PORT:-8766}:8766"
+    volumes:
+      # Persist agent state (events.db, LanceDB facts, pairing token, persona files).
+      - xmclaw_data:/home/xmclaw/.xmclaw
+      # Mount your workspace — change this to the directory the agent should work in.
+      - ${XMC_WORKSPACE:-${HOME}:/workspace}:ro
+      # Optionally mount a writable workspace for agent file operations:
+      # - ./workspace:/workspace:rw
+    environment:
+      - XMC_LLM_PROVIDER=${XMC_LLM_PROVIDER:-anthropic}
+      - XMC_LLM_MODEL=${XMC_LLM_MODEL:-claude-sonnet-4-6}
+      - XMC_LLM_API_KEY=${XMC_LLM_API_KEY:?XMclaw LLM API key required}
+      - XMC_LLM_BASE_URL=${XMC_LLM_BASE_URL:-}
+      - XMC_WORKSPACE=${XMC_WORKSPACE:-/workspace}
+      - XMC_PORT=${XMC_PORT:-8766}
+      - XMC_DATA_DIR=/home/xmclaw/.xmclaw
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8766/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - xmclaw
+
+  # Optional: tunnel for external access via Cloudflare
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   command: tunnel --url http://xmclaw:8766
+  #   depends_on: [xmclaw]
+  #   networks: [xmclaw]
+
+volumes:
+  xmclaw_data:
+
+networks:
+  xmclaw:

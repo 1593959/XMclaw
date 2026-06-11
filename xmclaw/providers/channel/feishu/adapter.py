@@ -500,6 +500,12 @@ class FeishuAdapter(ChannelAdapter):
         ``pkg_resources.declare_namespace`` which is ~3.75s on cold
         module cache — far too slow for the daemon's main event loop.
         Module cache is process-wide so subsequent calls are free."""
+        # B-2026-06-11: setuptools ≥69 removed pkg_resources.declare_namespace.
+        # lark_oapi's top-level __init__.py calls it unconditionally.
+        # Monkey-patch a no-op before the import so it doesn't crash.
+        import pkg_resources
+        if not hasattr(pkg_resources, 'declare_namespace'):
+            pkg_resources.declare_namespace = lambda _pn: None  # noqa: ARG005
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
         return lark, P2ImMessageReceiveV1
@@ -528,12 +534,19 @@ class FeishuAdapter(ChannelAdapter):
         loop = asyncio.get_running_loop()
 
         def _on_im_message(event: P2ImMessageReceiveV1) -> None:
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    self._handle_event(event), loop,
-                ).result(timeout=10)
-            except Exception as exc:  # noqa: BLE001
-                _log.warning("feishu.dispatch_failed err=%s", exc)
+            # Fix audit 2026-06-11: the old ``.result(timeout=10)`` call
+            # blocked the lark-oapi thread pool for up to 10 s per event.
+            # A slow handler (image download, prompt-injection scan) would
+            # exhaust the pool. Now fire-and-forget via future callback.
+            fut = asyncio.run_coroutine_threadsafe(
+                self._handle_event(event), loop,
+            )
+            def _cb(f: asyncio.Future[None]) -> None:
+                try:
+                    f.result()
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("feishu.dispatch_failed err=%s", exc)
+            fut.add_done_callback(_cb)
 
         dispatcher_builder = (
             lark.EventDispatcherHandler.builder("", "")

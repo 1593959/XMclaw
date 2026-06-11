@@ -418,6 +418,15 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # ``run_turn`` checks at hop boundaries (cheap, doesn't
         # interrupt in-flight LLM calls but escapes tool-loop stalls).
         self._cancel_events: dict[str, "asyncio.Event"] = {}
+        # B-RESUME-2 (2026-06-11): in-flight working messages, keyed by
+        # session. ``_run_turn_inner`` stashes the list right after it's
+        # built; ``_run_hop_loop`` refreshes the reference at every hop
+        # (compression rebinds the local). run_turn's finally uses this
+        # to persist mid-turn progress (tool_use + tool results) when a
+        # turn dies, so「继续」resumes from the break point instead of
+        # restarting from scratch (user report 2026-06-11: "整个过程全
+        # 没了，发送继续直接就从头开始").
+        self._inflight_messages: dict[str, list[Message]] = {}
         # Wave-32+: rolling buffer of recently finished runs. Lets
         # ``/api/v2/agent_tasks`` surface DONE entries for autonomous
         # session spawns (GoalGenerator / TaskScheduler / Proactive)
@@ -523,6 +532,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # hint every turn would tilt the agent toward over-proposing
         # curriculum edits and dilute the signal.
         self._curriculum_hint_fired: dict[str, bool] = {}
+        # Per-session state dicts — these replace instance-level attributes
+        # that were race-prone across concurrent sessions (audit 2026-06-11).
+        self._active_run_modes: dict[str, str | None] = {}
+        self._active_is_trivial: dict[str, bool] = {}
+        self._last_tier_decisions: dict[str, Any] = {}
+
         # P0-1: ContextCompressor lazy-init slot. Created on first use
         # (so tests / callers that never trip the threshold pay zero
         # cost). Per-process singleton — per-session state lives
@@ -896,9 +911,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     fallback_chain=decision.fallback_chain,
                 )
                 if prof is not None:
-                    # Stash decision for observability — agent_loop's
-                    # event publisher reads this off self.
-                    self._last_tier_decision = decision
+                    # Stash decision for observability — per-session to avoid
+                    # cross-contamination (audit 2026-06-11).
+                    from xmclaw.core.agent_context import get_current_session_id
+                    _sid = get_current_session_id() or ""
+                    self._last_tier_decisions[_sid] = decision
                     return prof.llm
             except Exception:  # noqa: BLE001 — never block a turn over router error
                 pass
@@ -995,6 +1012,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         user_images: "tuple[str, ...] | None" = None,
         channel_name: str | None = None,
         ultrathink: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> AgentTurnResult:
         # B-38: register a fresh per-session cancel event. Cleared via
         # ``cancel_session`` (set by the WS handler when the user clicks
@@ -1036,6 +1054,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     channel_name=channel_name,
                     _turn_metrics=_turn_metrics,
                     ultrathink=ultrathink,
+                    output_schema=output_schema,
                 )
                 return _result
         finally:
@@ -1081,30 +1100,105 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         and isinstance(user_message, str)
                         and user_message.strip()
                     ):
-                        recovered = list(history)
-                        _tail = recovered[-1] if recovered else None
-                        already = (
-                            _tail is not None
-                            and getattr(_tail, "role", None) == "user"
-                            and getattr(_tail, "content", None) == user_message
-                        )
-                        if not already:
+                        # B-RESUME-2 (2026-06-11): persist MID-TURN
+                        # PROGRESS, not just the prompt. The old path
+                        # saved「用户消息 + 占位 assistant」only — every
+                        # hop's tool_use/tool result evaporated with the
+                        # local ``messages`` list, so「继续」restarted
+                        # the whole task from zero (user report: "整个
+                        # 过程全没了"). Now we grab the in-flight working
+                        # messages stashed by _run_turn_inner / refreshed
+                        # per hop, close any unanswered tool_use pairing
+                        # (the failure may have hit mid-tool; strict
+                        # anthropic endpoints 400 on orphan tool_use —
+                        # same constraint as commit 20c7b43), and run it
+                        # through the SAME _persist_history pipeline the
+                        # success path uses (scaffolding scrub + save).
+                        _saved_inflight = False
+                        _inflight = self._inflight_messages.get(session_id)
+                        if _inflight:
+                            _progress = [
+                                m for m in _inflight
+                                if getattr(m, "role", "") != "system"
+                            ]
+
+                            def _n_work(msgs: "list[Message]") -> int:
+                                return sum(
+                                    1 for m in msgs
+                                    if getattr(m, "role", "")
+                                    in ("assistant", "tool")
+                                )
+
+                            if _n_work(_progress) > _n_work(history):
+                                _answered = {
+                                    m.tool_call_id for m in _progress
+                                    if getattr(m, "role", "") == "tool"
+                                    and m.tool_call_id
+                                }
+                                _patched: list[Message] = []
+                                for m in _progress:
+                                    _patched.append(m)
+                                    if (
+                                        getattr(m, "role", "") == "assistant"
+                                        and getattr(m, "tool_calls", ())
+                                    ):
+                                        for _tc in m.tool_calls:
+                                            _tc_id = getattr(_tc, "id", None)
+                                            if _tc_id and _tc_id not in _answered:
+                                                _patched.append(Message(
+                                                    role="tool",
+                                                    content=(
+                                                        "[interrupted] 该工具调用"
+                                                        "未完成（本轮出错/超时），"
+                                                        "没有产生结果。"
+                                                    ),
+                                                    tool_call_id=_tc_id,
+                                                ))
+                                _patched.append(Message(
+                                    role="assistant",
+                                    content=(
+                                        "⚠️ 这一轮没能完成（出错或超时），"
+                                        "但中间进度（已执行的工具调用和"
+                                        "结果）已经保存。直接说「继续」，"
+                                        "我会从中断点接着做，不会从头开始。"
+                                    ),
+                                ))
+                                try:
+                                    await self._persist_history(
+                                        session_id, _patched,
+                                    )
+                                    history = self._histories.get(
+                                        session_id, history,
+                                    )
+                                    _saved_inflight = True
+                                except Exception:  # noqa: BLE001
+                                    pass  # fall back to the minimal path
+                        if not _saved_inflight:
+                            recovered = list(history)
+                            _tail = recovered[-1] if recovered else None
+                            already = (
+                                _tail is not None
+                                and getattr(_tail, "role", None) == "user"
+                                and getattr(_tail, "content", None)
+                                == user_message
+                            )
+                            if not already:
+                                recovered.append(Message(
+                                    role="user", content=user_message,
+                                ))
                             recovered.append(Message(
-                                role="user", content=user_message,
+                                role="assistant",
+                                content=(
+                                    "⚠️ 这一轮没能完成(出错或超时)。"
+                                    "你的消息已经保留——直接说「继续」，"
+                                    "我就接着做。"
+                                ),
                             ))
-                        recovered.append(Message(
-                            role="assistant",
-                            content=(
-                                "⚠️ 这一轮没能完成(出错或超时)。"
-                                "你的消息已经保留——直接说「继续」，"
-                                "我就接着做。"
-                            ),
-                        ))
-                        history = recovered
-                        # Update in-memory too so the NEXT turn (which
-                        # reads _histories, not disk) sees the recovered
-                        # exchange.
-                        self._histories[session_id] = history
+                            history = recovered
+                            # Update in-memory too so the NEXT turn (which
+                            # reads _histories, not disk) sees the recovered
+                            # exchange.
+                            self._histories[session_id] = history
                     # B-PERF: offload SQLite write to thread so the
                     # event loop isn't blocked on fsync (WAL mode helps
                     # but INSERT ... ON CONFLICT still touches disk).
@@ -1116,6 +1210,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     get_logger(__name__).warning(
                         "session.save_failed", session_id=session_id
                     )
+            # B-RESUME-2: drop the stash after recovery has consumed it.
+            self._inflight_messages.pop(session_id, None)
             # Wave-32+: record a "recently finished" entry so the
             # 后台任务 panel can surface autonomous-session results
             # AFTER the turn ends. Without this every spawned task
@@ -1246,6 +1342,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         channel_name: str | None = None,
         _turn_metrics: "dict[str, Any] | None" = None,
         ultrathink: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> AgentTurnResult:
         # B-332: per-call tool-name allowlist. When set, the rest of
         # this method routes all ``list_tools()`` / ``invoke()``
@@ -1516,7 +1613,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 )
         except Exception:  # noqa: BLE001
             _is_trivial_turn = False
-        self._active_is_trivial = _is_trivial_turn
+        self._active_is_trivial[session_id] = _is_trivial_turn
 
         await publish(
             EventType.USER_MESSAGE,
@@ -2601,26 +2698,24 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         _bg_block = self._build_recent_autonomous_block()
         if _bg_block:
             _parts.append(_bg_block)
-        # B-GIT: inject a lightweight git status snapshot when the
-        # primary workspace is a git repo.  Kept small (branch +
-        # dirty flag + 3 recent commits) so it doesn't bloat the
-        # prompt; refreshed every turn because ``git status`` is
-        # cheap (<10 ms) and the agent needs to know about recent
-        # commits or branch switches immediately.
+        # Move git_status and _recall_for_system to user message so they
+        # don't break the cacheable system prompt prefix (audit 2026-06-11).
+        # These blocks change every turn; placing them in the system prompt
+        # invalidates the prompt cache for every request.
+        _user_dynamic_blocks: list[str] = []
+        # B-GIT: lightweight git status snapshot.
         try:
             from xmclaw.core.workspace.git_status import get_git_status
             ws_path = (self._cfg or {}).get("workspace_root")
             if ws_path:
                 gs = get_git_status(ws_path)
                 if gs is not None:
-                    _parts.append(gs.render())
+                    _user_dynamic_blocks.append(gs.render())
         except Exception:  # noqa: BLE001 — never block a turn over git
             pass
-
-        # Wave-28: inject collected recall context into the system prompt
-        # (NOT the user message) so the user never sees it in their chat.
+        # Auto-recall context — injected into user message to preserve cache.
         if _recall_for_system:
-            _parts.append(_recall_for_system)
+            _user_dynamic_blocks.append(_recall_for_system)
 
         # Ultrathink: inject step-by-step reasoning directive into the
         # system prompt so the model thinks deeply without polluting the
@@ -2900,6 +2995,46 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         except Exception:  # noqa: BLE001 — never block a turn on this
             _correction_hint = ""
 
+        # Structured output: if caller provides a JSON schema, inject a
+        # hard constraint instruction into the user message (audit 2026-06-11).
+        _schema_block = ""
+        if output_schema is not None:
+            try:
+                import json as _json
+                _schema_str = _json.dumps(output_schema, ensure_ascii=False, indent=2)
+                _schema_block = (
+                    "\n\n<output_schema>\n"
+                    "You MUST respond with a single JSON object matching "
+                    "this JSON Schema. Do NOT wrap the JSON in markdown "
+                    "code fences. Do NOT add any text before or after "
+                    "the JSON object. The JSON object must be the entire "
+                    "content of your response.\n"
+                    "Schema:\n"
+                    + _schema_str +
+                    "\n</output_schema>"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # F1 (2026-05-30): per-session workspace hint. Tells the agent
+        # where to drop scratch / notes / drafts so they show up in the
+        # user's right-side WorkspacePanel. Rides the user-message tail
+        # (same pattern as the memory blocks) to keep the system prompt
+        # cache intact. Short on purpose — the path itself does most of
+        # the lifting; verbose explanation would just burn tokens.
+        try:
+            from xmclaw.utils.paths import session_workspace_dir as _swd
+            _ws_path = str(_swd(session_id))
+            workspace_hint_block = (
+                "\n\n<session-workspace>\n"
+                f"Scratch dir for this session: {_ws_path}\n"
+                "Write drafts / notes / intermediate files here — they "
+                "render live in the user's right-side panel.\n"
+                "</session-workspace>"
+            )
+        except Exception:  # noqa: BLE001
+            workspace_hint_block = ""
+
         messages: list[Message] = [
             Message(role="system", content=system_content),
             *prior,
@@ -2911,6 +3046,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     + memory_ctx_block
                     + memory_files_block
                     + unified_recall_block
+                    + workspace_hint_block
+                    + ("\n\n" + "\n\n".join(_user_dynamic_blocks) if _user_dynamic_blocks else "")
                     + "\n\n"
                     + user_message
                     + curriculum_hint_block
@@ -2918,6 +3055,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     + skill_router_hint
                     + skill_browse_hint
                     + _correction_hint
+                    + _schema_block
                 ),
                 # B-MULTIMODAL-UI: user uploaded images in the composer.
                 # WS handler wrote them to ~/.xmclaw/v2/uploads/ and passed
@@ -2927,6 +3065,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 images=tuple(user_images) if user_images else (),
             ),
         ]
+        # B-RESUME-2: expose the working list so run_turn's finally can
+        # persist mid-turn progress if this turn dies. Appends are seen
+        # through the shared reference; rebinds (compression) are
+        # re-stashed at each hop top in _run_hop_loop.
+        self._inflight_messages[session_id] = messages
 
         # Per-hop turn id so every LLM_CHUNK + LLM_RESPONSE event in this
         # hop shares a correlation_id. The chat reducer keys the assistant
@@ -2958,7 +3101,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # below: instant skips plan-first, swarm boosts subagent
         # tool prominence. Failure-graceful: any router error → no
         # override, agent mode (status quo) runs.
-        self._active_run_mode = None
+        self._active_run_modes[session_id] = None
         try:
             from xmclaw.cognition.mode_router import ModeRouter
             _mode_router = getattr(self, "_mode_router", None) or ModeRouter(
@@ -2966,7 +3109,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 enable_swarm=bool(getattr(self, "_mode_swarm_enabled", True)),
             )
             _route = _mode_router.route(user_message)
-            self._active_run_mode = _route.mode.value
+            self._active_run_modes[session_id] = _route.mode.value
             await publish(EventType.INNER_MONOLOGUE, {
                 "kind": "mode_routed",
                 "mode": _route.mode.value,
@@ -2979,7 +3122,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
         # Sprint 0: surface the tier decision that _resolve_llm made
         # so Analytics + UI can show which model is on duty this turn.
-        _tier_decision = getattr(self, "_last_tier_decision", None)
+        _tier_decision = self._last_tier_decisions.get(session_id)
         if _tier_decision is not None:
             try:
                 await publish(EventType.INNER_MONOLOGUE, {
@@ -3000,7 +3143,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # bias the LLM toward using parallel_subagents as its FIRST
         # action. The hint rides on the user message (not system
         # prompt) so it doesn't bust the prompt-cache prefix.
-        if self._active_run_mode == "swarm":
+        if self._active_run_modes.get(session_id) == "swarm":
             _has_parallel_subagents = any(
                 getattr(s, "name", "") == "parallel_subagents"
                 for s in (tool_specs or [])
@@ -3071,8 +3214,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             or _looks_like_single_step(_um)
         )
         if (
-            self._active_run_mode != "instant"
-            and not getattr(self, "_active_is_trivial", False)
+            self._active_run_modes.get(session_id) != "instant"
+            and not self._active_is_trivial.get(session_id, False)
             and not _skip_plan_session
             and not _skip_plan_single_step
         ):
@@ -3149,10 +3292,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     # to swarm ONLY when the plan looks like genuinely
                     # independent complex subtasks (≥3 steps, no obvious
                     # dependency chains, each step is non-trivial).
-                    if self._active_run_mode != "swarm":
+                    if self._active_run_modes.get(session_id) != "swarm":
                         try:
                             if _steps_warrant_subagents(_steps):
-                                self._active_run_mode = "swarm"
+                                self._active_run_modes[session_id] = "swarm"
                                 await publish(
                                     EventType.INNER_MONOLOGUE,
                                     {
@@ -3260,7 +3403,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # instead of letting the LLM decide. This is the truly
         # autonomous path — the runtime fans out, not the model.
         if (
-            self._active_run_mode == "swarm"
+            self._active_run_modes.get(session_id) == "swarm"
             and self._active_plan_steps
             and len(self._active_plan_steps) >= 2
             and effective_tools is not None
@@ -3309,7 +3452,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         )
 
         # 2026-06-09 P2: instant mode — true single-shot, no hop loop.
-        if self._active_run_mode == "instant":
+        if self._active_run_modes.get(session_id) == "instant":
             return await self._run_instant_single_shot(
                 session_id=session_id,
                 llm=llm,

@@ -804,10 +804,27 @@ class MemoryService:
                     + 0.05 * min(near_dup.confidence, confidence),
                 )
                 near_dup.ts_last = time.time()
+                # Merge variant text: if the new wording differs from the
+                # surviving text, append it so we don't lose the rephrasing.
+                # F1 fix: previously the variant was silently discarded.
+                _merged = False
+                if text and text.strip() and near_dup.text and text.strip() != near_dup.text.strip():
+                    _existing_lines = set(near_dup.text.split("\n"))
+                    if text not in _existing_lines:
+                        near_dup.text = near_dup.text + "\n" + text
+                        _merged = True
                 # Promote layer if threshold crossed.
                 if near_dup.evidence_count >= LONG_TERM_PROMOTE_THRESHOLD:
                     near_dup.layer = FactLayer.LONG_TERM.value
                 await self._vec.upsert([near_dup])
+                # Re-embed updated text if we merged variant wording.
+                if _merged:
+                    try:
+                        _re_emb = await self._embedder.embed(near_dup.text)
+                        near_dup.embedding = _re_emb
+                        await self._vec.upsert([near_dup])
+                    except Exception:  # noqa: BLE001
+                        pass
                 # If the caller passed a source_event_id, link the
                 # new event to the SURVIVING fact via CAUSED_BY.
                 if source_event_id:
@@ -822,8 +839,8 @@ class MemoryService:
                         pass
                 _log.info(
                     "memory_service.merged_near_dup id=%s "
-                    "evidence=%d (new write: %r)",
-                    near_dup.id[:32], near_dup.evidence_count, text[:60],
+                    "evidence=%d merged_variant=%s (new write: %r)",
+                    near_dup.id[:32], near_dup.evidence_count, _merged, text[:60],
                 )
                 return near_dup
         new_evidence = 1 if existing is None else existing.evidence_count + 1
@@ -1567,6 +1584,19 @@ class MemoryService:
             kind=RelationKind.SUPERSEDES,
             auto_extracted=False,
         )
+        # Clean up stale graph edges on the superseded fact.
+        # The SUPERSEDES edge just created is preserved; SAME_TOPIC,
+        # CONTRADICTS, and CAUSED_BY edges to/from the old fact
+        # are now orphaned and should be removed (audit 2026-06-11).
+        try:
+            _pairs = await self._graph.neighbors(old_fact_id, max_hops=1)
+            for _rel, _target in _pairs:
+                try:
+                    await self._graph.remove_relation(_rel.id)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
 
     # 2026-05-26: agent-curation APIs (chat-b3c614bc follow-up).
     # User reported the agent can ingest facts but has no surface to
@@ -1653,6 +1683,17 @@ class MemoryService:
                 )
             except Exception:  # noqa: BLE001
                 pass
+        # Clean up stale graph edges on the forgotten fact
+        # (audit 2026-06-11: previously edges were left dangling).
+        try:
+            _pairs = await self._graph.neighbors(fact_id, max_hops=1)
+            for _rel, _target in _pairs:
+                try:
+                    await self._graph.remove_relation(_rel.id)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
         await self._publish_curation("forgot", {
             "fact_id": fact_id,
             "text": old_text[:200],
@@ -2212,9 +2253,10 @@ class MemoryService:
 
         out: list[RecallHit] = []
         for fact in hits:
+            _dist = getattr(fact, "_distance", 0.0)
             out.append(RecallHit(
                 fact=fact,
-                distance=0.0,
+                distance=float(_dist) if _dist is not None else 0.0,
                 related_relations=related_map.get(fact.id, []),
             ))
         return out

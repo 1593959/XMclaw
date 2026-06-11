@@ -26,30 +26,14 @@ import socket
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
+
+from xmclaw.cli.doctor_registry import CheckResult
 from typing import Any
 
 
-@dataclass(frozen=True, slots=True)
-class CheckResult:
-    """One check's outcome. ``ok=True`` means green; False means red."""
-
-    name: str
-    ok: bool
-    detail: str
-    advisory: str | None = None   # printed in yellow when non-None
-    fix_available: bool = False    # set by checks that implement fix()
-
-    def render(self) -> str:
-        # ASCII icons only — the unicode check/cross (✓⚠✗) crash the
-        # default Windows-Chinese locale (GBK) when typer.echo tries to
-        # encode via sys.stdout. Stay portable.
-        icon = "[ok]" if self.ok else ("[!]" if self.advisory else "[x]")
-        line = f"  {icon} {self.name}: {self.detail}"
-        if self.advisory:
-            line += f"\n    -> {self.advisory}"
-        return line
+# CheckResult is defined in doctor_registry.py — imported at module top.
+# (audit 2026-06-11: removed duplicate class definition.)
 
 
 # ── individual checks (each takes inputs, returns a CheckResult) ─────────
@@ -289,13 +273,12 @@ def run_doctor(
     the registry so existing callers stay source-compatible).
     """
     from xmclaw.cli.doctor_registry import (
-        CheckResult as RegistryCheckResult,
         DoctorContext,
         build_default_registry,
     )
 
     registry = build_default_registry()
-    plugin_errors: list[RegistryCheckResult] = []
+    plugin_errors: list[CheckResult] = []
     if discover_plugins:
         plugin_errors = registry.discover_plugins()
 

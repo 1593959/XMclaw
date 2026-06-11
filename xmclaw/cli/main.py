@@ -77,6 +77,28 @@ app.add_typer(skill_app, name="skill")  # B-390 (Sprint 2): skill marketplace
 app.add_typer(eval_app, name="eval")  # Sprint 4: A/B benchmark harness
 app.add_typer(acp_app, name="acp")  # Jarvis Phase J3
 
+
+# ── Global callback: --json flag + shell completion ──────────────────
+# Audit 2026-06-11: every subcommand can now check ctx.obj["json"]
+# and switch output to machine-readable JSON. Typer's native shell
+# completion is wired via --install-completion.
+@app.callback(invoke_without_command=True)
+def _global_callback(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False, "--json", help="Machine-readable JSON output",
+        is_eager=True,
+    ),
+) -> None:
+    ctx.ensure_object(dict)
+    ctx.obj["json"] = json_output
+    ctx.obj["json_output"] = json_output  # alias for readability
+    if ctx.invoked_subcommand is None:
+        # No subcommand given → print help (same as default Typer behaviour).
+        typer.echo(app.get_help(ctx))
+        raise typer.Exit(0)
+
+
 # B-325 back-compat re-exports: tests / external callers used to
 # ``from xmclaw.cli.main import _default_config_template`` etc when
 # these helpers lived here. Re-export so the move is invisible.
@@ -833,6 +855,94 @@ def onboard(
     """
     code = run_onboard(config_path=config, skip_smoke=skip_smoke)
     raise typer.Exit(code=code)
+
+
+@app.command()
+def update(
+    pre: bool = typer.Option(
+        False, "--pre", help="Include pre-release versions.",
+    ),
+) -> None:
+    """Upgrade xmclaw to the latest version via pip."""
+    import subprocess
+    import sys
+
+    typer.echo("Upgrading xmclaw via pip…")
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
+    if pre:
+        cmd.append("--pre")
+    cmd.append("xmclaw")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            typer.secho("✓ xmclaw upgraded successfully.", fg=typer.colors.GREEN)
+            typer.echo(result.stdout.strip().split("\n")[-1])
+        else:
+            typer.secho(f"✗ Upgrade failed (exit {result.returncode})", fg=typer.colors.RED)
+            typer.echo(result.stderr, err=True)
+    except FileNotFoundError:
+        typer.secho("✗ pip not found. Install via: pip install --upgrade xmclaw", fg=typer.colors.RED)
+
+
+@app.command()
+def export(
+    session_id: str = typer.Argument(..., help="Session ID to export."),
+    output: str = typer.Option("-", "--output", help="Output file path (default: stdout)."),
+    format: str = typer.Option(
+        "md", "--format", help="Export format: md (markdown) or json.",
+    ),
+    host: str = typer.Option("127.0.0.1", help="Daemon host."),
+    port: int = typer.Option(8766, help="Daemon port."),
+    token: str = typer.Option("", help="Pairing token (read from daemon if empty)."),
+) -> None:
+    """Export a conversation to Markdown or JSON."""
+    import json
+    import urllib.request
+
+    if not token:
+        try:
+            req = urllib.request.Request(f"http://{host}:{port}/api/v2/pair")
+            resp = urllib.request.urlopen(req, timeout=5)
+            token = resp.read().decode("utf-8").strip()
+        except Exception:
+            typer.secho("✗ Failed to fetch pairing token. Use --token or ensure daemon is running.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+    try:
+        url = f"http://{host}:{port}/api/v2/sessions/{session_id}?token={token}"
+        resp = urllib.request.urlopen(url, timeout=10)
+        data = json.loads(resp.read())
+        messages = data.get("messages", data.get("history", []))
+    except Exception as exc:
+        typer.secho(f"✗ Failed to fetch session: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if format == "json":
+        out = json.dumps(messages, ensure_ascii=False, indent=2)
+    else:
+        lines = [f"# XMclaw Session: {session_id}", f"Exported: {__import__('datetime').datetime.now().isoformat()}", ""]
+        for m in messages:
+            role = m.get("role", "unknown")
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            if role == "user":
+                lines.append(f"### You\n\n{content}\n")
+            elif role == "assistant":
+                lines.append(f"### XM\n\n{content}\n")
+            elif role == "system":
+                lines.append(f"*[System: {content[:200]}]*\n")
+        out = "\n".join(lines)
+
+    if output == "-":
+        typer.echo(out)
+    else:
+        from pathlib import Path
+        Path(output).write_text(out, encoding="utf-8")
+        typer.secho(f"✓ Exported {len(messages)} messages to {output}", fg=typer.colors.GREEN)
 
 
 @app.command()

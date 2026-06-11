@@ -1281,6 +1281,9 @@ def build_tools_from_config(
         from xmclaw.security.tool_guard.file_guardian import FilePathToolGuardian
         from xmclaw.security.tool_guard.rule_guardian import RuleBasedToolGuardian
         from xmclaw.security.tool_guard.shell_evasion_guardian import ShellEvasionGuardian
+        from xmclaw.security.tool_guard.computer_use_guardian import (
+            ComputerUseActionGuardian,
+        )
         from xmclaw.security.tool_guard.models import GuardianPolicy
         from xmclaw.providers.tool.guarded import GuardedToolProvider
 
@@ -1290,6 +1293,12 @@ def build_tools_from_config(
             ),
             RuleBasedToolGuardian(),
             ShellEvasionGuardian(),
+            # Phase 9 M2.2: GUI 操作分级闸。mode 含义见 guardian 模块
+            # docstring；非法值在启动期 raise（与 policy 同一原则——坏
+            # 配置应当当场炸而不是静默回退）。
+            ComputerUseActionGuardian(
+                mode=guardians_cfg.get("computer_use_mode", "allow")
+            ),
         ])
 
         # Parse ``security.guardians.policy`` — per-severity action
@@ -1670,13 +1679,32 @@ def build_agent_from_config(
             max_hops = 40
     # Persistent conversation history — create early so it can be wired
     # into BuiltinTools (read_conversation_history tool).
-    session_store: SessionStore | None
+    # Default path — build early so it can be wired into BuiltinTools
+    # (read_conversation_history tool) and the AgentLoop's crash-recovery
+    # path. If the default path fails (perms, disk space), we still
+    # build a SessionStore so in-progress state is preserved — the
+    # daemon will use a temp file as a last-resort fallback.
+    session_store: SessionStore | None = None
     try:
         session_store = SessionStore(default_sessions_db_path())
     except Exception as _exc:  # noqa: BLE001
-        get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)
-        session_store = None
-    _build_status["session_store"] = "ok" if session_store is not None else "failed"
+        get_aggregator().record(
+            ErrorSeverity.WARNING, __name__, "build_agent_from_config.session_store", _exc,
+            message="Session store path unavailable; using temp fallback",
+        )
+    if session_store is None:
+        try:
+            import tempfile
+            _tf = Path(tempfile.gettempdir()) / "xmclaw_sessions_fallback.db"
+            session_store = SessionStore(_tf)
+            _build_status["session_store"] = "ok (temp fallback)"
+        except Exception as _exc2:  # noqa: BLE001
+            get_aggregator().record(
+                ErrorSeverity.ERROR, __name__, "build_agent_from_config.session_store", _exc2,
+            )
+            session_store = None
+    else:
+        _build_status["session_store"] = "ok"
     registry = build_llm_registry_from_config(cfg)
     default_profile = registry.default()
     llm = default_profile.llm if default_profile is not None else None
