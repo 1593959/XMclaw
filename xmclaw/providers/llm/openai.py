@@ -370,33 +370,20 @@ class OpenAILLM(LLMProvider):
                     content_str = content_str.replace(
                         CACHE_BREAKPOINT_MARKER, "\n\n",
                     )
-            # 2026-05-26: echo thinking on assistant messages.
-            # DeepSeek V4 thinking mode hard-requires the prior
-            # reasoning to be passed back or it 400s with
-            # "content[].thinking in the thinking mode must be passed
-            # back to the API". The error phrasing ``content[].``
-            # tells us the shape: ``content`` becomes a block list
-            # with a ``{type: thinking, thinking: ...}`` entry
-            # (Anthropic-compatible). We BOTH set top-level
-            # ``reasoning_content`` (matches DeepSeek docs' description
-            # of the response shape) AND emit the block in content,
-            # because providers vary on which one they validate.
-            thinking_text = (
-                m.thinking if (m.role == "assistant" and getattr(m, "thinking", "")) else ""
-            )
-            if thinking_text:
-                blocks: list[dict[str, Any]] = [{
-                    "type": "thinking",
-                    "thinking": thinking_text,
-                }]
-                if content_str:
-                    blocks.append({"type": "text", "text": content_str})
-                entry = {"role": m.role, "content": blocks}
-                # Also stamp reasoning_content for providers that read
-                # it from the top level (per DeepSeek response docs).
-                entry["reasoning_content"] = thinking_text
-            else:
-                entry = {"role": m.role, "content": content_str}
+            # 2026-06-10: do NOT echo thinking on the OpenAI shape.
+            # The 2026-05-26 fix emitted a ``{type: thinking}`` content
+            # block + top-level ``reasoning_content`` on assistant
+            # messages, chasing a "must be passed back" 400 that actually
+            # came from an Anthropic-shaped endpoint (fixed there since).
+            # On the real OpenAI chat-completions shape this is doubly
+            # wrong: DeepSeek /v1 rejects the block with
+            # ``messages[N]: unknown variant `thinking`, expected `text```
+            # (one assistant turn with thinking in history then poisons
+            # every subsequent request), and DeepSeek's docs explicitly
+            # forbid passing ``reasoning_content`` back in the input.
+            # Reasoning is a response-only artifact here — serialize the
+            # assistant turn as plain text.
+            entry = {"role": m.role, "content": content_str}
             if m.tool_calls:
                 entry["tool_calls"] = [
                     translator.encode_to_provider(tc) for tc in m.tool_calls

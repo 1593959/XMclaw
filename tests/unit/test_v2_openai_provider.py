@@ -536,15 +536,18 @@ async def test_b320_complete_surfaces_cache_tokens() -> None:
     assert resp.cache_read_input_tokens == 900
 
 
-# 2026-05-26: DeepSeek V4 thinking-mode echo-back
+# 2026-06-10: thinking is response-only on the OpenAI shape — REVERSAL
+# of the 2026-05-26 echo-back. That echo emitted a ``{type: thinking}``
+# content block + top-level ``reasoning_content``; DeepSeek /v1 rejects
+# both (``unknown variant `thinking`, expected `text``` / docs forbid
+# reasoning_content in input). One thinking turn in history then 400'd
+# every subsequent request. The original "must be passed back" error was
+# an Anthropic-shaped endpoint, handled in anthropic.py.
 
 
-def test_thinking_echoed_as_content_block_and_top_level() -> None:
-    """Assistant messages with ``thinking`` set must emit content as
-    a block list with a ``thinking`` block AND a top-level
-    ``reasoning_content`` field. DeepSeek V4 thinking mode 400s
-    without this echo (``content[].thinking in the thinking mode
-    must be passed back to the API``)."""
+def test_thinking_never_echoed_on_openai_shape() -> None:
+    """REGRESSION: an assistant message WITH thinking must serialize as
+    plain text — no thinking block, no reasoning_content."""
     msgs = OpenAILLM._messages_to_openai([
         Message(role="user", content="hi"),
         Message(
@@ -554,19 +557,12 @@ def test_thinking_echoed_as_content_block_and_top_level() -> None:
         ),
         Message(role="user", content="and what now?"),
     ])
-    # User messages unaffected.
     assert msgs[0]["content"] == "hi"
     assert msgs[2]["content"] == "and what now?"
-    # Assistant entry has block-list content + top-level
-    # reasoning_content.
     asst = msgs[1]
-    assert isinstance(asst["content"], list)
-    types = [b.get("type") for b in asst["content"]]
-    assert "thinking" in types
-    assert "text" in types
-    thinking_block = next(b for b in asst["content"] if b["type"] == "thinking")
-    assert "user said hi" in thinking_block["thinking"]
-    assert asst["reasoning_content"] == thinking_block["thinking"]
+    assert asst["content"] == "Hello there."  # plain string, no blocks
+    assert "reasoning_content" not in asst
+    assert "thinking" not in json.dumps(msgs)
 
 
 def test_assistant_without_thinking_stays_plain_string() -> None:
@@ -584,10 +580,9 @@ def test_assistant_without_thinking_stays_plain_string() -> None:
 
 
 def test_assistant_thinking_with_tool_calls() -> None:
-    """Assistant turn with BOTH thinking and tool calls — both must
-    survive translation. (DeepSeek thinking-mode reasoning often
-    precedes a tool call; if we drop either side the next hop
-    400s or the tool dispatch breaks.)"""
+    """Assistant turn with thinking AND tool calls: tool_calls must
+    survive; thinking must NOT leak into the request (2026-06-10 — see
+    test_thinking_never_echoed_on_openai_shape)."""
     from xmclaw.core.ir import ToolCall, ToolCallShape
     tc = ToolCall(
         id="t1", name="bash", args={"command": "ls"},
@@ -603,10 +598,10 @@ def test_assistant_thinking_with_tool_calls() -> None:
         ),
     ])
     asst = msgs[1]
-    assert isinstance(asst["content"], list)
-    assert any(b.get("type") == "thinking" for b in asst["content"])
+    assert asst["content"] == ""  # plain string; empty OK with tool_calls
     assert asst.get("tool_calls"), "tool_calls dropped"
-    assert asst["reasoning_content"].startswith("Plan:")
+    assert "reasoning_content" not in asst
+    assert "thinking" not in json.dumps(msgs)
 
 
 def test_streaming_capture_records_thinking_in_response() -> None:
