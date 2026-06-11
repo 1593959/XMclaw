@@ -260,6 +260,16 @@ class AnthropicLLM(LLMProvider):
         #     ``_mark_history_cache_breakpoint`` below)
         # Total = 4, exactly at budget. This covers prior history
         # so a 28K-token chat doesn't re-bill its prefix every hop.
+        # 2026-06-10: enforce Anthropic's tool_use/tool_result pairing
+        # invariant before returning. Strict endpoints (DeepSeek's
+        # anthropic-compat) 400 the whole request on any violation:
+        # ``tool_use ids were found without tool_result blocks
+        # immediately after``. Violations enter history legitimately —
+        # turns made under the OpenAI provider then replayed here after
+        # a model switch, a turn that crashed between tool_use and
+        # result, or history pruning dropping one side. One bad pair
+        # then poisons every subsequent request in the session.
+        converted = AnthropicLLM._repair_tool_pairing(converted)
         system_text = "\n\n".join(system_parts).strip()
         if not system_text:
             AnthropicLLM._mark_history_cache_breakpoint(converted)
@@ -293,6 +303,129 @@ class AnthropicLLM(LLMProvider):
         }]
         AnthropicLLM._mark_history_cache_breakpoint(converted)
         return system_blocks, converted
+
+    @staticmethod
+    def _repair_tool_pairing(
+        converted: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Make ``converted`` satisfy Anthropic's pairing rules:
+
+        1. Every ``tool_use`` id in an assistant message must have a
+           matching ``tool_result`` in the IMMEDIATELY following user
+           message. (Our converter emits each tool result as its own
+           user message, so multi-tool turns need merging first.)
+        2. A ``tool_result`` may only appear right after the assistant
+           message that issued its ``tool_use``.
+
+        Repairs, in order:
+        * merge runs of consecutive user messages that are pure
+          tool_result lists into one user message;
+        * synthesize placeholder tool_results for tool_use ids with no
+          result (crashed turn / pruned history / provider switch);
+        * downgrade orphan tool_results (no matching tool_use right
+          before them) to plain text blocks.
+        """
+        # Pass 1: merge consecutive pure-tool_result user messages.
+        def _is_result_msg(msg: dict[str, Any]) -> bool:
+            c = msg.get("content")
+            return (
+                msg.get("role") == "user"
+                and isinstance(c, list) and bool(c)
+                and all(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in c
+                )
+            )
+
+        merged: list[dict[str, Any]] = []
+        for msg in converted:
+            if merged and _is_result_msg(msg) and _is_result_msg(merged[-1]):
+                merged[-1] = {
+                    "role": "user",
+                    "content": list(merged[-1]["content"]) + list(msg["content"]),
+                }
+            else:
+                merged.append(msg)
+
+        # Pass 2: walk pairs; fix both directions.
+        out: list[dict[str, Any]] = []
+        pending_use_ids: list[str] = []  # ids issued by the assistant msg just appended
+        for msg in merged:
+            content = msg.get("content")
+            if msg.get("role") == "user" and isinstance(content, list):
+                fixed_blocks: list[dict[str, Any]] = []
+                consumed: set[str] = set()
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        tid = b.get("tool_use_id") or ""
+                        if tid in pending_use_ids and tid not in consumed:
+                            consumed.add(tid)
+                            fixed_blocks.append(b)
+                        else:
+                            # Orphan result — downgrade to text.
+                            raw = b.get("content")
+                            txt = raw if isinstance(raw, str) else str(raw)
+                            fixed_blocks.append({
+                                "type": "text",
+                                "text": "[tool result]\n" + (txt or "(empty)"),
+                            })
+                    else:
+                        fixed_blocks.append(b)
+                # Synthesize placeholders for any tool_use the result
+                # message failed to cover.
+                missing = [t for t in pending_use_ids if t not in consumed]
+                if missing:
+                    fixed_blocks = [{
+                        "type": "tool_result",
+                        "tool_use_id": t,
+                        "content": (
+                            "[tool result unavailable — lost from "
+                            "history (interrupted turn or model "
+                            "switch). Re-run the tool if needed.]"
+                        ),
+                    } for t in missing] + fixed_blocks
+                pending_use_ids = []
+                out.append({**msg, "content": fixed_blocks})
+            else:
+                # Non-result message while tool_use ids are pending →
+                # the results are missing entirely; insert a synthetic
+                # user message carrying placeholders BEFORE this one.
+                if pending_use_ids:
+                    out.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": t,
+                            "content": (
+                                "[tool result unavailable — lost from "
+                                "history (interrupted turn or model "
+                                "switch). Re-run the tool if needed.]"
+                            ),
+                        } for t in pending_use_ids],
+                    })
+                    pending_use_ids = []
+                out.append(msg)
+                if msg.get("role") == "assistant" and isinstance(content, list):
+                    pending_use_ids = [
+                        b.get("id") for b in content
+                        if isinstance(b, dict) and b.get("type") == "tool_use"
+                        and b.get("id")
+                    ]
+        # Trailing assistant tool_use with no following message at all.
+        if pending_use_ids:
+            out.append({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": t,
+                    "content": (
+                        "[tool result unavailable — lost from history "
+                        "(interrupted turn or model switch). Re-run the "
+                        "tool if needed.]"
+                    ),
+                } for t in pending_use_ids],
+            })
+        return out
 
     @staticmethod
     def _mark_history_cache_breakpoint(

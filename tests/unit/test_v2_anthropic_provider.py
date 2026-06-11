@@ -47,13 +47,92 @@ def test_messages_to_anthropic_emits_tool_use_blocks() -> None:
 
 
 def test_messages_to_anthropic_emits_tool_result() -> None:
+    # 2026-06-10: a tool_result is only valid right after its tool_use
+    # (the repair pass downgrades orphans) — so pair it properly here.
+    tc = ToolCall(name="foo", args={}, provenance="synthetic", id="tc-1")
     msgs = [
+        Message(role="assistant", content="", tool_calls=(tc,)),
         Message(role="tool", content="42", tool_call_id="tc-1"),
     ]
     _, converted = AnthropicLLM._messages_to_anthropic(msgs)
-    assert converted[0]["role"] == "user"
-    assert converted[0]["content"][0]["type"] == "tool_result"
-    assert converted[0]["content"][0]["tool_use_id"] == "tc-1"
+    assert converted[1]["role"] == "user"
+    assert converted[1]["content"][0]["type"] == "tool_result"
+    assert converted[1]["content"][0]["tool_use_id"] == "tc-1"
+
+
+# ── 2026-06-10: tool_use/tool_result pairing repair ──────────────────
+# Strict anthropic-compat endpoints (DeepSeek) 400 the WHOLE request on
+# any pairing violation. Violations enter history via model switches
+# (OpenAI-provider turns replayed here), crashed turns, or pruning.
+
+
+def test_repair_synthesizes_missing_tool_result() -> None:
+    """REGRESSION (图二): assistant tool_use whose result vanished from
+    history must get a placeholder tool_result in the NEXT message —
+    otherwise DeepSeek 400s: ``tool_use ids were found without
+    tool_result blocks immediately after``."""
+    tc = ToolCall(name="bash", args={"command": "ls"},
+                  provenance="synthetic", id="call_01_lost")
+    msgs = [
+        Message(role="user", content="run ls"),
+        Message(role="assistant", content="", tool_calls=(tc,)),
+        # ← tool result missing (interrupted turn / model switch)
+        Message(role="user", content="and then?"),
+    ]
+    _, converted = AnthropicLLM._messages_to_anthropic(msgs)
+    # The message right after the tool_use must carry the matching result.
+    use_idx = next(
+        i for i, m in enumerate(converted)
+        if isinstance(m.get("content"), list)
+        and any(b.get("type") == "tool_use" for b in m["content"])
+    )
+    nxt = converted[use_idx + 1]
+    assert nxt["role"] == "user"
+    results = [b for b in nxt["content"] if b.get("type") == "tool_result"]
+    assert results and results[0]["tool_use_id"] == "call_01_lost"
+
+
+def test_repair_merges_multi_tool_results_into_one_message() -> None:
+    """Two tool calls in one assistant turn produce two role=tool
+    messages; Anthropic requires BOTH results in the single next
+    message. The repair pass must merge them."""
+    t1 = ToolCall(name="a", args={}, provenance="synthetic", id="id-1")
+    t2 = ToolCall(name="b", args={}, provenance="synthetic", id="id-2")
+    msgs = [
+        Message(role="assistant", content="", tool_calls=(t1, t2)),
+        Message(role="tool", content="r1", tool_call_id="id-1"),
+        Message(role="tool", content="r2", tool_call_id="id-2"),
+    ]
+    _, converted = AnthropicLLM._messages_to_anthropic(msgs)
+    assert len(converted) == 2, f"results not merged: {converted}"
+    ids = {b["tool_use_id"] for b in converted[1]["content"]
+           if b.get("type") == "tool_result"}
+    assert ids == {"id-1", "id-2"}
+
+
+def test_repair_downgrades_orphan_tool_result_to_text() -> None:
+    """A tool_result with no matching tool_use right before it (the
+    other half of the cross-provider corruption) must not be sent as a
+    tool_result — strict endpoints 400 on unexpected tool_use_id."""
+    msgs = [
+        Message(role="user", content="hi"),
+        Message(role="tool", content="stray", tool_call_id="ghost-1"),
+    ]
+    _, converted = AnthropicLLM._messages_to_anthropic(msgs)
+    import json as _json
+    assert "tool_result" not in _json.dumps(converted)
+    assert "stray" in _json.dumps(converted)  # content preserved as text
+
+
+def test_repair_trailing_tool_use_gets_placeholder() -> None:
+    """History ending ON a tool_use (turn died mid-dispatch) must close
+    the pair so the next request is valid."""
+    tc = ToolCall(name="x", args={}, provenance="synthetic", id="tail-1")
+    msgs = [Message(role="assistant", content="", tool_calls=(tc,))]
+    _, converted = AnthropicLLM._messages_to_anthropic(msgs)
+    assert converted[-1]["role"] == "user"
+    assert converted[-1]["content"][0]["type"] == "tool_result"
+    assert converted[-1]["content"][0]["tool_use_id"] == "tail-1"
 
 
 def test_tools_to_anthropic_format() -> None:
@@ -185,10 +264,14 @@ def test_history_cache_breakpoint_tags_existing_block_content() -> None:
     _, converted = AnthropicLLM._messages_to_anthropic(msgs)
     last = converted[-1]
     assert isinstance(last["content"], list)
-    # text block first, tool_use second → tool_use is the trailing
-    # block and gets the cache_control marker.
-    assert last["content"][-1]["type"] == "tool_use"
+    # 2026-06-10: history ending on a tool_use gets a synthesized
+    # placeholder tool_result appended (pairing repair), so the LAST
+    # message is now that result — and IT carries the cache marker.
+    assert last["content"][-1]["type"] == "tool_result"
     assert last["content"][-1].get("cache_control") == {"type": "ephemeral"}
+    # The tool_use itself is still present, untagged, one message back.
+    prev = converted[-2]
+    assert any(b.get("type") == "tool_use" for b in prev["content"])
 
 
 def test_history_cache_breakpoint_skips_empty_messages() -> None:
