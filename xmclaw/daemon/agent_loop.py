@@ -2730,8 +2730,21 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 "supports it; otherwise include it in the response."
             )
 
+        # Working Context — agent-managed editable prompt section.
+        # The agent uses memory(action="pin_to_working") / memory(action="evict_from_working")
+        # to control what facts stay in this section. Rendered from WorkingContextManager
+        # when available; otherwise empty (no overhead).
+        _working_context_block = ""
+        try:
+            _wcm = getattr(self, "_working_context", None)
+            if _wcm is not None:
+                _working_context_block = _wcm.render_for_prompt()
+        except Exception:
+            pass
+
         system_content = (
             "\n\n" + CACHE_BREAKPOINT_MARKER + "\n\n"
+            + _working_context_block
         ).join(_parts)
 
         tool_specs = effective_tools.list_tools() if effective_tools else None
@@ -2839,6 +2852,22 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     active_paths=active_paths,
                     semantic_scores=semantic_scores,
                 )
+                # Force-inject triggered skills (keyword / event / cron).
+                # Evaluated after prefilter so the LLM always sees them.
+                try:
+                    _trigger_engine = getattr(self, "_trigger_engine", None)
+                    if _trigger_engine is not None:
+                        _fired = _trigger_engine.evaluate_all(user_message=user_message)
+                        if _fired:
+                            _skill_specs = [
+                                s for s in all_specs
+                                if getattr(s, "name", "").startswith("skill_")
+                                and s.name[len("skill_"):] in _fired
+                            ]
+                            tool_specs = list(tool_specs) + _skill_specs
+                            _log_trigger = getattr(self, "_log", None)
+                except Exception:
+                    pass
             except Exception:  # noqa: BLE001 — never break a turn over routing
                 pass
 

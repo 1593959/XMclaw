@@ -119,16 +119,34 @@ class MarkdownProcedureSkill(Skill):
                 SOURCE_SKILL_BODY,
                 apply_policy,
             )
+            # Fix audit 2026-06-11: use BLOCK for untrusted skills
+            # (marketplace installs, user-proposed), DETECT_ONLY for
+            # trusted ones. Previously all skills ran DETECT_ONLY,
+            # meaning injection findings were never acted upon.
+            trust = getattr(self, "_trust_level", None)
+            if trust is None:
+                try:
+                    trust = self.manifest.get("trust_level", "installed")
+                except Exception:
+                    trust = "installed"
+            policy = PolicyMode.BLOCK if trust in ("untrusted",) else PolicyMode.DETECT_ONLY
+
             decision = apply_policy(
                 body,
-                policy=PolicyMode.DETECT_ONLY,
+                policy=policy,
                 source=SOURCE_SKILL_BODY,
-                extra={"skill_id": self.id},
+                extra={"skill_id": self.id, "trust_level": trust},
             )
-            # DETECT_ONLY never blocks; we surface findings via the
-            # event stream. Operators wanting harder enforcement on
-            # untrusted skills can override the policy at the
-            # MarkdownProcedureSkill construction call site.
+            if decision.blocked:
+                return SkillOutput(
+                    ok=False,
+                    result=None,
+                    error=(
+                        f"Skill '{self.name}' body blocked by prompt-injection "
+                        f"policy (trust_level={trust}). Review the SKILL.md "
+                        f"for instruction-override or exfiltration patterns."
+                    ),
+                )
             body = decision.content
         except Exception:  # noqa: BLE001 — never break a skill on scan failure
             pass
