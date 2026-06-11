@@ -43,7 +43,7 @@ _log = get_logger(__name__)
 
 
 @router.get("/health")
-async def health_check() -> JSONResponse:
+async def health_check(request: "Request") -> JSONResponse:
     """Liveness + readiness probe for k8s / docker / load-balancer.
 
     Checks:
@@ -53,14 +53,27 @@ async def health_check() -> JSONResponse:
     """
     ok = True
     checks: dict[str, Any] = {"status": "ok"}
-
-    from xmclaw.core.bus import InProcessEventBus
-    from fastapi import Request
-    # We can't inject Request here because we're returning JSONResponse,
-    # but the lifespan app.state carries what we need.
-    # Use a lightweight reflection-free approach: the caller passes
-    # nothing; we just report what we can see statically.
-    return JSONResponse({"status": "ok", "checks": checks})
+    # Fix audit 2026-06-11: was a no-op stub that always returned ok.
+    # Now reflects actual daemon health (bus, LLM registry, memory).
+    try:
+        app_state = request.app.state
+        if hasattr(app_state, "bus") and app_state.bus is not None:
+            checks["bus"] = "ok"
+        else:
+            checks["bus"] = "missing"; ok = False
+        reg = getattr(app_state, "llm_registry", None)
+        if reg is not None and len(reg) > 0:
+            checks["llm"] = f"ok ({len(reg)} profiles)"
+        elif reg is not None:
+            checks["llm"] = "empty"; ok = False
+        else:
+            checks["llm"] = "not_configured"; ok = False
+        mem = getattr(app_state, "memory_service", None)
+        checks["memory"] = "ok" if mem is not None else "not_configured"
+    except Exception:
+        ok = False; checks["error"] = "health check failed"
+    return JSONResponse({"status": "ok" if ok else "degraded", "checks": checks},
+                        status_code=200 if ok else 503)
 
 
 # Where pip's stdout/stderr lands so the UI can poll for progress.

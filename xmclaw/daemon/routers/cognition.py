@@ -581,6 +581,23 @@ async def cognition_ws(websocket: WebSocket) -> None:
     authentication beyond the standard pairing-token query param —
     the cognition dashboard is treated as a first-class UI surface.
     """
+    # Fix audit 2026-06-11: add pairing-token auth. HTTP middleware
+    # doesn't cover WebSocket routes; without this any localhost page
+    # can stream live cognitive state (goals, focus, suggestions).
+    try:
+        from xmclaw.daemon.middleware.pairing_auth import _load_expected_token
+        _expected = _load_expected_token()
+        if not _expected:
+            await websocket.close(code=4403, reason="no pairing token configured")
+            return
+        _provided = websocket.query_params.get("token", "")
+        if not _provided or _provided != _expected:
+            await websocket.close(code=4401, reason="unauthorized")
+            return
+    except Exception:
+        await websocket.close(code=4401, reason="auth error")
+        return
+
     await websocket.accept()
     PUSH_INTERVAL_S = 2.0
     try:

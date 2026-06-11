@@ -119,18 +119,21 @@ class HandoffProvider(ToolProvider):
         agent_id = call.name
         if agent_id.startswith("transfer_to_"):
             agent_id = agent_id[len("transfer_to_"):]
-        # Try hash-suffix match if direct match fails
+        # Try hash-suffix match if direct match fails.
         if agent_id not in self._agent_ids:
-            for aid in self._agent_ids:
-                hs = hashlib.sha1(aid.encode("utf-8")).hexdigest()[:4]
-                if agent_id == hs:
-                    agent_id = aid
-                    break
-            else:
+            _matches = [aid for aid in self._agent_ids
+                        if hashlib.sha1(aid.encode()).hexdigest()[:4] == agent_id]
+            if len(_matches) == 0:
                 return ToolResult(
                     call_id=call.id, ok=False, content=None,
                     error=f"Agent '{agent_id}' not found. Available: {', '.join(self._agent_ids)}",
                 )
+            if len(_matches) > 1:
+                return ToolResult(
+                    call_id=call.id, ok=False, content=None,
+                    error=f"Ambiguous hash prefix '{agent_id}' matches multiple agents: {', '.join(_matches)}. Use full agent id.",
+                )
+            agent_id = _matches[0]
 
         task = (call.args or {}).get("task", "")
         if not task:
@@ -148,10 +151,14 @@ class HandoffProvider(ToolProvider):
             )
 
         try:
+            import asyncio
             sid = self._sid_provider() if callable(self._sid_provider) else "handoff"
-            result = await agent.run_turn(
-                session_id=f"{sid}_{agent_id}",
-                user_message=task,
+            result = await asyncio.wait_for(
+                agent.run_turn(
+                    session_id=f"{sid}_{agent_id}",
+                    user_message=task,
+                ),
+                timeout=60.0,  # Fix audit 2026-06-11: prevent indefinite hang
             )
             return ToolResult(
                 call_id=call.id,

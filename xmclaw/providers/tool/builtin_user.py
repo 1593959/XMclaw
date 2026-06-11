@@ -69,6 +69,8 @@ class BuiltinToolsUserMixin:
             "multi_select": multi,
             "allow_other": allow_other,
             "tool_call_id": call.id,
+            # Lets cancel_pending_questions() scope Stop to one session.
+            "session_id": call.session_id or "",
         }
 
         # Publish AGENT_ASKED_QUESTION via the bus the daemon factory

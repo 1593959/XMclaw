@@ -963,8 +963,12 @@ async def delete_fact(
     svc = _get_service(request)
     if svc is None:
         return _v2_disabled_response()
-    safe = fact_id.replace("'", "''")
-    n = await svc._vec.delete(f"id = '{safe}'")  # type: ignore[attr-defined]
+    # Fix audit 2026-06-11: validate fact_id contains only safe chars
+    # before passing to LanceDB's filter expression. Prevents injection
+    # via specially-crafted fact_id values.
+    if not fact_id or not fact_id.replace("-", "").replace("_", "").replace(":", "").isalnum():
+        raise HTTPException(status_code=400, detail="invalid fact_id format")
+    n = await svc._vec.delete(f"id = '{fact_id}'")  # type: ignore[attr-defined]
     return {"deleted": n}
 
 

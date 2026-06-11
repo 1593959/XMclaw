@@ -55,7 +55,7 @@ class BodySizeLimitMiddleware:
             await self._app(scope, receive, send)
             return
         path = scope.get("path", "") or ""
-        if not path.startswith("/api/v2/"):
+        if not path.startswith("/api/v2/") and not path.startswith("/v1/"):
             await self._app(scope, receive, send)
             return
 

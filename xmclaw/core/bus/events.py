@@ -39,6 +39,15 @@ class EventType(str, Enum):
     # is ``"risk_reject"`` (Anthropic refused the prompt) or
     # ``"shim_no_stream"`` (compat shim lacking /stream).
     LLM_STREAM_FALLBACK = "llm_stream_fallback"
+    # 2026-05-30 (F1): a file was created / modified / deleted inside the
+    # current session's workspace dir. Backs the chat-page right-side
+    # WorkspacePanel — UI subscribes, refreshes the file tree, opens the
+    # drawer on first event. Payload: ``{path, rel_path, action, tool,
+    # commit_sha, summary, bytes}`` where ``path`` is absolute,
+    # ``rel_path`` is workspace-rooted, ``action`` ∈ {created, modified,
+    # deleted}, ``commit_sha`` references the auto-commit in the
+    # workspace's git repo (empty when git unavailable).
+    WORKSPACE_FILE_CHANGED = "workspace_file_changed"
     # B-92: agent stops mid-turn to ask the user a question with N
     # options (single- or multi-select). Tool invocation blocks on a
     # future that the WS handler resolves when the user clicks an

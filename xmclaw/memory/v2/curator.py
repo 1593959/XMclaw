@@ -119,7 +119,7 @@ class CurationReport:
 
 # Default cosine for the dedup pass — same 0.86 the legacy path used.
 # (The threshold was never the problem; the scheduling was.)
-_DEDUP_COSINE = 0.86
+_DEDUP_COSINE = 0.85  # Unified with write-time near-dup threshold (audit 2026-06-11)
 
 # Prune heuristic defaults. A fact is "low value" when it's older than
 # ``prune_age_s``, has only its original single evidence vote, and its

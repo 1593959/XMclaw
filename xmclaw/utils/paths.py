@@ -115,6 +115,31 @@ def workspaces_dir() -> Path:
     return data_dir() / "workspaces"
 
 
+def session_workspaces_root() -> Path:
+    """Root for per-session live workspaces (F1 / Proma-style preview).
+
+    Each chat session gets its own subdirectory here so the agent has a
+    dedicated scratch dir for notes, scaffolding, drafts — and the UI's
+    right-side panel can render its contents live as files appear.
+
+    Distinct from :func:`workspaces_dir` (the user-authored preset bundles
+    edited by the web UI) and from :func:`v2_workspace_dir` (the daemon's
+    runtime state dir overall). Lives under ``<data>/v2/session_workspaces``
+    so it survives normal daemon restarts but is wiped by a full v2 reset.
+    """
+    return v2_workspace_dir() / "session_workspaces"
+
+
+def session_workspace_dir(session_id: str) -> Path:
+    """One session's workspace dir. Sanitises the id so creative session
+    names can't escape the root via ``../`` or absolute paths."""
+    safe = "".join(
+        c if (c.isalnum() or c in ("-", "_", ".")) else "_"
+        for c in (session_id or "unknown")
+    )[:200] or "unknown"
+    return session_workspaces_root() / safe
+
+
 def agents_registry_dir() -> Path:
     """Running multi-agent registry — ``<data>/v2/agents/*.json``.
 

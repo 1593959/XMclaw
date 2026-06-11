@@ -873,7 +873,7 @@ def update(
         cmd.append("--pre")
     cmd.append("xmclaw")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode == 0:
             typer.secho("✓ xmclaw upgraded successfully.", fg=typer.colors.GREEN)
             typer.echo(result.stdout.strip().split("\n")[-1])

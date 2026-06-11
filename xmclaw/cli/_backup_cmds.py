@@ -376,6 +376,13 @@ def backup_restore(
     from xmclaw.backup.restore import RestoreError
 
     tgt = target or _default_backup_source()
+    # Fix audit 2026-06-11: restore is destructive — confirm before overwriting.
+    if not typer.confirm(
+        f"This will overwrite {tgt} with backup '{name}'. Continue?",
+        default=False,
+    ):
+        typer.echo("Aborted.")
+        raise typer.Exit(code=0)
     try:
         result = restore_backup(
             name, tgt, backups_dir=dest, keep_previous=keep_previous,

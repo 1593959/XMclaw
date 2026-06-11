@@ -162,6 +162,28 @@ def resolve_pending_question(
     fut.set_result(answer)
     return True
 
+
+def cancel_pending_questions(session_id: str | None = None) -> int:
+    """Cancel in-flight ``ask_user_question`` futures.
+
+    Called by the WS ``cancel`` frame handler (Stop button) so a turn
+    blocked on an unanswered question can unwind — the tool catches the
+    CancelledError and returns a "proceed with your best guess" failure.
+    ``session_id`` scopes the cancellation to one session; ``None``
+    (or a payload without a session) cancels unconditionally.
+    """
+    n = 0
+    for qid, fut in list(_PENDING_QUESTIONS.items()):
+        if session_id:
+            payload = _PENDING_QUESTION_PAYLOADS.get(qid) or {}
+            sid = payload.get("session_id")
+            if sid and sid != session_id:
+                continue
+        if not fut.done():
+            fut.cancel()
+            n += 1
+    return n
+
 class BuiltinTools(
     BuiltinToolsCanvasMixin,
     BuiltinToolsDbMixin,
@@ -760,6 +782,23 @@ class BuiltinTools(
         if self._allowed is None:
             return
         resolved = path.resolve()
+        # F1 (2026-05-30): session workspaces are always-allowed. They're
+        # daemon-managed dirs created per chat session for the agent to
+        # use as scratch, and the user's WorkspacePanel renders them
+        # live. Forcing operators to manually add the session_workspaces
+        # root to ``tools.allowed_dirs`` for the feature to work would
+        # be a silent footgun (panel populated only when sandbox happened
+        # to be off).
+        try:
+            from xmclaw.utils.paths import session_workspaces_root
+            _swroot = session_workspaces_root().resolve()
+            try:
+                resolved.relative_to(_swroot)
+                return
+            except ValueError:
+                pass
+        except Exception:  # noqa: BLE001 — never break sandboxing on a path import
+            pass
         for allowed in self._allowed:
             try:
                 resolved.relative_to(allowed)
