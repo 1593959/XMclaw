@@ -2228,11 +2228,12 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.M2 执行视图
 
-- [ ] **10.M2.1 活动时间线**：§2.3 全事件映射（工具卡折叠/思考块/安全条目/内部活动组）。
-- [ ] **10.M2.1b 工具卡类型特化渲染**（设计文档 §2.3.1，2026-06-11 用户补充要求）：file_edit/file_write → 内联语法高亮 diff 卡（行号 gutter + `+N −M` 统计 + 红删绿增 + 预览切换 + 点击文件名联动右栏）；bash → 终端式流式输出卡；file_read → 单行摘要卡联动右栏；browser/computer-use → 截图缩略卡；canvas → 内联 artifact；其余兜底 JSON 卡。TUI 侧用 rich.syntax 同构降级。
-- [ ] **10.M2.2 计划步骤条**：`plan_*` + `todo_updated` 驱动。
-- [ ] **10.M2.3 内联审批**：`agent_asked_question` → 审批卡（允许/总是/拒绝）→ `answer_question` 帧。
-- [ ] **10.M2.4 工作区四标签**：Diff/文件（复用 session_workspaces API）+ 终端（xterm.js）+ 预览（Phase 9 canvas 桥）。
+- [x] **10.M2.1 活动时间线**：markdown 全功能渲染（GFM 表格/代码高亮——治"表格糊成管道符"反馈）+ 思考块折叠 + worker/subagent 可折叠执行组（对位 Claude Code Agent 组）+ 注入块剥离（session-workspace/memory-* 不再当用户消息显示）。安全条目（prompt_injection 等）待补。
+- [x] **10.M2.1b 工具卡类型特化渲染**：file_write/apply_patch → 内联红绿 diff 卡（jsdiff 现算 + 行号 gutter + `+N −M` + 中段折叠 + 预览切换 + "在工作区查看"联动右栏）；bash → 终端卡（$ 命令头 + 输出折叠）；file_read/glob/grep/web_search 等 → 单行摘要卡；带截图结果 → 缩略图条；其余兜底 JSON 卡。实测：pomodoro.html +8−0 / LEARNING.md +2−6（apply_patch 混合 diff）/ hello.md 全部正确渲染。TUI rich.syntax 降级 → 10.M4。
+- [x] **10.M2.2 计划步骤条**：M1 已落（plan_*/todo_updated 双源）。
+- [x] **10.M2.3 内联审批**：M1 已落（审批卡 → answer_question 帧）。
+- [x] **10.M2.4 工作区四标签 + 实时预览深度融合**（2026-06-12 用户点名主轴）：预览 tab = canvas artifact 沙箱渲染（canvas_artifact_* 事件驱动）+ 工具截图视觉流（liveShots 封顶 12 帧实时滚入）+ "跟随 agent"模式（新产物自动切预览，文件变更亮 Diff 角标）；Diff tab = commits 时间线 + unified diff 解析着色，workspace_file_changed 自动刷新；文件 tab = 树 + 点击查看（md 渲染/代码原文/图片走 /raw）+ 时间线联动聚焦；终端 tab = bash 输出聚合流（偏差：未用 xterm.js——聚合流已覆盖需求，xterm 留给真 PTY 场景）。
+- [ ] **10.M2.5 收尾**：安全事件条目（prompt_injection_detected/anti_req_violation 红条）；canvas/worker 卡真场景实测（需 daemon 跑新代码后验证）；bundle code-split（hljs 拉到 gzip 179KB）。
 
 ### 10.M3 收编与切换
 
@@ -2259,7 +2260,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 - 2026-06-11: Phase 10 立项（commit d13bbd2）。M0 完成：设计文档 + 三项方向决策 + ADR-010 + 用户视觉方向认可。下一步 10.M1 Web 骨架。
 - 2026-06-11: 设计补充（用户出 Claude Code diff 卡截图点名要求）：工具卡按类型特化渲染入规格（设计文档新增 §2.3.1，M2 新增 10.M2.1b + 对应验收项）。file_edit 内联语法高亮 diff 卡是 M2 核心验收观感。
-- 2026-06-11: **10.M1 完成**（本 commit）。webui/ 脚手架 + 数据层 TS 移植（11 个历史 bug 修复语义全保留）+ /api/v2/tasks 聚合 router + 三栏布局 + /ui-next/ 挂载 + CI webui-build 闸。15 个新测试全绿。**实测验证**：vite dev 反代到运行中的真 daemon——WS 握手、HUD 实数据（模型/记忆数）、发消息 → 流式回复 + 折叠思考块渲染、任务栏对旧 daemon（无 /api/v2/tasks）优雅降级，零控制台错误；顺手修了空鬼泡（渲染层守卫）+ 窄视口侧栏挤压（响应式折叠）。下一步 10.M2 执行视图。
+- 2026-06-12: **10.M2 主体完成**（本 commit）。用户两点反馈全治：① "表格糊成管道符" → react-markdown+GFM+hljs 全功能渲染（实测真 `<table>` 4 行 + 高亮代码块）；② "子代理执行组要像 Claude Code 那样" → worker_*/subagent_* 事件 → 可折叠 Agent 执行组卡。用户点名主轴"实时预览深度融合"落地：canvas artifact 沙箱渲染 + 工具截图视觉流 + 跟随模式 + Diff 角标 + 时间线↔工作区双向联动。diff 卡实测三文件全对（含 apply_patch 混合 diff +2−6）。实测中发现并修复：注入块（session-workspace/memory-*）污染用户消息显示与任务标题——前后端同步剥离（_clean_title + stripInjectedBlocks，截断块宁退 sid 不显半截）。20 个测试全绿。余项进 10.M2.5。
+- 2026-06-11: **10.M1 完成**（commit be158a2）。webui/ 脚手架 + 数据层 TS 移植（11 个历史 bug 修复语义全保留）+ /api/v2/tasks 聚合 router + 三栏布局 + /ui-next/ 挂载 + CI webui-build 闸。15 个新测试全绿。**实测验证**：vite dev 反代到运行中的真 daemon——WS 握手、HUD 实数据（模型/记忆数）、发消息 → 流式回复 + 折叠思考块渲染、任务栏对旧 daemon（无 /api/v2/tasks）优雅降级，零控制台错误；顺手修了空鬼泡（渲染层守卫）+ 窄视口侧栏挤压（响应式折叠）。下一步 10.M2 执行视图。
 
 ---
 

@@ -5,46 +5,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "../store/app";
 import type { Entry } from "../lib/types";
-
-function ToolCard({ e }: { e: Entry }) {
-  const [open, setOpen] = useState(false);
-  const icon = e.status === "running" ? "●" : e.status === "error" ? "✗" : "✓";
-  const iconCls =
-    e.status === "running"
-      ? "text-mc-accent animate-pulse"
-      : e.status === "error"
-        ? "text-mc-err"
-        : "text-mc-ok";
-  const argsSummary = (() => {
-    try {
-      const s = JSON.stringify(e.args || {});
-      return s.length > 120 ? s.slice(0, 120) + "…" : s;
-    } catch {
-      return "";
-    }
-  })();
-  return (
-    <div className="border border-mc-border rounded-md bg-mc-panel2/60">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer"
-      >
-        <span className={"text-xs " + iconCls}>{icon}</span>
-        <span className="font-mono text-xs text-mc-text">{e.name}</span>
-        <span className="font-mono text-[11px] text-mc-faint truncate flex-1">{argsSummary}</span>
-        <span className="text-mc-faint text-xs">{open ? "▾" : "▸"}</span>
-      </button>
-      {open && e.result != null && (
-        <pre className="px-3 pb-2 text-[11px] font-mono text-mc-muted whitespace-pre-wrap break-all max-h-64 overflow-y-auto">
-          {String(e.result).slice(0, 4000)}
-        </pre>
-      )}
-      {(e.images || []).map((src) => (
-        <img key={src} src={src} className="max-w-xs rounded m-2 border border-mc-border" />
-      ))}
-    </div>
-  );
-}
+import ToolCard, { AgentGroupCard } from "./ToolCards";
+import Markdown from "../lib/Markdown";
 
 function QuestionCard({ e }: { e: Entry }) {
   const answerQuestion = useApp((s) => s.answerQuestion);
@@ -125,9 +87,7 @@ function AssistantRow({ e }: { e: Entry }) {
           b.type === "thinking" ? (
             <ThinkingBlock key={b.id} content={b.content} />
           ) : (
-            <div key={b.id} className="text-[13px] leading-relaxed whitespace-pre-wrap">
-              {b.content}
-            </div>
+            <Markdown key={b.id} text={b.content} />
           ),
         )}
         {e.status === "thinking" && (
@@ -174,6 +134,16 @@ function Row({ e }: { e: Entry }) {
         <span className="text-mc-warn text-sm mt-1 shrink-0">⚠</span>
         <div className="flex-1 min-w-0">
           <QuestionCard e={e} />
+        </div>
+      </div>
+    );
+  }
+  if (e.kind === "worker" || e.kind === "subagent") {
+    return (
+      <div className="flex gap-2.5">
+        <span className="text-mc-accent text-sm mt-1 shrink-0">⛓</span>
+        <div className="flex-1 min-w-0">
+          <AgentGroupCard e={e} />
         </div>
       </div>
     );

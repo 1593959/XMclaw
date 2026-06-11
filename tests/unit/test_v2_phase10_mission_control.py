@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.app import create_app
-from xmclaw.daemon.routers.tasks import _derive
+from xmclaw.daemon.routers.tasks import _clean_title, _derive
 
 
 def _ev(t: str, ts: float, **payload: object) -> SimpleNamespace:
@@ -120,6 +120,38 @@ def test_derive_enum_like_type_accepted() -> None:
     enum_like = SimpleNamespace(value="agent_asked_question")
     out = _derive([SimpleNamespace(type=enum_like, ts=NOW - 5, payload={"question_id": "q"})], NOW)
     assert out["status"] == "awaiting_input"
+
+
+def test_derive_title_from_first_user_message() -> None:
+    out = _derive([
+        _ev("user_message", NOW - 100, content="帮我重构登录模块"),
+        _ev("user_message", NOW - 50, content="继续"),
+        _ev("llm_response", NOW - 40, ok=True, tool_calls_count=0),
+    ], NOW)
+    assert out["_first_user_text"] == "帮我重构登录模块"
+
+
+# ── 标题清洗（10.M2 实测发现：preview 被注入块污染） ───────────────
+
+
+def test_clean_title_strips_injected_blocks() -> None:
+    raw = "<session-workspace>\nScratch dir: /x\n</session-workspace>\n\n帮我写周报"
+    assert _clean_title(raw, "sid1") == "帮我写周报"
+
+
+def test_clean_title_strips_memory_blocks() -> None:
+    raw = "<memory-v2-facts>\nfact1\n</memory-v2-facts>查天气"
+    assert _clean_title(raw, "sid1") == "查天气"
+
+
+def test_clean_title_truncated_block_falls_back_to_sid() -> None:
+    """preview 截断导致闭合标签丢失 → 宁可退回 sid 也不显示半截注入块。"""
+    raw = "<memory-v2-facts>\nfact1 fact2 fact3（这里被 preview 截断了"
+    assert _clean_title(raw, "sid1") == "sid1"
+
+
+def test_clean_title_plain_text_passthrough() -> None:
+    assert _clean_title("正常的任务标题", "sid1") == "正常的任务标题"
 
 
 # ── Layer 2: 端到端（前端真实 URL） ────────────────────────────────

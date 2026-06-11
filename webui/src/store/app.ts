@@ -5,7 +5,12 @@
 import { create } from "zustand";
 import { apiGet, fetchPairingToken, setMediaToken } from "../lib/api";
 import { createWsClient, type WsHandle } from "../lib/ws";
-import { applyEvent, appendOptimisticUser, appendThinkingAssistant } from "../lib/reducer";
+import {
+  applyEvent,
+  appendOptimisticUser,
+  appendThinkingAssistant,
+  stripInjectedBlocks,
+} from "../lib/reducer";
 import { emptyChat, type ChatState, type ConnectionStatus, type Entry, type TaskSnapshot } from "../lib/types";
 
 const SID_KEY = "mc.activeSid";
@@ -59,6 +64,12 @@ interface AppState {
   tasks: TaskSnapshot[];
   hud: HudStatus | null;
   draft: string;
+  // 工作区联动：时间线点击 → 右栏聚焦文件；nonce 触发重渲染。
+  workspaceFocus: { path: string; nonce: number } | null;
+  // 跟随 agent：新 artifact/截图/文件变更自动切右栏对应 tab。
+  followAgent: boolean;
+  focusWorkspaceFile(path: string): void;
+  setFollowAgent(v: boolean): void;
   boot(): Promise<void>;
   sendUser(text: string): void;
   cancelTurn(): void;
@@ -89,7 +100,7 @@ async function hydrateHistory(sid: string, token: string | null, set: (fn: (s: A
       hydrated.push({
         id: `restore_${i}`,
         role: role as Entry["role"],
-        content: (m.content as string) || "",
+        content: stripInjectedBlocks((m.content as string) || ""),
         status: "complete",
         ts: 0,
       });
@@ -183,6 +194,17 @@ export const useApp = create<AppState>((set, get) => {
     tasks: [],
     hud: null,
     draft: "",
+    workspaceFocus: null,
+    followAgent: true,
+
+    focusWorkspaceFile(path: string) {
+      const cur = get().workspaceFocus;
+      set({ workspaceFocus: { path, nonce: (cur?.nonce || 0) + 1 } });
+    },
+
+    setFollowAgent(v: boolean) {
+      set({ followAgent: v });
+    },
 
     async boot() {
       const auth = await fetchPairingToken();
