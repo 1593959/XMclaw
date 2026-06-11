@@ -308,6 +308,7 @@ const _COMPOSER = createComposerActions({
   appendPromptHistory,
 });
 const sendComposer = _COMPOSER.sendComposer;
+const sendCanvasAction = _COMPOSER.sendCanvasAction;
 const setLlmProfile = _COMPOSER.setLlmProfile;
 const cancelComposer = _COMPOSER.cancelComposer;
 const answerQuestion = _COMPOSER.answerQuestion;
@@ -476,6 +477,7 @@ const routes = {
       onSend=${sendComposer}
       onCancel=${cancelComposer}
       onAnswerQuestion=${answerQuestion}
+      onCanvasAction=${sendCanvasAction}
       onChangeDraft=${changeDraft}
       onTogglePlan=${togglePlan}
       onCycleOutputStyle=${cycleOutputStyle}

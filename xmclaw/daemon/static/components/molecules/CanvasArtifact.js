@@ -10,30 +10,9 @@ const { h } = window.__xmc.preact;
 const { useEffect, useRef, useState } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-// ── lazy Mermaid loader (shared with cognition_task_dag.js) ───────
-let _mermaidPromise = null;
-function loadMermaid() {
-  if (!_mermaidPromise) {
-    _mermaidPromise = import(
-      "https://esm.sh/mermaid@10/dist/mermaid.esm.min.mjs"
-    ).then((m) => {
-      m.default.initialize({ startOnLoad: false, theme: "dark" });
-      return m.default;
-    });
-  }
-  return _mermaidPromise;
-}
-
-// ── lazy Chart.js loader ──────────────────────────────────────────
-let _chartPromise = null;
-function loadChartJs() {
-  if (!_chartPromise) {
-    _chartPromise = import(
-      "https://esm.sh/chart.js@4/auto?standalone"
-    ).then((m) => m.default);
-  }
-  return _chartPromise;
-}
+// Phase 9 M1: mermaid / Chart.js 改走共享 vendor 加载器(本地优先,
+// CDN 兜底)——断网时 canvas 五种 kind 全部可渲染。
+import { loadMermaid, loadChartJs } from "../../lib/vendor_loaders.js";
 
 // ── kind renderers ────────────────────────────────────────────────
 
@@ -81,14 +60,54 @@ export function MermaidView({ content }) {
   />`;
 }
 
-function HtmlView({ content }) {
+// Phase 9 M1: postMessage 回传桥。iframe 内注入 window.xmclaw API,
+// agent 生成的 HTML 里的按钮/表单借此把用户操作发回 agent——生成式 UI
+// 从"单向展示"变成"双向交互"的关键一跳。
+//
+// 安全模型:iframe 保持 sandbox="allow-scripts"(无 allow-same-origin,
+// origin 为 opaque "null"),桥消息靠 e.source === iframe.contentWindow
+// 精确配对——别的 iframe / 窗口伪造不了 source。payload 只取白名单字段
+// 并强转字符串,不会把任意对象透传进消息管线。
+const _BRIDGE_SCRIPT = `<script>
+window.xmclaw = {
+  sendPrompt: function (text) {
+    parent.postMessage({ __xmc_canvas: 1, action: "send_prompt", text: String(text == null ? "" : text) }, "*");
+  },
+  submit: function (data) {
+    var s; try { s = JSON.stringify(data); } catch (e) { s = String(data); }
+    parent.postMessage({ __xmc_canvas: 1, action: "submit", data: s }, "*");
+  },
+};
+<\/script>`;
+
+function HtmlView({ content, onAction }) {
+  const iframeRef = useRef(null);
+
+  useEffect(() => {
+    if (!onAction) return undefined;
+    function onMessage(e) {
+      const iframe = iframeRef.current;
+      if (!iframe || e.source !== iframe.contentWindow) return;
+      const d = e.data;
+      if (!d || d.__xmc_canvas !== 1) return;
+      if (d.action === "send_prompt" && typeof d.text === "string" && d.text.trim()) {
+        onAction({ action: "send_prompt", text: d.text });
+      } else if (d.action === "submit" && typeof d.data === "string") {
+        onAction({ action: "submit", data: d.data });
+      }
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [onAction]);
+
   return html`<iframe
+    ref=${iframeRef}
     class="xmc-canvas-html"
     srcdoc=${`<!doctype html>
 <html><head><meta charset=utf-8>
 <style>
 body{background:#1a1f2a;color:#e0e4ea;font:14px/1.5 system-ui,sans-serif;margin:12px}
-</style></head><body>${content}</body></html>`}
+</style>${_BRIDGE_SCRIPT}</head><body>${content}</body></html>`}
     sandbox="allow-scripts"
     title="artifact"
   />`;
@@ -214,9 +233,15 @@ function ToolbarButton({ label, title, onClick }) {
   </button>`;
 }
 
-export function CanvasArtifact({ artifact }) {
+export function CanvasArtifact({ artifact, onCanvasAction }) {
   const { kind, title, content } = artifact;
   const [copied, setCopied] = useState(false);
+
+  // Phase 9 M1: html artifact 的桥动作带上 artifact 上下文再上抛,
+  // 上层(composer_actions.sendCanvasAction)据此构造发回 agent 的消息。
+  const onHtmlAction = onCanvasAction
+    ? (act) => onCanvasAction({ ...act, artifactId: artifact.artifact_id, title })
+    : null;
 
   let body;
   switch (kind) {
@@ -224,7 +249,7 @@ export function CanvasArtifact({ artifact }) {
       body = html`<${MermaidView} content=${content} />`;
       break;
     case "html":
-      body = html`<${HtmlView} content=${content} />`;
+      body = html`<${HtmlView} content=${content} onAction=${onHtmlAction} />`;
       break;
     case "svg":
       body = html`<${SvgView} content=${content} />`;

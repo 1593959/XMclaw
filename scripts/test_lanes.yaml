@@ -73,6 +73,7 @@ lanes:
       - tests/unit/test_v2_lsp_tools.py
       - tests/unit/test_v2_todo_tools.py
       - tests/unit/test_v2_agent_inter_tools.py
+      - tests/unit/test_v2_phase9_canvas_bridge.py
       - tests/integration/test_v2_mcp_bridge.py
       - tests/integration/test_v2_tool_loop.py
 
@@ -274,6 +275,7 @@ lanes:
       - "docs/FRONTEND_DESIGN.md"
     tests:
       - tests/unit/test_v2_ui_scaffold.py
+      - tests/unit/test_v2_phase9_canvas_bridge.py
 
   # Deployment templates (Epic #19). Cheap parse + drift checks on
   # Dockerfile / compose / fly.toml / systemd unit / launchd plist /

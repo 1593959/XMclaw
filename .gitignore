@@ -103,6 +103,13 @@ xmclaw/daemon/static/vendor/*.js.map
 # view works offline / behind CDN-blocked networks (CN). Must be the
 # *standalone* build (bundles vis-data → exports DataSet). 2026-06-05.
 !xmclaw/daemon/static/vendor/vis-network.min.js
+# Exception (Phase 9 M1, 2026-06-11): mermaid + Chart.js UMD builds are
+# committed so canvas artifacts render offline (local-first). Loaded by
+# lib/vendor_loaders.js (local-first, esm.sh fallback). No build pipeline
+# runs fetch_vendor.py, so committing is the only enforced offline path
+# (same rationale as vis-network above).
+!xmclaw/daemon/static/vendor/mermaid.min.js
+!xmclaw/daemon/static/vendor/chart.umd.min.js
 
 # OS
 .DS_Store

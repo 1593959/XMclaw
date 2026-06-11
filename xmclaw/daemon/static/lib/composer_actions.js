@@ -95,6 +95,42 @@ export function createComposerActions({
     }
   }
 
+  // Phase 9 M1: canvas postMessage 桥的回传出口。agent 生成的 html
+  // artifact 里调用 window.xmclaw.sendPrompt/submit → CanvasArtifact
+  // 捕获 → 这里转成一条普通用户消息发回 agent(走 sendComposer 同款
+  // 乐观回显 + thinking 占位 + WS 帧,只是文本来自 widget 而非输入框)。
+  function sendCanvasAction({ action, text, data, artifactId, title }) {
+    let content = "";
+    if (action === "send_prompt") {
+      content = (text || "").trim();
+    } else if (action === "submit") {
+      // 提交带上来源 artifact,agent 能对应回它自己生成的那块 UI。
+      content =
+        `[界面提交 · ${title || artifactId || "canvas"}]\n` +
+        "```json\n" + (data || "{}") + "\n```";
+    }
+    if (!content) return;
+    const wsHandle = getWsHandle();
+    if (!wsHandle) {
+      toast.error("WS 未连接，操作未发送 — 请检查 daemon 状态");
+      return;
+    }
+    const s = store.getState();
+    const { id, chat: afterUser } = appendOptimisticUser(s.chat, content, {});
+    const nextChat = appendThinkingAssistant(afterUser, id);
+    store.setState({ chat: nextChat });
+    const result = wsHandle.send({
+      type: "user",
+      content,
+      correlation_id: id,
+    });
+    if (result && result.queued) {
+      toast.info(`当前未连接 daemon，操作已排队 (#${result.pendingCount}) — 重连后自动发送`);
+    } else if (result && !result.ok) {
+      toast.error("发送失败：" + (result.reason || "未知"));
+    }
+  }
+
   function setLlmProfile(profileId) {
     store.setState((s) => ({
       chat: { ...s.chat, llmProfileId: profileId || null },
@@ -233,8 +269,28 @@ export function createComposerActions({
     });
   }
 
+  // F1 (2026-05-30): user explicitly closed / re-opened the workspace
+  // drawer. ``closed=true`` sets ``userClosed`` so further file-change
+  // events don't keep popping it open against the user's preference.
+  function setWorkspaceClosed(closed) {
+    store.setState((s) => {
+      const cur = s.chat.workspace || { version: 0, lastChange: null, opened: false };
+      return {
+        chat: {
+          ...s.chat,
+          workspace: {
+            ...cur,
+            opened: !closed,
+            userClosed: !!closed,
+          },
+        },
+      };
+    });
+  }
+
   return {
     sendComposer,
+    sendCanvasAction,
     setLlmProfile,
     cancelComposer,
     answerQuestion,
@@ -245,5 +301,6 @@ export function createComposerActions({
     setOutputStyle,
     addImages,
     removeImage,
+    setWorkspaceClosed,
   };
 }

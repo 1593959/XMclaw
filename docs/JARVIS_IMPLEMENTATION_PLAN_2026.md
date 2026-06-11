@@ -2153,6 +2153,54 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ---
 
+## Phase 9: GUI 时代（生成式 UI 双向化 + Computer-use 闭环）
+
+> **状态**: 🟡 进行中 (2026-06-11 起)
+> **目标**: 把两个已有半成品推到完全体——(a) Canvas 生成式 UI 从"单向展示"升级为"双向交互"（agent 出 UI → 用户操作 → agent 收到结构化输入）；(b) Computer-use 23 件散装工具补上视觉接地循环 + 安全闸 + 可观测性，成为可靠的"操作任意 GUI"能力。两线在 M3 汇合：computer-use 执行过程用 interactive canvas 实况呈现。
+> **时间**: M1 约 1-2 天；M2 约 3-5 天；M3 约 2-3 天
+> **风险**: 中（M1 低——纯增量不动现有 5 种 kind；M2 中——鼠标键盘是高危工具，安全闸设计错误会放大爆炸半径）
+> **前置**: 无（独立于 Phase 1-6 残留项）
+> **决策记录**: 2026-06-11 用户拍板"两个都要"（生成式 UI + computer-use 双线推进）。现状盘点：`builtin_canvas.py`（canvas_create/update/close，5 kinds）+ `CanvasArtifact.js` 渲染链路已在；`computer_use.py` 2800 行 23 工具（OCR/UIA/图像匹配/窗口管理）已在。缺口不在"有没有"，在"闭环没闭"。
+
+### 9.0 现状诊断（why this Phase exists）
+
+- **生成式 UI 是单向的**：`HtmlView` iframe `sandbox="allow-scripts"` 无 postMessage 桥——agent 生成的表单/按钮/滑块点了之后无处可去。Agent 想让用户做选择只能打字问。
+- **Canvas 渲染依赖 CDN**：mermaid / Chart.js 从 esm.sh 现拉，违反 local-first 原则，断网时 canvas 半残（`vis-network` 已 vendor，是正确先例）。
+- **Computer-use 有手有眼缺脑内闭环**：定位全靠 OCR/模板匹配/UIA，对非标准控件无解；无"截图→视觉模型给坐标→动作→再截图验证"的标准循环；无按动作分级的确认机制（点击/输入应需放行，截图可随意）；用户在 Web UI 看不到 agent 正在看什么、点什么。
+
+### 9.M1 Canvas 双向化（生成式 UI 闭环）
+
+- [x] **9.M1.0 断链修复（开工时发现）**：现役 nebula 渲染器 `MessageList.js` 从未渲染 `message.canvasArtifacts`——canvas artifact 渲染只活在没人 import 的死代码 `MessageBubble.js` 里（nebula 改版漏迁），canvas_create 的产物从未在现役 UI 显示过。已接回（含空鬼泡守卫豁免）。
+- [x] **9.M1.1 postMessage 回传桥**：`HtmlView` srcdoc 注入 `window.xmclaw.sendPrompt(text)` / `window.xmclaw.submit(data)` 桥；父页面以 `e.source === iframe.contentWindow` 配对校验（sandbox 维持 allow-scripts、不开 allow-same-origin），经 `sendCanvasAction`（composer_actions）转成 WS 用户消息发回 agent（带 artifact 上下文）。`canvas_create` 的 html kind 工具描述同步更新，教 agent 桥的用法。
+- [x] ~~**9.M1.2 `canvas_ask` 工具**~~ **取消（2026-06-11）**：盘点发现 `ask_user_question` 工具 + `QuestionCard` + `answer_question` WS 帧 + Future 阻塞续跑（B-92）已完整覆盖"提问型 UI"，不重复造轮子。
+- [x] **9.M1.3 CDN 资产 vendor 化**：mermaid (3.3MB UMD) + Chart.js (207KB UMD) 进 `static/vendor/`，新建共享加载器 `lib/vendor_loaders.js`（本地优先，esm.sh 兜底）；`CanvasArtifact.js` / `cognition_task_dag.js` 收口到共享加载器；断网渲染可用。
+- [x] **9.M1.4 跨前后端测试**：`tests/unit/test_v2_phase9_canvas_bridge.py` 8 个 TestClient 端到端测试（断链回归 / props 链 / 桥注入+source 校验+sandbox 安全 / 工具描述 / vendor 资产可达 / 无 esm.sh 直连），挂入 tools + ui 两个 lane。另经浏览器实测：桥双向消息到达（send_prompt + submit 带 artifact 上下文）、vendor mermaid 本地出 SVG、vendor Chart.js 构造器可用、零控制台错误。
+
+### 9.M2 Computer-use 闭环
+
+- [ ] **9.M2.1 视觉接地循环**：标准化"screen_capture → 视觉 LLM 标注坐标 → 动作 → 再截图验证"循环（prompt 引导 + 复合工具二选一，设计时定）；处理 DPI 缩放坐标换算。
+- [ ] **9.M2.2 动作分级安全闸**：截图/读取类自由；鼠标/键盘/窗口操作类按 autonomy_level 或单次确认放行；与 `security/` 体系打通，事件流记录每个动作供审计。
+- [ ] **9.M2.3 失败重试策略**：动作后验证（wait_for_text / 截图 diff），失败自动重试或上报，不静默继续。
+
+### 9.M3 汇合：computer-use 实况面板
+
+- [ ] **9.M3.1 实况 artifact**：computer-use 会话期间自动维护一个 interactive canvas artifact：屏幕缩略图流 + 动作轨迹标注 + 紧急停止按钮（走 M1 回传桥）。
+
+### 9.V 验收标准
+
+- [x] ~~Agent 能用 `canvas_ask` 出选项卡片~~ → 既有 `ask_user_question` + QuestionCard 已覆盖（9.M1.2 取消）
+- [x] Agent 生成的 html artifact 里的按钮/表单能经 postMessage 桥把数据发回 agent（端到端测试 + 浏览器实测覆盖）
+- [x] 断网状态下 mermaid / chart / table / svg / html 五种 kind 全部正常渲染（渲染器零 esm.sh 直连，vendor 本地加载实测出图）
+- [ ] Computer-use 在非 UIA 应用上能凭视觉接地完成"找到并点击"任务；每个鼠标/键盘动作有事件审计记录
+- [ ] Web UI 能实时看到 computer-use 的屏幕与动作轨迹,且有紧急停止
+
+### 9.L 进度日志
+
+- 2026-06-11: Phase 9 立项（用户拍板双线推进）。现状盘点完成：canvas 三工具 + 前端渲染链已在但单向；computer_use 23 工具已在但散装。M1 开工。
+- 2026-06-11: **9.M1 完成**（本 commit）。断链修复（MessageList 接回 canvasArtifacts）+ postMessage 双向桥（window.xmclaw.sendPrompt/submit → sendCanvasAction → WS 用户消息）+ canvas_ask 取消（ask_user_question 已覆盖）+ mermaid/Chart.js vendor 化（共享 vendor_loaders.js，本地优先 CDN 兜底）。8 个跨前后端测试 + 浏览器实测全绿（桥消息双向到达、本地 mermaid 出 SVG、零控制台错误）。注：test_v2_ui_scaffold 两个失败为存量问题（HEAD 同样失败：8 个文件超 500 行预算 + MessageBubbleParts 双反引号），与本次无关。下一步 9.M2 computer-use 闭环。
+
+---
+
 ## 附录 A: 竞品差异化总结
 
 | 维度 | OpenClaw | Claude Code | Hermes | Letta | **XMclaw** |

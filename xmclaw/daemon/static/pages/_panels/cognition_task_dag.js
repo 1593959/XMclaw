@@ -6,17 +6,8 @@ const { h } = window.__xmc.preact;
 const { useEffect, useState, useRef } = window.__xmc.preact_hooks;
 const html = window.__xmc.htm.bind(h);
 
-// Lazy-load Mermaid for DAG visualisation.
-let _mermaidPromise = null;
-function loadMermaid() {
-  if (!_mermaidPromise) {
-    _mermaidPromise = import("https://esm.sh/mermaid@10/dist/mermaid.esm.min.mjs").then((m) => {
-      m.default.initialize({ startOnLoad: false, theme: "dark" });
-      return m.default;
-    });
-  }
-  return _mermaidPromise;
-}
+// Phase 9 M1: Mermaid 改走共享 vendor 加载器(本地优先,CDN 兜底)。
+import { loadMermaid } from "../../lib/vendor_loaders.js";
 
 export function TaskDag({ data }) {
   const ref = useRef(null);

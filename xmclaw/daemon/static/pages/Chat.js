@@ -14,7 +14,7 @@ import { ChatSidebar } from "../components/molecules/ChatSidebar.js";
 import { Badge } from "../components/atoms/badge.js";
 import { apiGet } from "../lib/api.js";
 
-export function ChatPage({ chat, session, connection, token, onSend, onCancel, onAnswerQuestion, onChangeDraft, onTogglePlan, onCycleOutputStyle, onToggleUltrathink, onNewSession, onResumeSession, onChangeModel, onSwitchAgent, slashStore, onAddImages, onRemoveImage }) {
+export function ChatPage({ chat, session, connection, token, onSend, onCancel, onAnswerQuestion, onCanvasAction, onChangeDraft, onTogglePlan, onCycleOutputStyle, onToggleUltrathink, onNewSession, onResumeSession, onChangeModel, onSwitchAgent, slashStore, onAddImages, onRemoveImage }) {
   const stagedImages = chat.composerImages || [];
   const canSend =
     connection.status === "connected" &&
@@ -193,6 +193,7 @@ export function ChatPage({ chat, session, connection, token, onSend, onCancel, o
         <${MessageList}
           messages=${chat.messages}
           onAnswerQuestion=${onAnswerQuestion}
+          onCanvasAction=${onCanvasAction}
           pendingAssistantId=${chat.pendingAssistantId}
         />
 

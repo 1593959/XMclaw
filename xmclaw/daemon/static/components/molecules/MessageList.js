@@ -15,6 +15,10 @@ import {
   SubagentCard,
 } from "./MessageBubbleParts.js";
 import { QuestionCard } from "./QuestionCard.js";
+// Phase 9 M1: canvas artifact 渲染原来只活在没人 import 的 MessageBubble.js
+// (nebula 改版时漏迁=断链,canvas_create 的产物从未在现役 UI 显示过),
+// 这里接回,并带上 postMessage 回传桥的 onCanvasAction。
+import { CanvasArtifact } from "./CanvasArtifact.js";
 import { openLightbox } from "../../lib/lightbox.js";
 
 // B-220: per-bubble error boundary.
@@ -169,6 +173,8 @@ function assistantIsEmpty(m) {
   if ((Array.isArray(m.images) && m.images.length)
     || (Array.isArray(m.videos) && m.videos.length)
     || (Array.isArray(m.audios) && m.audios.length)) return false;
+  // Phase 9 M1: 只带 canvas artifact、无文字的助手消息不是空鬼泡。
+  if (Array.isArray(m.canvasArtifacts) && m.canvasArtifacts.length) return false;
   return true;
 }
 
@@ -186,7 +192,7 @@ function truncateAtBoundary(text, maxChars) {
   return { truncated: text.slice(0, cut), wasCut: true };
 }
 
-export function MessageList({ messages, onAnswerQuestion, pendingAssistantId }) {
+export function MessageList({ messages, onAnswerQuestion, onCanvasAction, pendingAssistantId }) {
   const empty = messages.length === 0;
   const [expandedMsgs, setExpandedMsgs] = useState(new Set());
   const [hiddenMsgs, setHiddenMsgs] = useState(new Set());
@@ -245,6 +251,7 @@ export function MessageList({ messages, onAnswerQuestion, pendingAssistantId }) 
                 <${MessageRow}
                   message=${m}
                   onAnswerQuestion=${onAnswerQuestion}
+                  onCanvasAction=${onCanvasAction}
                   isExpanded=${expandedMsgs.has(m.id)}
                   onToggleExpand=${() => toggleExpand(m.id)}
                   onCopy=${onCopy}
@@ -273,6 +280,7 @@ export function MessageList({ messages, onAnswerQuestion, pendingAssistantId }) 
 function MessageRow({
   message,
   onAnswerQuestion,
+  onCanvasAction,
   isExpanded,
   onToggleExpand,
   onCopy,
@@ -540,6 +548,19 @@ function MessageRow({
           `)}
         </div>
       `);
+    }
+
+    // Phase 9 M1: agent 创建的 canvas artifacts(canvas_create/update)。
+    if (Array.isArray(message.canvasArtifacts) && message.canvasArtifacts.length > 0) {
+      message.canvasArtifacts.forEach((art) => {
+        parts.push(html`
+          <${CanvasArtifact}
+            key=${art.artifact_id}
+            artifact=${art}
+            onCanvasAction=${onCanvasAction}
+          />
+        `);
+      });
     }
 
     // Streaming cursor
