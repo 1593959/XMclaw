@@ -1,0 +1,242 @@
+/* WorkspacePanel — F1 right-side drawer (2026-05-30)
+ * The chat layout treats this as a flex sibling of nb-chat-layout. When
+ * the drawer is collapsed the entire <aside> goes away — chat reclaims
+ * the width. The thin re-open chip on the right border is a separate
+ * element so it doesn't interfere with the chat composer's width.
+ */
+
+.xmc-ws-panel {
+  display: flex;
+  flex-direction: column;
+  width: clamp(340px, 38%, 540px);
+  height: 100%;
+  background: var(--nb-bg-elev-1, rgba(20, 24, 40, 0.85));
+  border-left: 1px solid var(--nb-border, rgba(140, 160, 200, 0.18));
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.xmc-ws-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--nb-border, rgba(140, 160, 200, 0.18));
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.xmc-ws-tabs { display: flex; gap: 4px; }
+
+.xmc-ws-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--nb-text-dim, #94A3B8);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.xmc-ws-tab:hover { color: var(--nb-text, #E2E8F0); }
+.xmc-ws-tab.is-active {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.4);
+  color: var(--nb-accent, #C4B5FD);
+}
+
+.xmc-ws-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--nb-text-dim, #94A3B8);
+}
+
+.xmc-ws-last { opacity: 0.75; }
+
+.xmc-ws-close {
+  background: transparent;
+  border: 0;
+  color: var(--nb-text-dim, #94A3B8);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.xmc-ws-close:hover { color: var(--nb-text, #E2E8F0); }
+
+.xmc-ws-body {
+  display: grid;
+  grid-template-columns: minmax(140px, 35%) 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+.xmc-ws-tree {
+  overflow-y: auto;
+  border-right: 1px solid var(--nb-border, rgba(140, 160, 200, 0.12));
+  padding: 4px 0;
+}
+
+.xmc-ws-treeitem {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--nb-text, #CBD5E1);
+  cursor: pointer;
+}
+.xmc-ws-treeitem:hover { background: rgba(139, 92, 246, 0.08); }
+.xmc-ws-treeitem.is-active {
+  background: rgba(139, 92, 246, 0.18);
+  color: var(--nb-accent, #C4B5FD);
+}
+.xmc-ws-treename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.xmc-ws-treesize {
+  font-size: 10px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.xmc-ws-viewer {
+  overflow: auto;
+  padding: 10px 14px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.xmc-ws-viewer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--nb-border, rgba(140, 160, 200, 0.1));
+  font-size: 11px;
+  color: var(--nb-text-dim, #94A3B8);
+}
+.xmc-ws-viewer-head code {
+  font-family: var(--nb-mono, ui-monospace, monospace);
+  color: var(--nb-text, #E2E8F0);
+}
+
+.xmc-ws-md { line-height: 1.55; }
+.xmc-ws-code {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--nb-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--nb-text, #E2E8F0);
+}
+
+.xmc-ws-hint, .xmc-ws-empty {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--nb-text-dim, #94A3B8);
+  text-align: center;
+}
+.xmc-ws-error {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--nb-error, #F87171);
+}
+
+.xmc-ws-diff {
+  margin: 0;
+  font-family: var(--nb-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.xmc-ws-diff-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0 6px;
+}
+.xmc-ws-diff-line.is-head { color: #94A3B8; }
+.xmc-ws-diff-line.is-hunk { color: var(--nb-accent, #C4B5FD); background: rgba(139, 92, 246, 0.08); }
+.xmc-ws-diff-line.is-add { color: #86EFAC; background: rgba(34, 197, 94, 0.08); }
+.xmc-ws-diff-line.is-del { color: #FCA5A5; background: rgba(239, 68, 68, 0.08); }
+
+/* ── per-kind viewers (F1.1 rich preview) ───────────────────────── */
+
+.xmc-ws-media {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 8px 0;
+}
+.xmc-ws-media img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background:
+    repeating-conic-gradient(rgba(255,255,255,0.06) 0% 25%, transparent 0% 50%)
+    0 0 / 16px 16px; /* checkerboard so transparent PNGs read correctly */
+}
+
+.xmc-ws-htmlframe,
+.xmc-ws-pdfframe {
+  width: 100%;
+  border: 1px solid var(--nb-border, rgba(140, 160, 200, 0.18));
+  border-radius: 6px;
+  background: #fff; /* html demos usually assume a light page */
+}
+.xmc-ws-htmlframe { height: calc(100% - 40px); min-height: 320px; }
+.xmc-ws-pdfframe { height: 100%; min-height: 420px; }
+
+.xmc-ws-modetabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.xmc-ws-modetab {
+  background: transparent;
+  border: 1px solid var(--nb-border, rgba(140, 160, 200, 0.25));
+  color: var(--nb-text-dim, #94A3B8);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.xmc-ws-modetab.is-active {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.4);
+  color: var(--nb-accent, #C4B5FD);
+}
+
+.xmc-ws-dl {
+  margin-left: 8px;
+  text-decoration: none;
+  color: var(--nb-text-dim, #94A3B8);
+}
+.xmc-ws-dl:hover { color: var(--nb-accent, #C4B5FD); }
+
+/* Collapsed-state re-open chip — pinned to the right border of the
+ * chat area so the user can drag the panel back without hunting for a
+ * menu item. */
+.xmc-ws-reopen {
+  position: absolute;
+  right: 12px;
+  bottom: 96px;
+  z-index: 10;
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  color: var(--nb-accent, #C4B5FD);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.xmc-ws-reopen:hover { background: rgba(139, 92, 246, 0.25); }

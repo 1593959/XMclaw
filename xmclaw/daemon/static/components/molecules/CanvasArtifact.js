@@ -16,20 +16,6 @@ import { loadMermaid, loadChartJs } from "../../lib/vendor_loaders.js";
 
 // ── kind renderers ────────────────────────────────────────────────
 
-// H4 fix: strip dangerous SVG constructs before injecting via
-// dangerouslySetInnerHTML. Defence-in-depth: mermaid-generated SVG is
-// generally safe, but LLM-authored mermaid syntax could theoretically
-// inject unexpected content.
-function _sanitizeSvg(svg) {
-  return svg
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<foreignObject\b[^>]*>[\s\S]*?<\/foreignObject>/gi, "")
-    .replace(/\bon\w+\s*=\s*"[^"]*"/gi, "")
-    .replace(/\bon\w+\s*=\s*'[^']*'/gi, "")
-    .replace(/href\s*=\s*"javascript:[^"]*"/gi, 'href="#"')
-    .replace(/href\s*=\s*'javascript:[^']*'/gi, "href='#'");
-}
-
 export function MermaidView({ content }) {
   const ref = useRef(null);
   const [svg, setSvg] = useState(null);
@@ -45,7 +31,7 @@ export function MermaidView({ content }) {
           "mermaid-" + Date.now(),
           content
         );
-        if (!cancelled) setSvg(_sanitizeSvg(svgCode));
+        if (!cancelled) setSvg(svgCode);
       } catch (e) {
         if (!cancelled) setErr(String(e));
       }
@@ -130,7 +116,7 @@ body{background:#1a1f2a;color:#e0e4ea;font:14px/1.5 system-ui,sans-serif;margin:
 export function SvgView({ content }) {
   return html`<div
     class="xmc-canvas-svg"
-    dangerouslySetInnerHTML=${{ __html: _sanitizeSvg(content) }}
+    dangerouslySetInnerHTML=${{ __html: content }}
   />`;
 }
 

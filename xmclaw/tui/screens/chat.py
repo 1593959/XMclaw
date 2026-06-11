@@ -1,44 +1,42 @@
-"""AgentScreen — multi-panel agent TUI replacing the old chat-only screen.
-
-Panel layout (top → bottom):
-  StatusBar  — model · hop · tokens · time · tool count · connection
-  PlanView   — multi-step plan with checkmarks (hidden when empty)
-  ToolLog    — real-time tool call feed
-  ThinkingView — collapsible chain-of-thought (hidden when empty)
-  CompactChatLog — last N messages (reference-only)
-  Input bar  — single-line input + send button
-"""
+"""ChatScreen — main chat interface for the TUI."""
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input
+from typing import TYPE_CHECKING
 
-from xmclaw.tui.widgets.status_bar import StatusBar
-from xmclaw.tui.widgets.tool_log import (
-    CompactChatLog,
-    PlanView,
-    ThinkingView,
-    ToolLog,
-)
+from rich.text import Text
+
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Button, Input, Static
+
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
+else:
+    ComposeResult = object
+
 from xmclaw.utils.log import get_logger
 
 _log = get_logger(__name__)
 
 
-class AgentScreen(Vertical):  # type: ignore[misc]
-    """Multi-panel agent TUI screen."""
+class ChatScreen(Vertical):  # type: ignore[misc]
+    """Displays message history and an input bar."""
 
     DEFAULT_CSS = """
-    AgentScreen {
+    ChatScreen {
         layout: vertical;
         width: 100%;
         height: 100%;
     }
-    #status-bar {
-        dock: top;
-        height: 1;
+    #message-scroll {
+        height: 1fr;
+        border: solid $primary;
+        padding: 1;
+    }
+    #messages {
+        width: 100%;
+        height: auto;
     }
     #input-bar {
         dock: bottom;
@@ -56,41 +54,45 @@ class AgentScreen(Vertical):  # type: ignore[misc]
         min-width: 8;
         border: none;
     }
-    #panels {
-        height: 1fr;
-        overflow-y: auto;
-    }
     """
+
 
     def __init__(
         self,
         *,
         session_id: str,
         on_send: Callable[[str], Awaitable[None]],
-        agent_name: str = "XM",
+        agent_name: str = "Jarvis",
     ) -> None:
         super().__init__()
         self._session_id = session_id
         self._on_send = on_send
         self._agent_name = agent_name
-        self._submitting = False
-        self.status_bar = StatusBar(id="status-bar")
-        self.plan_view = PlanView()
-        self.tool_log = ToolLog()
-        self.thinking_view = ThinkingView()
-        self.chat_log = CompactChatLog(agent_name)
+        self._lines: list[str] = []
+        self._message_static = Static(id="messages")
+        self._message_box = VerticalScroll(self._message_static, id="message-scroll")
         self._input = Input(placeholder="输入消息后回车发送…", id="msg-input")
+        self._submitting = False
 
-    def compose(self) -> None:
-        yield self.status_bar
-        with Vertical(id="panels"):
-            yield self.plan_view
-            yield self.tool_log
-            yield self.thinking_view
-            yield self.chat_log
+    def compose(self) -> ComposeResult:
+        yield self._message_box
         with Horizontal(id="input-bar"):
             yield self._input
             yield Button("发送", id="send-btn")
+
+    def on_mount(self) -> None:
+        # Pin layout via instance styles — highest specificity, immune to
+        # CSS cascade quirks. The message area flexes to fill, the input
+        # bar stays a compact 3-row strip docked to the very bottom so it
+        # never floats in the middle of an empty screen.
+        try:
+            self._message_box.styles.height = "1fr"
+            bar = self.query_one("#input-bar")
+            bar.styles.dock = "bottom"
+            bar.styles.height = 3
+            self._input.styles.height = 1
+        except Exception:  # noqa: BLE001 — never let styling crash the TUI
+            pass
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "send-btn":
@@ -108,83 +110,59 @@ class AgentScreen(Vertical):  # type: ignore[misc]
         self._submitting = True
         self._input.value = ""
         try:
-            self.chat_log.add_user(text)
+            await self.append_user(text)
             await self._on_send(text)
         finally:
             self._submitting = False
 
-    def clear(self) -> None:
-        self.chat_log.clear()
-        self.plan_view.clear()
-        self.thinking_view.clear()
+    # ── public append API ──
 
-    # ── daemon message dispatch ──────────────────────────────────
+    async def append_user(self, text: str) -> None:
+        self._lines.append(Text.assemble(("你: ", "bold cyan"), text).markup)
+        self._refresh_messages()
+
+    async def append_agent(self, text: str) -> None:
+        self._lines.append(
+            Text.assemble((f"{self._agent_name}: ", "bold green"), text).markup
+        )
+        self._refresh_messages()
+
+    async def append_system(self, text: str) -> None:
+        self._lines.append(text)
+        self._refresh_messages()
+
+    def _refresh_messages(self) -> None:
+        self._message_static.update("\n".join(self._lines))
+        self._message_box.scroll_end(animate=False)
+
+    def clear(self) -> None:
+        self._lines.clear()
+        self._message_static.update("")
+
+    # ── daemon message dispatch ──
 
     async def on_daemon_message(self, msg: dict[str, Any]) -> None:
         t = msg.get("type", "")
         payload = msg.get("payload", {})
-
-        if t == "llm_request":
-            if payload.get("model"):
-                self.status_bar.update_model(payload["model"])
-            if payload.get("hop") is not None:
-                self.status_bar.update_hop(payload["hop"])
-            self.status_bar.refresh_display()
-
-        elif t == "llm_chunk":
+        if t == "llm_chunk":
             text = payload.get("content", "")
             if text:
-                self.chat_log.add_agent(text)
-
-        elif t == "llm_thinking_chunk":
-            text = payload.get("content", "")
-            if text:
-                self.thinking_view.append(text)
-
+                await self.append_agent(text)
         elif t == "llm_response":
             text = payload.get("content", "")
             if text:
-                self.chat_log.add_agent(text)
-
-        elif t == "tool_call_emitted":
-            call_id = payload.get("call_id", payload.get("id", ""))
-            name = payload.get("name", payload.get("tool_name", "tool"))
-            args = payload.get("args", payload.get("arguments", {}))
-            self.tool_log.add_entry(call_id, name, args)
-            self.status_bar.update_tool_count(len(self.tool_log._entries))
-            self.status_bar.refresh_display()
-
+                await self.append_agent(text)
         elif t == "tool_invocation_started":
-            call_id = payload.get("call_id", "")
-            if call_id:
-                self.tool_log.update_status(call_id, "running")
-
+            name = payload.get("name", "tool")
+            await self.append_system(f"▶ 正在运行 {name}…")
         elif t == "tool_invocation_finished":
-            call_id = payload.get("call_id", "")
-            ok = not payload.get("error")
-            status = "done" if ok else "error"
-            duration = payload.get("duration_ms")
-            error = payload.get("error")
-            if call_id:
-                self.tool_log.update_status(call_id, status, duration, error)
-
-        elif t == "cost_tick":
-            pt = int(payload.get("prompt_tokens", 0))
-            ct = int(payload.get("completion_tokens", 0))
-            self.status_bar.update_tokens(pt, ct)
-            if payload.get("spent_usd"):
-                self.status_bar.update_cost(float(payload["spent_usd"]))
-            self.status_bar.refresh_display()
-
+            name = payload.get("name", "tool")
+            ok = payload.get("ok", True)
+            icon = "✓" if ok else "✗"
+            await self.append_system(f"{icon} {name} 已完成")
         elif t == "proactive_proposal":
             text = payload.get("message", "")
-            if text:
-                self.chat_log.add_system(f"💡 {text}")
-
+            await self.append_system(f"💡 {text}")
         elif t == "error":
             text = payload.get("message", "")
-            self.chat_log.add_system(f"[red]Error: {text}[/red]")
-
-    def on_key_t(self) -> None:
-        """Toggle thinking panel visibility."""
-        self.thinking_view.toggle()
+            await self.append_system(f"[red]错误: {text}[/red]")

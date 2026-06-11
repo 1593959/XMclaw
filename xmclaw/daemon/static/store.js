@@ -30,26 +30,14 @@ export function createStore(initial) {
   }
 
   function setState(patch) {
-    const prev = state;
     const next =
       typeof patch === "function"
         ? { ...state, ...patch(state) }
         : { ...state, ...patch };
     state = freeze(next);
-    for (const entry of listeners) {
+    for (const listener of listeners) {
       try {
-        // P0 selector support (audit 2026-06-11): each subscription
-        // may carry an optional selector function. When a selector
-        // is present the listener only fires when the selected
-        // slice reference has actually changed. This avoids the
-        // full-tree re-render that was happening on every keystroke.
-        if (typeof entry.selector === "function") {
-          if (entry.selector(prev) !== entry.selector(state)) {
-            entry.listener(state);
-          }
-        } else {
-          entry.listener(state);
-        }
+        listener(state);
       } catch (err) {
         // Never let one subscriber blow up the store.
         console.error("[xmc] store listener threw", err);
@@ -57,10 +45,9 @@ export function createStore(initial) {
     }
   }
 
-  function subscribe(listener, selector) {
-    const entry = { listener, selector: selector || null };
-    listeners.add(entry);
-    return () => listeners.delete(entry);
+  function subscribe(listener) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
   }
 
   return { getState, setState, subscribe };
@@ -204,41 +191,6 @@ export const app = createStore({
     // provider's already-buffered chunks keep appending after Stop is
     // clicked, defeating the user's intent.
     cancelledTurnIds: new Set(),
-
-    // ── Agent UI panels (Phase 1: Agent-style redesign) ──────────
-    // Plan steps surfaced from plan mode or LLM plan-first output.
-    planSteps: [],
-    activePlanStep: null,
-    planGenerated: false,
-    // Flat tool execution log — extracted from message bubbles into
-    // a dedicated real-time feed. Entries: { id, toolName, args,
-    // status: "pending"|"running"|"done"|"error", startedAt,
-    // durationMs, result, error, correlationId }.
-    toolExecutionLog: [],
-    toolCallCount: 0,
-    // Thinking/reasoning segments, built from llm_thinking_chunk events.
-    // Each segment: { id, content, startedAt, endedAt }.
-    thinkingSegments: [],
-    // Artifacts produced by the agent (canvas / files).
-    artifacts: [],
-    // Memory operations surfaced as a recall indicator.
-    memoryOps: [],
-    // Agent session metrics.
-    sessionElapsed: 0,
-    currentHop: 0,
-    tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, costUsd: 0 },
-    // Panel UI preferences.
-    referenceMessageCount: 3,
-    thinkingCollapsed: false,
-    memoryRecallExpanded: false,
-    showAllToolCalls: false,
-  },
-
-  // ── Workspace slice (files + recent ops) ─────────────────────
-  workspace: {
-    files: [],
-    currentDirectory: "~",
-    recentOperations: [],
   },
 
   // UI prefs (Phase 5 settings page will bind here).

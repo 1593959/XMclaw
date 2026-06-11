@@ -246,13 +246,11 @@ export function applyEvent(chat, envelope) {
         llm_profile_id: payload.llm_profile_id || null,
         started_at: ts,
       };
-      const _hop = payload.hop != null ? payload.hop : null;
       const idx = cleaned.findIndex((m) => m.id === id);
       if (idx === -1) {
         return {
           ...chat,
           pendingAssistantId: id,
-          currentHop: _hop != null ? _hop : (chat.currentHop || 0), // Agent UI
           messages: cleaned.concat({
             id,
             role: "assistant",
@@ -269,7 +267,6 @@ export function applyEvent(chat, envelope) {
       return {
         ...chat,
         pendingAssistantId: id,
-        currentHop: _hop != null ? _hop : (chat.currentHop || 0), // Agent UI
         messages: upsertById(cleaned, id, (m) => ({
           ...m,
           phase: "calling_llm",
@@ -367,20 +364,6 @@ export function applyEvent(chat, envelope) {
           result: null,
           ts,
         }),
-        // Agent UI dual-write (audit 2026-06-11): tool calls also feed
-        // the dedicated ToolExecutionLog panel.
-        toolExecutionLog: (chat.toolExecutionLog || []).concat({
-          id: callId,
-          toolName,
-          args: payload.args || payload.arguments || {},
-          status: "running",
-          startedAt: ts,
-          durationMs: null,
-          result: null,
-          error: null,
-          correlationId: corr,
-        }),
-        toolCallCount: (chat.toolCallCount || 0) + 1,
       };
     }
 
@@ -427,18 +410,6 @@ export function applyEvent(chat, envelope) {
         // existing upsertById path patches name/args onto this bubble
         // (id collision = same message). Net: no race-induced data
         // loss, regardless of arrival order.
-        // Agent UI dual-write: synthesise tool log entry too.
-        const _duration = ts - (payload.started_at || ts);
-        const _logIdx = (chat.toolExecutionLog || []).findIndex(e => e.id === callId);
-        const _log = _logIdx >= 0
-          ? (chat.toolExecutionLog || []).map((e, i) => i === _logIdx ? { ...e, status, result, error: payload.error || null, durationMs: _duration * 1000 } : e)
-          : (chat.toolExecutionLog || []).concat({
-              id: callId, toolName: payload.name || payload.tool_name || "tool",
-              args: payload.args || payload.arguments || {},
-              status, result, error: payload.error || null,
-              startedAt: payload.started_at || ts,
-              durationMs: _duration * 1000, correlationId: corr,
-            });
         return {
           ...chat,
           messages: chat.messages.concat({
@@ -455,15 +426,8 @@ export function applyEvent(chat, envelope) {
             audios,
             ts,
           }),
-          toolExecutionLog: _log,
         };
       }
-      // Agent UI dual-write for the normal path.
-      const _finDuration = ts - (payload.started_at || ts);
-      const _finLogIdx = (chat.toolExecutionLog || []).findIndex(e => e.id === callId);
-      const _finLog = _finLogIdx >= 0
-        ? (chat.toolExecutionLog || []).map((e, i) => i === _finLogIdx ? { ...e, status, result, error: payload.error || null, durationMs: _finDuration * 1000 } : e)
-        : (chat.toolExecutionLog || []);
       return {
         ...chat,
         messages: upsertById(chat.messages, callId, (m) => ({
@@ -474,7 +438,6 @@ export function applyEvent(chat, envelope) {
           videos,
           audios,
         })),
-        toolExecutionLog: _finLog,
       };
     }
 

@@ -22,24 +22,6 @@ let _hljsCore = null;
 let _hljsCorePromise = null;
 const _hljsLangs = new Map();        // lang -> Promise<module|null>
 
-let _dompurify = null;
-let _dompurifyPromise = null;
-async function _getDomPurify() {
-  if (_dompurify) return _dompurify;
-  if (_dompurifyPromise) return _dompurifyPromise;
-  _dompurifyPromise = (async () => {
-    try {
-      const mod = await import("https://esm.sh/dompurify@3");
-      _dompurify = mod.default;
-      return _dompurify;
-    } catch (e) {
-      console.warn("[xmc] DOMPurify load failed for CodeBlock", e);
-      return null;
-    }
-  })();
-  return _dompurifyPromise;
-}
-
 const HLJS_VERSION = "11.10.0";
 const HLJS_CDN_BASE = `https://esm.sh/highlight.js@${HLJS_VERSION}`;
 const HLJS_CSS_HREF = `https://esm.sh/highlight.js@${HLJS_VERSION}/styles/atom-one-dark.css`;
@@ -149,19 +131,7 @@ export function CodeBlock({ code, lang, maxLines = 20 }) {
           result = core.highlightAuto(code);
         }
         if (cancelled) return;
-        // H3 fix: sanitise hljs output through DOMPurify before injecting
-        // into innerHTML. hljs is generally safe (entity-escaped spans),
-        // but highlightAuto may misclassify code containing HTML-like
-        // fragments; defence-in-depth.
-        const purify = await _getDomPurify();
-        const safeHtml = purify
-          ? purify.sanitize(result.value, { ALLOWED_TAGS: ["span"], ALLOWED_ATTR: ["class"] })
-          : result.value;
-        try {
-          node.innerHTML = safeHtml;
-        } catch (_e) {
-          node.textContent = code; // Last-resort fallback
-        }
+        node.innerHTML = result.value;
         node.classList.add("hljs");
       } catch (e) {
         // fall back to plain text rendering already in DOM
