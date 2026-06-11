@@ -2178,9 +2178,9 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 9.M2 Computer-use 闭环
 
-- [ ] **9.M2.1 视觉接地循环**：标准化"screen_capture → 视觉 LLM 标注坐标 → 动作 → 再截图验证"循环（prompt 引导 + 复合工具二选一，设计时定）；处理 DPI 缩放坐标换算。
-- [ ] **9.M2.2 动作分级安全闸**：截图/读取类自由；鼠标/键盘/窗口操作类按 autonomy_level 或单次确认放行；与 `security/` 体系打通，事件流记录每个动作供审计。
-- [ ] **9.M2.3 失败重试策略**：动作后验证（wait_for_text / 截图 diff），失败自动重试或上报，不静默继续。
+- [x] **9.M2.1 视觉接地循环**：screen_capture 的截图本就以 vision block 进下一轮（看的能力已在）；本步补的是坐标系——`_ensure_dpi_aware()` 进程级 DPI 感知（Windows 显示缩放下 mss 物理像素 vs pyautogui 逻辑坐标错位 = "点不准"根因），screen_capture 结果回报 `pyautogui_size` + `click_scale` 双保险；mouse_click 描述写入接地循环纪律（截图→读图定位→动作→验证）。
+- [x] **9.M2.2 动作分级安全闸**：开工诊断发现安全层对 computer-use **空转**——`utils/security.py` 的 TOOL_CATEGORIES 分级表不在调用链上（无人查）、`_DEFAULT_GUARDED_TOOLS` 不含任何 computer-use 工具、规则型 guardian 对 `mouse_click {x,y}` 这类参数永远零 finding。新增 `ComputerUseActionGuardian`（按动作性质分级：读取类零 finding 放行；操作类按 `security.guardians.computer_use_mode` 出 finding——allow 默认放行 / approve→HIGH→NEEDS_APPROVAL 单次确认 / deny→CRITICAL 拒绝），MUTATING_GUI_TOOLS 名单并入 engine guarded 集合，factory 接线。默认 allow 的理由：provider 本身默认关闭（开启已是显式授权）+ channel 自动化（gui_send_chat）在 approve 下会卡 pending 没人批 + 每次调用有 TOOL_CALL/TOOL_RESULT 事件留痕。**要武装闸门 = 配置一行翻 approve**。
+- [x] **9.M2.3 失败重试策略**：mouse_click / click_on_text 新增 `verify_text` / `verify_timeout_s`——动作后轮询 OCR 等成功信号，结果带 `verified: true/false`（false 时附屏上实读样本 + "重新截图再决策"提示），把"点了但没生效"从静默继续变成显式信号；无 OCR 引擎时降级为 `verify_skipped` 不碍动作本身。
 
 ### 9.M3 汇合：computer-use 实况面板
 
@@ -2197,7 +2197,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 ### 9.L 进度日志
 
 - 2026-06-11: Phase 9 立项（用户拍板双线推进）。现状盘点完成：canvas 三工具 + 前端渲染链已在但单向；computer_use 23 工具已在但散装。M1 开工。
-- 2026-06-11: **9.M1 完成**（本 commit）。断链修复（MessageList 接回 canvasArtifacts）+ postMessage 双向桥（window.xmclaw.sendPrompt/submit → sendCanvasAction → WS 用户消息）+ canvas_ask 取消（ask_user_question 已覆盖）+ mermaid/Chart.js vendor 化（共享 vendor_loaders.js，本地优先 CDN 兜底）。8 个跨前后端测试 + 浏览器实测全绿（桥消息双向到达、本地 mermaid 出 SVG、零控制台错误）。注：test_v2_ui_scaffold 两个失败为存量问题（HEAD 同样失败：8 个文件超 500 行预算 + MessageBubbleParts 双反引号），与本次无关。下一步 9.M2 computer-use 闭环。
+- 2026-06-11: **9.M1 完成**（本 commit）。断链修复（MessageList 接回 canvasArtifacts）+ postMessage 双向桥（window.xmclaw.sendPrompt/submit → sendCanvasAction → WS 用户消息）+ canvas_ask 取消（ask_user_question 已覆盖）+ mermaid/Chart.js vendor 化（共享 vendor_loaders.js，本地优先 CDN 兜底）。8 个跨前后端测试 + 浏览器实测全绿（桥消息双向到达、本地 mermaid 出 SVG、零控制台错误）。注：test_v2_ui_scaffold 两个失败为存量问题（HEAD 同样失败：8 个文件超 500 行预算 + MessageBubbleParts 双反引号），与本次无关。下一步 9.M2 computer-use 闭环。(commit a14e3d5)
+- 2026-06-11: **9.M2 完成**（本 commit）。视觉接地（DPI 感知 + click_scale 坐标回报 + 接地循环纪律进工具描述）+ 动作分级安全闸（ComputerUseActionGuardian，allow/approve/deny 三模式，guarded 集合补全——修复"安全层对 computer-use 空转"）+ 动作后验证（verify_text → verified true/false 显式信号）。16 个新测试 + 150 个 security/factory 回归全过。**修复 broken HEAD**：commit ce7a172 在 factory/engine 引用了 computer_use_guardian 却漏 `git add` 该新文件（fresh clone ImportError），本 commit 补上。下一步 9.M3 computer-use 实况面板。
 
 ---
 

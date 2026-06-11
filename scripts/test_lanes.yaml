@@ -74,6 +74,7 @@ lanes:
       - tests/unit/test_v2_todo_tools.py
       - tests/unit/test_v2_agent_inter_tools.py
       - tests/unit/test_v2_phase9_canvas_bridge.py
+      - tests/unit/test_v2_phase9_computer_use_loop.py
       - tests/integration/test_v2_mcp_bridge.py
       - tests/integration/test_v2_tool_loop.py
 
@@ -187,6 +188,7 @@ lanes:
       - tests/unit/test_v2_skill_scanner.py
       - tests/unit/test_v2_guardian_policy.py
       - tests/unit/test_v2_rule_loader.py
+      - tests/unit/test_v2_phase9_computer_use_loop.py
       - tests/integration/test_v2_prompt_injection.py
 
   # Cost tracker + performance monitor + structured logging.

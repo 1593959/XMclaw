@@ -188,6 +188,8 @@
     "_comment_guardians": "Epic #3: pre-execution tool security. enabled=false (default) skips all guardian scans; enabled=true wraps every tool call with FilePathToolGuardian + RuleBasedToolGuardian + ShellEvasionGuardian. The optional 'policy' map controls what happens at each severity: 'allow' passes through, 'approve' creates a pending approval (NEEDS_APPROVAL:<id>), 'deny' blocks immediately. Defaults: critical=deny, high=approve, medium/low/info=allow. Tighten by moving entries up (e.g. medium=approve) or loosen for dev (e.g. high=allow — not recommended).",
     "guardians": {
       "enabled": false,
+      "_comment_computer_use_mode": "Phase 9 M2.2: GUI 操作分级闸（mouse_*/keyboard_*/window_focus/click_on_*/ui_click/gui_send_chat 等会动用户鼠标键盘的工具）。'allow'（默认）= 放行，调用走事件流留痕；'approve' = 每个 GUI 动作出 HIGH finding → 走 NEEDS_APPROVAL 单次确认；'deny' = 全部拒绝。读取类（截图/OCR/找字/控件树）任何模式都直接放行。注意：channel 自动化（如 gui_send_chat）在 approve 模式下会卡在 pending 等人批。",
+      "computer_use_mode": "allow",
       "sensitive_files": ["~/.ssh", "~/.gnupg", "~/.aws", "~/.xmclaw.secret"],
       "policy": {
         "critical": "deny",

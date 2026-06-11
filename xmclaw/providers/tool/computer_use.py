@@ -98,7 +98,13 @@ _SCREEN_CAPTURE_SPEC = ToolSpec(
         "real vision content block — the model literally SEES it. You "
         "do NOT need to opt in; just call this and look at the next "
         "turn. Use the returned ``path`` if you need to pipe it into "
-        "another tool (OCR, region crop, etc.)."
+        "another tool (OCR, region crop, etc.).\n\n"
+        "Coordinate mapping: for the primary monitor the result "
+        "includes ``pyautogui_size`` and ``click_scale`` [sx, sy]. "
+        "When click_scale is [1, 1] (the normal case — the provider "
+        "makes the process DPI-aware), coordinates you read off the "
+        "screenshot can be passed to mouse_* tools as-is. Otherwise "
+        "multiply screenshot coords by click_scale first."
     ),
     parameters_schema={
         "type": "object",
@@ -166,7 +172,14 @@ _MOUSE_CLICK_SPEC = ToolSpec(
         "are omitted. ``button`` ∈ {left, right, middle}, default "
         "left. ``count`` 1-3, default 1 (2 = double-click). Always "
         "moves to the target first (instant) before clicking — "
-        "guarantees the click lands on the intended pixel."
+        "guarantees the click lands on the intended pixel.\n\n"
+        "**Grounding loop (follow this discipline):** ① screen_capture "
+        "and READ the screenshot to locate the target (mind "
+        "``click_scale`` if it isn't [1,1]); ② act; ③ VERIFY — pass "
+        "``verify_text`` (text that should appear after a successful "
+        "click, e.g. a dialog title) or re-capture and look. Never "
+        "assume a click worked; ``verified: false`` in the result "
+        "means re-look before retrying."
     ),
     parameters_schema={
         "type": "object",
@@ -175,6 +188,19 @@ _MOUSE_CLICK_SPEC = ToolSpec(
             "y": {"type": "integer"},
             "button": {"type": "string", "enum": ["left", "right", "middle"]},
             "count": {"type": "integer", "description": "1-3"},
+            "verify_text": {
+                "type": "string",
+                "description": (
+                    "Optional. After the click, poll OCR until this "
+                    "text appears on screen (success signal, e.g. a "
+                    "dialog title that should open). Result gains "
+                    "``verified: true/false`` + diagnostics."
+                ),
+            },
+            "verify_timeout_s": {
+                "type": "number",
+                "description": "Verify polling window, 0.5-30s, default 5.",
+            },
         },
     },
 )
@@ -367,7 +393,12 @@ _CLICK_ON_TEXT_SPEC = ToolSpec(
         "so the LLM can write 'click the 魔丸 group in the chat "
         "list' as one tool call instead of three.\n\n"
         "Returns ok=False with the OCR matches list when the text "
-        "isn't found — the LLM can adjust its query and retry."
+        "isn't found — the LLM can adjust its query and retry.\n\n"
+        "Pass ``verify_text`` to confirm the click had its intended "
+        "effect (poll OCR for a success signal after clicking, e.g. "
+        "the window title that should open). ``verified: false`` in "
+        "the result = the click landed but the expected state never "
+        "showed — re-capture and re-plan instead of assuming success."
     ),
     parameters_schema={
         "type": "object",
@@ -381,6 +412,17 @@ _CLICK_ON_TEXT_SPEC = ToolSpec(
             "count":  {"type": "integer", "description": "1-3"},
             "exact":  {"type": "boolean"},
             "min_confidence": {"type": "number"},
+            "verify_text": {
+                "type": "string",
+                "description": (
+                    "Optional post-click success signal: poll OCR "
+                    "until this text appears."
+                ),
+            },
+            "verify_timeout_s": {
+                "type": "number",
+                "description": "Verify polling window, 0.5-30s, default 5.",
+            },
         },
         "required": ["text"],
     },
@@ -827,6 +869,7 @@ class ComputerUseTools(ToolProvider):
     def _require_pyautogui(self):
         """Return the pyautogui module or raise ImportError with a
         clear install hint. Called from every mouse/keyboard tool."""
+        _ensure_dpi_aware()  # Phase 9 M2.1: 坐标系与截图物理像素对齐
         import pyautogui
         if self._pyautogui_ready is None:
             # FAILSAFE: cursor at (0,0) aborts. User can always escape
@@ -846,6 +889,7 @@ class ComputerUseTools(ToolProvider):
             import mss
         except ImportError:
             return _fail(call, t0, "screen_capture needs ``mss``. pip install mss")
+        _ensure_dpi_aware()  # Phase 9 M2.1: 截图前就绪,坐标系一致
         monitor_idx = int(args.get("monitor", 1))
         # B-Vision: default is now NO base64 in the tool result text.
         # Instead we set ``metadata.attach_image`` so hop_loop injects
@@ -884,6 +928,23 @@ class ComputerUseTools(ToolProvider):
             "monitor_index": monitor_idx,
             "vision_attached": True,
         }
+        # Phase 9 M2.1: 回报 pyautogui 的坐标空间。DPI 感知开启后两边
+        # 通常一致 (click_scale=[1,1]);若不一致(感知设置太晚/特殊
+        # 多屏),模型需把截图坐标乘 click_scale 再交给 mouse_* 工具。
+        # 仅主屏截图时才有意义(虚拟屏 union 的 offset 另说),其余
+        # monitor 不回报,避免误导。
+        if monitor_idx == 1:
+            try:
+                pg = self._require_pyautogui()
+                pg_w, pg_h = pg.size()
+                result["pyautogui_size"] = [int(pg_w), int(pg_h)]
+                if int(size[0]) and int(size[1]):
+                    result["click_scale"] = [
+                        round(int(pg_w) / int(size[0]), 4),
+                        round(int(pg_h) / int(size[1]), 4),
+                    ]
+            except Exception:  # noqa: BLE001 — pyautogui 缺失不碍截图
+                pass
         if include_b64:
             try:
                 raw = out.read_bytes()
@@ -953,15 +1014,20 @@ class ComputerUseTools(ToolProvider):
             await asyncio.to_thread(
                 pg.click, x=x, y=y, button=button, clicks=count,
             )
-            return _ok(call, t0, json.dumps({
+            payload: dict[str, Any] = {
                 "x": x, "y": y, "button": button, "count": count,
-            }))
-        await asyncio.to_thread(pg.click, button=button, clicks=count)
-        pos = pg.position()
-        return _ok(call, t0, json.dumps({
-            "x": int(pos[0]), "y": int(pos[1]),
-            "button": button, "count": count,
-        }))
+            }
+        else:
+            await asyncio.to_thread(pg.click, button=button, clicks=count)
+            pos = pg.position()
+            payload = {
+                "x": int(pos[0]), "y": int(pos[1]),
+                "button": button, "count": count,
+            }
+        verify = await self._verify_after_action(args)
+        if verify is not None:
+            payload.update(verify)
+        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
 
     async def _mouse_drag(self, call: ToolCall, t0: float, args: dict) -> ToolResult:
         try:
@@ -1314,7 +1380,7 @@ class ComputerUseTools(ToolProvider):
                 f"click at ({x},{y}) failed: {type(exc).__name__}: {exc}",
             )
 
-        return _ok(call, t0, json.dumps({
+        payload: dict[str, Any] = {
             "clicked": True,
             "x": x, "y": y,
             "button": button,
@@ -1322,7 +1388,64 @@ class ComputerUseTools(ToolProvider):
             "match_text": find_payload["match_text"],
             "confidence": find_payload["confidence"],
             "bbox": find_payload["bbox"],
-        }, ensure_ascii=False))
+        }
+        verify = await self._verify_after_action(args)
+        if verify is not None:
+            payload.update(verify)
+        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+
+    # Phase 9 M2.3: 动作后验证。点击类工具带 ``verify_text`` 时,动作
+    # 完成后轮询 OCR 等该文本出现 —— 把"点了但没生效"从静默继续变成
+    # 显式信号(verified: false + 屏上实际读到了什么),agent 据此重试
+    # 或换策略,而不是带着错误假设往下走。
+    async def _verify_after_action(self, args: dict) -> dict[str, Any] | None:
+        """Poll OCR for ``args["verify_text"]``; None when not requested.
+
+        Returns a dict to merge into the tool result payload:
+        ``verified`` true/false (+ diagnostics), or ``verify_skipped``
+        when no OCR engine is available (verification degrades, the
+        action result itself is unaffected).
+        """
+        text = args.get("verify_text")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        timeout_s = _clamp(float(args.get("verify_timeout_s", 5.0)), 0.5, 30.0)
+        region = args.get("verify_region")
+        deadline = time.perf_counter() + timeout_s
+        attempts = 0
+        last_blocks: list = []
+        while time.perf_counter() < deadline:
+            attempts += 1
+            try:
+                blocks = await asyncio.to_thread(
+                    _run_ocr_full_pipeline, region, 0.5,
+                )
+                last_blocks = blocks
+            except _NoOCREngineError as exc:
+                return {"verified": None, "verify_skipped": str(exc)}
+            except Exception:  # noqa: BLE001 — transient OCR error, retry
+                blocks = []
+            if _match_text_in_blocks(blocks, text, exact=False):
+                return {
+                    "verified": True,
+                    "verify_text": text,
+                    "verify_attempts": attempts,
+                }
+            await asyncio.sleep(0.6)
+        return {
+            "verified": False,
+            "verify_text": text,
+            "verify_attempts": attempts,
+            "verify_timeout_s": timeout_s,
+            "verify_hint": (
+                "动作已执行但预期文本未出现 — 不要假设成功。"
+                "重新 screen_capture 看实际状态,再决定重试还是换路径。"
+            ),
+            "sample_blocks_last_poll": [
+                {"text": b["text"], "confidence": b["confidence"]}
+                for b in last_blocks[:10]
+            ],
+        }
 
     async def _wait_for_text(
         self, call: ToolCall, t0: float, args: dict,
@@ -2508,6 +2631,31 @@ class ComputerUseTools(ToolProvider):
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
+
+
+# Phase 9 M2.1: 进程级 DPI 感知（Windows）。不开的话,Windows 显示缩放
+# (125%/150%) 下 mss 截的是物理像素、pyautogui 用的是逻辑坐标 —— 模型
+# 从截图里读出的坐标点下去会按缩放比例偏移（经典"点不准"根因）。开了
+# 之后两边都是物理像素,坐标系对齐。幂等;非 Windows no-op;失败静默
+# （screen_capture 会回报 click_scale 让模型自行换算,双保险）。
+_dpi_aware_attempted = False
+
+
+def _ensure_dpi_aware() -> None:
+    global _dpi_aware_attempted
+    if _dpi_aware_attempted or platform.system() != "Windows":
+        _dpi_aware_attempted = True
+        return
+    _dpi_aware_attempted = True
+    try:
+        import ctypes
+        try:
+            # PROCESS_PER_MONITOR_DPI_AWARE = 2 (Win 8.1+)
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:  # noqa: BLE001 — older Windows / already set
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _pg_install_hint(exc: ImportError) -> str:
