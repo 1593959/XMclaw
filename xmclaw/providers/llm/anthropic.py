@@ -274,13 +274,25 @@ class AnthropicLLM(LLMProvider):
             ]
             raw_parts = [p for p in raw_parts if p]
             if len(raw_parts) >= 2:
+                # 4-breakpoint budget validation (audit 2026-06-11).
+                # Anthropic's API allows ≤4 cache_control blocks total
+                # across tools + system + messages. Excess breakpoints
+                # cause cache misses without API errors.
+                # budget: (len-1) system + 1 tools = len total.
+                _MAX_BREAKPOINTS = 4
+                _sys_bp_count = len(raw_parts) - 1
+                if _sys_bp_count + 1 > _MAX_BREAKPOINTS:
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).warning(
+                        "anthropic.cache_breakpoints_over_budget "
+                        "system=%d tools=1 max=%d — excess will be "
+                        "silently ignored by the API",
+                        _sys_bp_count, _MAX_BREAKPOINTS,
+                    )
                 system_blocks: list[dict[str, Any]] = []
                 for i, part in enumerate(raw_parts):
                     block: dict[str, Any] = {"type": "text", "text": part}
-                    # Every part EXCEPT the last gets cache_control.
-                    # Anthropic supports up to 4 breakpoints; we use
-                    # ≤ (parts - 1) here + 1 for tools.
-                    if i < len(raw_parts) - 1:
+                    if i < len(raw_parts) - 1 and i < _MAX_BREAKPOINTS - 1:  # -1 for tools
                         block["cache_control"] = {"type": "ephemeral"}
                     system_blocks.append(block)
                 AnthropicLLM._mark_history_cache_breakpoint(converted)

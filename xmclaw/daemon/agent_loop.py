@@ -2742,6 +2742,21 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         except Exception:
             pass
 
+        # Cache fingerprint (audit 2026-06-11): log the hash of the
+        # cacheable system prompt prefix. If this hash changes between
+        # turns, the cache has been invalidated — the fingerprint helps
+        # operators detect prefix drift (e.g. non-deterministic tool
+        # descriptions, timestamp injection, varying persona sections).
+        try:
+            import hashlib
+            _fp = hashlib.sha256(
+                "\n\n".join(_parts).encode("utf-8")
+            ).hexdigest()[:12]
+            from xmclaw.utils.log import get_logger as _gfl
+            _gfl(__name__).debug("cache_prefix_fingerprint hash=%s parts=%d", _fp, len(_parts))
+        except Exception:
+            pass
+
         system_content = (
             "\n\n" + CACHE_BREAKPOINT_MARKER + "\n\n"
             + _working_context_block
