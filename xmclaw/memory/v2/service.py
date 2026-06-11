@@ -109,18 +109,32 @@ async def _scan_all(
     """
     all_facts: list[Fact] = []
     last_ts: float | None = None
+    last_id: str | None = None
+    seen_ids: set[str] = set()
     while True:
         batch_where = where or ""
         if last_ts is not None:
-            ts_clause = f"ts_last < {last_ts}"
+            # P1-4 fix (audit 2026-06-11): use (ts_last, id) composite cursor
+            # instead of bare ts_last < last_ts. Previously facts with the
+            # same timestamp at the batch boundary were silently skipped.
+            ts_clause = (
+                f"(ts_last < {last_ts} OR "
+                f"(ts_last = {last_ts} AND id < '{last_id}'))"
+            )
             batch_where = f"{batch_where} AND {ts_clause}" if batch_where else ts_clause
         batch = await self._vec.search(
             None, where=batch_where or None, limit=batch_size,
         )
         if not batch:
             break
-        all_facts.extend(batch)
+        new_facts = [f for f in batch if f.id not in seen_ids]
+        if not new_facts:
+            break
+        all_facts.extend(new_facts)
+        for f in new_facts:
+            seen_ids.add(f.id)
         last_ts = min(f.ts_last for f in batch)
+        last_id = min(f.id for f in batch if f.ts_last == last_ts)
         if len(batch) < batch_size:
             break
     return all_facts
@@ -1343,7 +1357,7 @@ class MemoryService:
                     f"kind = '{kind}' AND scope = '{scope}' "
                     f"AND superseded_by = ''"
                 ),
-                limit=3,
+                limit=5,  # P0-1 audit 2026-06-11: was 3, now 5 for correction coverage
             )
         except Exception as exc:  # noqa: BLE001
             _log.warning("memory_service.near_dup_search_failed err=%s", exc)
@@ -2439,6 +2453,24 @@ class MemoryService:
                         "results=%d", len(bm25_results),
                     )
 
+        # P1-5 (audit 2026-06-11): entity-linking enhanced recall.
+        # Extract entities from the query and seed candidates from facts
+        # linked to those entities. HippoRAG (arXiv:2405.14831) shows PPR
+        # from entity seeds improves recall by 20% on multi-hop queries.
+        _entity_facts: set[str] = set()
+        if isinstance(query, str) and len(query) > 4:
+            try:
+                from xmclaw.memory.v2.entity_linking import EntityLinker
+                _linker = getattr(self, "_entity_linker", None)
+                if _linker is None and hasattr(self, "_ensure_entity_linker"):
+                    _linker = self._ensure_entity_linker()
+                if _linker is not None:
+                    _ents = _linker.extract_query_entities(query)
+                    if _ents:
+                        _entity_facts = _linker.seed_facts(_ents)
+            except Exception:
+                pass
+
         # Fallback: per-query corpus scan + build (legacy path).
         if bm25_results is None:
             # Build a corpus snapshot for BM25. Cap so 100K-fact stores
@@ -3209,10 +3241,13 @@ class MemoryService:
                 self.dropped = 0
 
             def _cost(self, text: str) -> int:
-                # Safe upper-bound: 1 char ≈ 1 token for CJK;
-                # English words average slightly less but len(text)
-                # is a cheap conservative estimate.
-                return len(text)
+                # P0-2 fix (audit 2026-06-11): CJK-aware token estimator.
+                # CJK chars ≈ 1 token, ASCII ≈ 1 token per ~4 chars.
+                # Previously len(text) overestimated English by 4×,
+                # severely underutilizing the 4000-char budget for EN content.
+                _cjk = sum(1 for c in text if "一" <= c <= "鿿" or "぀" <= c <= "ヿ")
+                _ascii = len(text) - _cjk
+                return _cjk + max(1, _ascii // 4)
 
             def fit(self, text: str) -> bool:
                 return self.used + self._cost(text) <= self.budget
