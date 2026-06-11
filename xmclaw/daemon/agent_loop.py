@@ -2686,6 +2686,21 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 _parts.append(_style_prompt)
         except Exception:  # noqa: BLE001 — never block a turn over styles
             pass
+
+        # Research-backed prompt structure (audit 2026-06-11):
+        # ReAct framework (Yao et al., arXiv:2210.03629) + few-shot
+        # examples (Brown et al., arXiv:2005.14165). Placed in the
+        # cacheable system prefix so they don't break cache hits.
+        try:
+            from xmclaw.daemon.prompt_engineering import (
+                REACT_FRAMEWORK, REACT_EXAMPLES, OUTPUT_GUIDELINES,
+            )
+            _parts.append(REACT_FRAMEWORK.strip())
+            _parts.append(REACT_EXAMPLES.strip())
+            _parts.append(OUTPUT_GUIDELINES.strip())
+        except Exception:  # noqa: BLE001
+            pass
+
         if autobio_block:
             _parts.append(autobio_block)
         # Wave-32+ P3 feedback closure: surface the last few
