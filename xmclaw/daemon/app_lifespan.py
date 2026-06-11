@@ -147,6 +147,24 @@ def make_lifespan(
             except Exception as exc:  # noqa: BLE001
                 log.warning("journal_retention.start_failed err=%s", exc)
 
+        # F1 (2026-05-30): per-session live workspace manager. Subscribes
+        # to TOOL_INVOCATION_FINISHED, filters side_effects under each
+        # session's workspace dir, auto-commits to a per-workspace git
+        # repo, republishes a typed WORKSPACE_FILE_CHANGED event the
+        # chat-page WorkspacePanel renders. Pure side-effect observer —
+        # never blocks tool execution.
+        try:
+            from xmclaw.daemon.workspace_manager import WorkspaceManager
+            if bus is not None:
+                _workspace_manager = WorkspaceManager(bus=bus)
+                _workspace_manager.start()
+                _app.state.workspace_manager = _workspace_manager
+            else:
+                _app.state.workspace_manager = None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("workspace_manager.init_failed err=%s", exc)
+            _app.state.workspace_manager = None
+
         # Cron tick: only start once the primary agent is live; without
         # it run_turn would have nowhere to land. Wraps a per-tick
         # session_id ('cron:<job_id>:<ts>') so cron output is searchable
@@ -3477,6 +3495,22 @@ def make_lifespan(
                 )
                 proactive_agent = None
 
+        # Cognitive wiring (audit 2026-06-11): start ReflectionCycle +
+        # optional PerceptionBus/GoalGenerator. Previously the wiring gap
+        # left these fully-implemented modules disconnected at startup.
+        # ProactiveAgent is wired separately above; this starts the rest.
+        try:
+            from xmclaw.cognition.cognitive_wiring import start_cognition
+            _cog_tasks = await start_cognition(
+                _app, config if isinstance(config, dict) else {},
+                agent=agent,
+            )
+            if _cog_tasks:
+                _app.state.cognitive_tasks = _cog_tasks
+                log.info("cognition.wiring started: %d subsystems", len(_cog_tasks))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cognition.wiring.failed err=%s", exc)
+
         # Wave-27 fix-LAT2: spin up the persistent IPython kernel pool
         # used by ``code_python`` so the LLM gets Jupyter-style state
         # across calls instead of "every snippet is a fresh process".
@@ -3568,6 +3602,14 @@ def make_lifespan(
                     await proactive_agent.stop()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
+            # Stop cognitive wiring (audit 2026-06-11)
+            _cog_tasks = getattr(_app.state, "cognitive_tasks", None)
+            if _cog_tasks:
+                from xmclaw.cognition.cognitive_wiring import stop_cognition
+                try:
+                    await stop_cognition(_cog_tasks)
+                except Exception as exc:
+                    log.warning("cognition.stop_failed err=%s", exc)
             # Close intent_store (short-connection mode: no-op, but keeps
             # the lifecycle contract explicit).
             _intent_store = getattr(_app.state, "intent_engine", None)
