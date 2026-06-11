@@ -142,6 +142,10 @@ lib64/
 # Web UI lib/ folder is part of the static scaffold, not a Python build artifact.
 !xmclaw/daemon/static/lib/
 !xmclaw/daemon/static/lib/**
+# Phase 10: webui 前端源码同理豁免（历史教训：M1/M2 的 webui/src/lib/
+# 被上面的 lib/ 规则静默吞掉，fresh clone 构建失败）
+!webui/src/lib/
+!webui/src/lib/**
 parts/
 sdist/
 var/
