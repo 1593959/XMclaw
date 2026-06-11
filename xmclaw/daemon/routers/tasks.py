@@ -1,0 +1,189 @@
+"""Tasks API — Mission Control 的任务聚合视图（Phase 10.M1.3）。
+
+Mounted at ``/api/v2/tasks``. 只读聚合：任务不是新的存储实体，而是对
+既有事实（SessionStore 会话 × 事件流里的 plan_*/todo_updated/
+agent_asked_question/llm_response）的投影。增量更新走既有 WS 事件，
+本端点只服务启动水化（设计规格 docs/MISSION_CONTROL_DESIGN_2026.md §2.2）。
+
+状态推导（启发式，按优先级）：
+    awaiting_input  有未回答的 ask_user_question（asked > answered）
+    running         最后事件是非终态执行事件且足够新（< STALE_S）
+    failed          最后的 plan_failed / llm_response ok=false
+    done            出现过 plan_completed，或最后 llm_response 正常收尾
+    chat            没有任何 plan/todo 信号的纯对话
+
+不动 AgentLoop；bus 不可查询（无持久化后端）时退化为纯 session 列表。
+"""
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from fastapi import APIRouter, Request
+from starlette.responses import JSONResponse
+
+from xmclaw.daemon.session_store import SessionStore, is_internal_session_id
+from xmclaw.utils.paths import default_sessions_db_path
+
+router = APIRouter(prefix="/api/v2/tasks", tags=["tasks"])
+
+# 最后执行事件多旧之后不再算 running（daemon 重启/断流的兜底）。
+STALE_S = 180.0
+
+# 参与状态推导的事件类型（一次 IN 查询全取，按时间升序）。
+_SALIENT_TYPES = [
+    "plan_started",
+    "plan_step_started",
+    "plan_step_completed",
+    "plan_step_failed",
+    "plan_completed",
+    "plan_failed",
+    "todo_updated",
+    "agent_asked_question",
+    "user_answered_question",
+    "llm_request",
+    "llm_response",
+    "tool_call_emitted",
+    "tool_invocation_finished",
+    "task_state_changed",
+]
+
+_RUNNING_TAIL = {
+    "llm_request",
+    "tool_call_emitted",
+    "tool_invocation_finished",
+    "plan_step_started",
+    "plan_started",
+}
+
+
+def _store() -> SessionStore | None:
+    try:
+        return SessionStore(default_sessions_db_path())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _derive(events: list[Any], now: float) -> dict[str, Any]:
+    """从一个 session 的事件序列推导任务快照字段。"""
+    asked = 0
+    answered = 0
+    plan_total = 0
+    plan_done = 0
+    todo_total = 0
+    todo_done = 0
+    saw_plan_or_todo = False
+    plan_terminal: str | None = None
+    last_type = ""
+    last_ts = 0.0
+    last_resp_ok: bool | None = None
+    last_resp_more_hops = False
+
+    for ev in events:
+        raw_t = getattr(ev, "type", "")
+        t = str(getattr(raw_t, "value", raw_t) or "")  # EventType enum 或裸 str 都接受
+        payload = getattr(ev, "payload", None) or {}
+        ts = float(getattr(ev, "ts", 0.0) or 0.0)
+        last_type, last_ts = t, ts
+        if t == "agent_asked_question":
+            asked += 1
+        elif t == "user_answered_question":
+            answered += 1
+        elif t == "plan_started":
+            saw_plan_or_todo = True
+            plan_total = int(payload.get("n_steps") or len(payload.get("step_ids") or []))
+            plan_done = 0
+            plan_terminal = None
+        elif t == "plan_step_completed":
+            plan_done += 1
+        elif t in ("plan_completed", "plan_failed"):
+            plan_terminal = str(payload.get("status") or ("failed" if t == "plan_failed" else "completed"))
+        elif t == "todo_updated":
+            saw_plan_or_todo = True
+            items = payload.get("items") or []
+            if isinstance(items, list):
+                todo_total = len(items)
+                todo_done = sum(
+                    1 for it in items
+                    if isinstance(it, dict) and it.get("status") == "completed"
+                )
+        elif t == "llm_response":
+            last_resp_ok = payload.get("ok") is not False
+            last_resp_more_hops = bool(payload.get("tool_calls_count") or 0)
+
+    steps_total = plan_total or todo_total
+    steps_done = plan_done if plan_total else todo_done
+
+    if asked > answered:
+        status = "awaiting_input"
+    elif last_type in _RUNNING_TAIL and (now - last_ts) < STALE_S:
+        status = "running"
+    elif last_type == "llm_response" and last_resp_more_hops and (now - last_ts) < STALE_S:
+        status = "running"
+    elif plan_terminal == "failed" or last_resp_ok is False:
+        status = "failed"
+    elif plan_terminal in ("completed", "repaired"):
+        status = "done"
+    elif saw_plan_or_todo and steps_total > 0 and steps_done >= steps_total:
+        status = "done"
+    elif not saw_plan_or_todo:
+        status = "chat"
+    else:
+        status = "done" if last_resp_ok else "chat"
+
+    return {
+        "status": status,
+        "steps_total": steps_total,
+        "steps_done": steps_done,
+        "last_activity": last_type,
+        "updated_at": last_ts,
+    }
+
+
+@router.get("")
+async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
+    """任务快照列表，最近活动倒序。bus 不可查询时退化为 chat 态列表。"""
+    store = _store()
+    if store is None:
+        return JSONResponse({"tasks": [], "error": "session_store unavailable"})
+    requested = max(1, min(int(limit), 100))
+    try:
+        rows = store.list_recent(limit=min(200, requested * 4))
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"tasks": [], "error": str(exc)})
+    rows = [
+        r for r in rows
+        if not is_internal_session_id(str(r.get("session_id") or ""))
+    ][:requested]
+
+    bus = getattr(request.app.state, "bus", None)
+    can_query = bus is not None and hasattr(bus, "query")
+    now = time.time()
+
+    tasks: list[dict[str, Any]] = []
+    for r in rows:
+        sid = str(r.get("session_id") or "")
+        preview = str(r.get("preview") or "")
+        snap: dict[str, Any] = {
+            "sid": sid,
+            "title": (preview[:60] or sid),
+            "status": "chat",
+            "steps_total": 0,
+            "steps_done": 0,
+            "updated_at": float(r.get("updated_at") or 0.0),
+            "last_activity": "",
+        }
+        if can_query:
+            try:
+                events = bus.query(session_id=sid, types=_SALIENT_TYPES, limit=500)
+                if events:
+                    derived = _derive(events, now)
+                    # session 行的 updated_at 比事件流晚（持久化在后），取较大者。
+                    derived["updated_at"] = max(derived["updated_at"], snap["updated_at"])
+                    snap.update(derived)
+            except Exception:  # noqa: BLE001
+                pass  # 单 session 推导失败不拖垮整个列表
+        tasks.append(snap)
+
+    tasks.sort(key=lambda t: t["updated_at"], reverse=True)
+    return JSONResponse({"tasks": tasks})

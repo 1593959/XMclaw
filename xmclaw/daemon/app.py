@@ -597,6 +597,10 @@ def create_app(
     from xmclaw.daemon.routers import metrics as _metrics_router  # P1-3 2026-05-29
     from xmclaw.daemon.routers import openai_compat as _openai_compat_router  # P2-1 2026-05-29
     from xmclaw.daemon.routers import sync as _sync_router  # Sprint 2 Wave 13
+    from xmclaw.daemon.routers import (
+        session_workspaces as _session_workspaces_router,  # F1 2026-05-30
+    )
+    from xmclaw.daemon.routers import tasks as _tasks_router  # Phase 10.M1.3
     app.include_router(_files_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
@@ -622,6 +626,8 @@ def create_app(
     app.include_router(_metrics_router.router)  # P1-3 — Prometheus /metrics
     app.include_router(_openai_compat_router.router)  # P2-1 — /v1/chat/completions
     app.include_router(_sync_router.router)  # Sprint 2 Wave 13
+    app.include_router(_tasks_router.router)  # Phase 10.M1.3 — Mission Control 任务聚合
+    app.include_router(_session_workspaces_router.router)  # F1 — per-session live workspace
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
     # (the upstream agent multi-agent convention #1). Stays a no-op for the
@@ -1812,6 +1818,40 @@ def create_app(
             name="ui",
         )
 
+    # ── /ui-next/ — Mission Control (Phase 10) ──
+    # Vite 构建产物（webui/ 源码 → xmclaw/daemon/webui_dist/，提交进
+    # git）。产物文件名带内容哈希，不需要旧 UI 的 BOOT_VERSION 重写；
+    # 只有 index.html 本身要 no-store，否则切版本后浏览器拿旧壳。
+    # M3 验收通过后 /ui/ 切到这里，旧 static/ 退役。
+    _webui_dist = Path(__file__).parent / "webui_dist"
+    if (_webui_dist / "index.html").is_file():
+        _webui_root = _webui_dist.resolve()
+        _UI_NEXT_NO_STORE = {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        }
+
+        @app.get("/ui-next/{spa_path:path}", response_model=None)
+        async def ui_next_spa(spa_path: str):
+            if spa_path:
+                candidate = (_webui_dist / spa_path).resolve()
+                try:
+                    candidate.relative_to(_webui_root)
+                except ValueError:
+                    return FileResponse(
+                        str(_webui_dist / "index.html"), headers=_UI_NEXT_NO_STORE,
+                    )
+                if candidate.is_file():
+                    # 哈希命名的 assets 可永久缓存；其余文件保守 no-store。
+                    if "assets/" in spa_path:
+                        return FileResponse(
+                            str(candidate),
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+                        )
+                    return FileResponse(str(candidate), headers=_UI_NEXT_NO_STORE)
+            return FileResponse(
+                str(_webui_dist / "index.html"), headers=_UI_NEXT_NO_STORE,
+            )
+
         # B-MULTIMODAL-UI: serve screenshots saved by screen_capture /
         # screen_region_capture / image_read / camera_capture so the
         # chat UI can <img src="/api/v2/media/<filename>"> them.
@@ -2116,10 +2156,94 @@ def create_app(
         ))
         await bus.drain()
 
-        try:
+        # 2026-06-11: dedicated reader task + control-frame fast path.
+        # Pre-fix the receive loop awaited ``run_turn`` inline, so while
+        # a turn was in flight NO client frame was read — the
+        # QuestionCard's ``answer_question`` and the Stop button's
+        # ``cancel`` sat unread in the socket buffer until the 180s tool
+        # wall-clock killed ask_user_question. User-visible: every
+        # option click "took minutes" and was then ignored (the future
+        # was already dead when the frame finally got read). Now a
+        # standalone reader drains the socket continuously: control
+        # frames are handled the moment they arrive; everything else is
+        # queued for the serial loop below, preserving the old
+        # one-turn-at-a-time ordering. ``None`` = disconnect sentinel.
+        import asyncio as _aio
+        _frame_q: "_aio.Queue[dict | None]" = _aio.Queue()
+        _CONTROL_FRAME_TYPES = ("cancel", "answer_question")
+
+        async def _handle_control_frame(frame: dict) -> None:
+            # B-38: cancel frame — Stop button in Chat sends
+            # ``{"type": "cancel"}`` while a turn is in flight. Sets
+            # the AgentLoop's per-session event so the run_turn hop
+            # loop bails at the next boundary, and cancels any pending
+            # ask_user_question future so a turn blocked on an
+            # unanswered question unwinds immediately.
+            if frame.get("type") == "cancel":
+                cancelled = False
+                if active_agent is not None:
+                    try:
+                        cancelled = active_agent.cancel_session(session_id)
+                    except Exception:  # noqa: BLE001
+                        cancelled = False
+                try:
+                    from xmclaw.providers.tool.builtin import (
+                        cancel_pending_questions,
+                    )
+                    cancel_pending_questions(session_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                await bus.publish(make_event(
+                    session_id=session_id, agent_id="daemon",
+                    type=EventType.SESSION_LIFECYCLE,
+                    payload={
+                        "phase": "cancel_requested",
+                        "active": cancelled,
+                    },
+                ))
+                await bus.drain()
+            # B-92: answer_question frame — UI's QuestionCard sends
+            # ``{"type": "answer_question", "question_id": "...",
+            # "value": "..."}`` when the user clicks an option.
+            # Resolves the in-flight Future inside the
+            # ask_user_question tool handler so the agent's tool
+            # invocation unblocks and the run_turn loop continues.
+            # ``value`` is a string (single-select / Other) or a
+            # list of strings (multi-select).
+            elif frame.get("type") == "answer_question":
+                qid = frame.get("question_id")
+                value = frame.get("value")
+                resolved = False
+                if isinstance(qid, str) and qid and value is not None:
+                    try:
+                        from xmclaw.providers.tool.builtin import (
+                            resolve_pending_question,
+                        )
+                        resolved = resolve_pending_question(qid, value)
+                    except Exception:  # noqa: BLE001
+                        resolved = False
+                # Re-broadcast the answer so the chat transcript +
+                # event log replay can show what the user picked.
+                # Always publish (even on stale answer) so the UI
+                # has something to clear the QuestionCard with.
+                await bus.publish(make_event(
+                    session_id=session_id, agent_id="user",
+                    type=EventType.USER_ANSWERED_QUESTION,
+                    payload={
+                        "question_id": qid or "",
+                        "value": value,
+                        "resolved": resolved,
+                    },
+                ))
+                await bus.drain()
+
+        async def _ws_reader() -> None:
             while True:
                 try:
                     raw = await ws.receive_text()
+                except WebSocketDisconnect:
+                    await _frame_q.put(None)
+                    return
                 except RuntimeError as exc:
                     # B-23: client disconnected before the server's
                     # accept() handshake fully completed (rare race
@@ -2127,8 +2251,9 @@ def create_app(
                     # ``RuntimeError("WebSocket is not connected. Need
                     # to call "accept" first.")`` — log nothing, exit
                     # the loop the same way as a clean disconnect.
+                    await _frame_q.put(None)
                     if "not connected" in str(exc).lower():
-                        break
+                        return
                     raise
                 try:
                     frame: Any = json.loads(raw)
@@ -2137,6 +2262,22 @@ def create_app(
                     continue
                 if not isinstance(frame, dict):
                     continue
+                if frame.get("type") in _CONTROL_FRAME_TYPES:
+                    try:
+                        await _handle_control_frame(frame)
+                    except Exception:  # noqa: BLE001 — control frame must not kill the socket
+                        pass
+                    continue
+                await _frame_q.put(frame)
+
+        _reader_task = _aio.create_task(
+            _ws_reader(), name=f"xmclaw-ws-reader-{session_id}",
+        )
+        try:
+            while True:
+                frame = await _frame_q.get()
+                if frame is None:
+                    break
                 # Frame shape: {"type": "user", "content": "...",
                 #                "ultrathink": bool?}
                 if frame.get("type") == "user":
@@ -2391,26 +2532,9 @@ def create_app(
                             correlation_id=user_corr,
                         ))
                         await bus.drain()
-                # B-38: handle cancel frame — Stop button in Chat
-                # sends ``{"type": "cancel"}`` while a turn is in
-                # flight. Sets the AgentLoop's per-session event so
-                # the run_turn hop loop bails at the next boundary.
-                # No-op when no turn is running.
-                elif frame.get("type") == "cancel":
-                    if active_agent is not None:
-                        try:
-                            cancelled = active_agent.cancel_session(session_id)
-                        except Exception:  # noqa: BLE001
-                            cancelled = False
-                        await bus.publish(make_event(
-                            session_id=session_id, agent_id="daemon",
-                            type=EventType.SESSION_LIFECYCLE,
-                            payload={
-                                "phase": "cancel_requested",
-                                "active": cancelled,
-                            },
-                        ))
-                        await bus.drain()
+                # ``cancel`` / ``answer_question`` are control frames —
+                # handled inside ``_ws_reader`` so they take effect even
+                # while a turn is blocking this loop.
                 # B-106: undo frame — drop the last user/assistant pair
                 # from history. Used by /undo slash command. Echoes a
                 # SESSION_LIFECYCLE event back so the UI can flush the
@@ -2435,44 +2559,11 @@ def create_app(
                         },
                     ))
                     await bus.drain()
-                # B-92: handle answer_question frame — UI's QuestionCard
-                # sends ``{"type": "answer_question", "question_id": "...",
-                # "value": "..."}`` when the user clicks an option.
-                # Resolves the in-flight Future inside the
-                # ask_user_question tool handler so the agent's tool
-                # invocation unblocks and the run_turn loop continues.
-                # ``value`` is a string (single-select / Other) or a
-                # list of strings (multi-select).
-                elif frame.get("type") == "answer_question":
-                    qid = frame.get("question_id")
-                    value = frame.get("value")
-                    resolved = False
-                    if isinstance(qid, str) and qid and value is not None:
-                        try:
-                            from xmclaw.providers.tool.builtin import (
-                                resolve_pending_question,
-                            )
-                            resolved = resolve_pending_question(qid, value)
-                        except Exception:  # noqa: BLE001
-                            resolved = False
-                    # Re-broadcast the answer so the chat transcript +
-                    # event log replay can show what the user picked.
-                    # Always publish (even on stale answer) so the UI
-                    # has something to clear the QuestionCard with.
-                    await bus.publish(make_event(
-                        session_id=session_id, agent_id="user",
-                        type=EventType.USER_ANSWERED_QUESTION,
-                        payload={
-                            "question_id": qid or "",
-                            "value": value,
-                            "resolved": resolved,
-                        },
-                    ))
-                    await bus.drain()
                 # Other frame types are silently ignored for now.
         except WebSocketDisconnect:
             pass
         finally:
+            _reader_task.cancel()
             sub.cancel()
             # B-348: only deregister if WE are still the registered
             # active WS for this session. If a newer tab already

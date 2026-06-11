@@ -2220,11 +2220,11 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.M1 Web 骨架
 
-- [ ] **10.M1.1 脚手架**：`webui/` Vite 6 + React 19 + TS + Tailwind 4 + shadcn/ui + zustand；构建产物 → `xmclaw/daemon/webui_dist/`（提交进 git）；daemon 挂载 `/ui-next/`；`vite dev` 反代 `/api` + `/agent` WS。
-- [ ] **10.M1.2 数据层移植**：`lib/ws.js`（重连补发/队列冲洗）+ chat reducer（历史水化/pending question 恢复/取消回合追踪）按语义移植为 TS，WS 协议零改动。
-- [ ] **10.M1.3 任务聚合 router**：`GET /api/v2/tasks` 只读聚合（session × plan/todo/approval/cron/sleep 事件 → 任务快照）；增量走既有 WS 事件，不动 AgentLoop。
-- [ ] **10.M1.4 三栏布局**：任务栏 / 任务视图 / 工作区骨架 + HUD；跨前后端测试（TestClient 真实 URL + dist 可达性）。
-- [ ] **10.M1.5 CI**：`webui-build` job（npm ci + build + diff 校验 dist 一致性）。
+- [x] **10.M1.1 脚手架**：`webui/` Vite 6 + React 19 + TS + Tailwind 4 + zustand（shadcn/ui 推迟到 M2 组件需要时引入）；构建产物 → `xmclaw/daemon/webui_dist/`（提交进 git，gzip ~70KB）；daemon 挂载 `/ui-next/`（SPA fallback + 哈希 asset immutable 缓存）；`vite dev` 反代 `/api` + `/agent` WS。
+- [x] **10.M1.2 数据层移植**：`webui/src/lib/{ws,api,reducer}.ts` + `store/app.ts`——重连补发/队列冲洗（B-13）、seq 去重、取消回合守卫（B-269）、工具事件乱序竞态（B-267）、call_id 键名（B-232）、弃流收尾（B-89）、多 hop 不清 pending、截断 finalText 不覆盖流式文本、历史水化（B-60）、pending question 恢复（B-99）、空鬼泡渲染守卫（B-220 对位）全部按语义移植；WS 协议零改动。
+- [x] **10.M1.3 任务聚合 router**：`routers/tasks.py` `GET /api/v2/tasks` 只读聚合（SessionStore × bus.query plan/todo/审批/llm 事件 → 状态启发式推导）；bus 不可查询时优雅退化为 chat 态列表；不动 AgentLoop。
+- [x] **10.M1.4 三栏布局**：HUD（模型/成本/记忆/连接态）+ 任务栏（状态徽章，/api/v2/tasks 404 时退化本地 sid 列表）+ 计划步骤条（plan_*/todo_updated 双源）+ 活动时间线（用户/陈述/折叠思考块/通用工具卡/内联审批卡）+ 指挥通道（Enter 发送/Esc 打断）+ 工作区四标签骨架（文件树已接 session_workspaces API）；15 个跨前后端测试（_derive 启发式 ×10 + TestClient 真实 URL ×5）。
+- [x] **10.M1.5 CI**：python-ci.yml 新增 `webui-build` job（npm ci + build + git diff 校验 dist 与源码一致）；ui lane 收编 webui/** + webui_dist/** + routers/tasks.py。
 
 ### 10.M2 执行视图
 
@@ -2259,6 +2259,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 - 2026-06-11: Phase 10 立项（commit d13bbd2）。M0 完成：设计文档 + 三项方向决策 + ADR-010 + 用户视觉方向认可。下一步 10.M1 Web 骨架。
 - 2026-06-11: 设计补充（用户出 Claude Code diff 卡截图点名要求）：工具卡按类型特化渲染入规格（设计文档新增 §2.3.1，M2 新增 10.M2.1b + 对应验收项）。file_edit 内联语法高亮 diff 卡是 M2 核心验收观感。
+- 2026-06-11: **10.M1 完成**（本 commit）。webui/ 脚手架 + 数据层 TS 移植（11 个历史 bug 修复语义全保留）+ /api/v2/tasks 聚合 router + 三栏布局 + /ui-next/ 挂载 + CI webui-build 闸。15 个新测试全绿。**实测验证**：vite dev 反代到运行中的真 daemon——WS 握手、HUD 实数据（模型/记忆数）、发消息 → 流式回复 + 折叠思考块渲染、任务栏对旧 daemon（无 /api/v2/tasks）优雅降级，零控制台错误；顺手修了空鬼泡（渲染层守卫）+ 窄视口侧栏挤压（响应式折叠）。下一步 10.M2 执行视图。
 
 ---
 

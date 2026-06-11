@@ -19,6 +19,8 @@ on:
       - '.github/workflows/python-ci.yml'
       - 'scripts/test_lanes.yaml'
       - 'scripts/test_changed.py'
+      - 'webui/**'
+      - 'xmclaw/daemon/webui_dist/**'
   pull_request:
     paths:
       - '**.py'
@@ -28,9 +30,58 @@ on:
       - '.github/workflows/python-ci.yml'
       - 'scripts/test_lanes.yaml'
       - 'scripts/test_changed.py'
+      - 'webui/**'
+      - 'xmclaw/daemon/webui_dist/**'
   workflow_dispatch:
 
 jobs:
+  # Phase 10.M1.5 — Mission Control 前端构建一致性闸。
+  # webui_dist/ 是提交进 git 的构建产物（最终用户零 Node）；这里重建
+  # 一遍并 diff，防止"改了 webui/ 源码忘了 npm run build"的漂移。
+  webui-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect webui changes
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if git diff --quiet "$BASE" HEAD -- webui/ xmclaw/daemon/webui_dist/ 2>/dev/null; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build webui
+        if: steps.changed.outputs.run == 'true'
+        working-directory: webui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Verify dist matches source
+        if: steps.changed.outputs.run == 'true'
+        run: |
+          if ! git diff --exit-code -- xmclaw/daemon/webui_dist/; then
+            echo "::error::webui_dist/ 与 webui/ 源码不一致 — 本地跑 'npm run build' 并提交产物"
+            exit 1
+          fi
+
   lint-and-test:
     # Anti-req #14: the v2 runtime must work on Windows / macOS / Linux.
     # Matrix makes "cross-platform" a CI claim, not just a docstring

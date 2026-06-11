@@ -103,9 +103,11 @@ lanes:
       - "xmclaw/daemon/multi_agent_manager.py"
       - "xmclaw/daemon/agent_context.py"
       - "xmclaw/daemon/evolution_agent.py"
+      - "xmclaw/daemon/workspace_manager.py"
       - "xmclaw/core/agent_context.py"
       - "xmclaw/daemon/routers/**"
     tests:
+      - tests/unit/test_v2_session_workspaces.py
       - tests/unit/test_v2_daemon_factory.py
       - tests/unit/test_v2_daemon_lifecycle.py
       - tests/unit/test_v2_memory_retention.py
@@ -275,9 +277,14 @@ lanes:
       - "xmclaw/daemon/static/**"
       - "scripts/fetch_vendor.py"
       - "docs/FRONTEND_DESIGN.md"
+      # Phase 10 Mission Control：源码 + 构建产物 + 任务聚合 router
+      - "webui/**"
+      - "xmclaw/daemon/webui_dist/**"
+      - "xmclaw/daemon/routers/tasks.py"
     tests:
       - tests/unit/test_v2_ui_scaffold.py
       - tests/unit/test_v2_phase9_canvas_bridge.py
+      - tests/unit/test_v2_phase10_mission_control.py
 
   # Deployment templates (Epic #19). Cheap parse + drift checks on
   # Dockerfile / compose / fly.toml / systemd unit / launchd plist /

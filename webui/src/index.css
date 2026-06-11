@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+/* Mission Control 设计 token（暗色优先，对应设计稿） */
+@theme {
+  --color-mc-bg: #0b0e14;
+  --color-mc-panel: #11151f;
+  --color-mc-panel2: #161b28;
+  --color-mc-border: #1e2433;
+  --color-mc-text: #e2e8f0;
+  --color-mc-muted: #94a3b8;
+  --color-mc-faint: #64748b;
+  --color-mc-accent: #8b5cf6;
+  --color-mc-accent-dim: #6d28d9;
+  --color-mc-ok: #34d399;
+  --color-mc-warn: #fbbf24;
+  --color-mc-err: #f87171;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-mc-bg);
+  color: var(--color-mc-text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-mc-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
