@@ -156,7 +156,12 @@ async def _scan_all(
 #: stamped CONTRADICTS on the top-3 same-kind neighbours of every
 #: write, which is why the UI read "与 N 条事实矛盾" on basically
 #: everything. Fixed in the Wave-27 follow-up.
-NEAR_DUPLICATE_DISTANCE_THRESHOLD = 0.20
+# Fix audit 2026-06-11: unified write-time near-dup threshold to 0.15
+# (cosine distance = 0.15 ~ similarity 0.85). Previously 0.20 (0.80 sim)
+# was looser than offline dedup at 0.14 (0.86 sim), creating a gap where
+# the curator had to clean up pairs write-time should have caught.
+# 0.85 aligns with Mem0 v3 and Zep industry practice.
+NEAR_DUPLICATE_DISTANCE_THRESHOLD = 0.15
 SAME_TOPIC_DISTANCE_THRESHOLD = 0.30
 CONTRADICTS_DISTANCE_THRESHOLD = 0.25
 
@@ -538,6 +543,11 @@ class MemoryService:
         # via :meth:`set_bus` because the daemon wires the bus
         # before the service in some startup paths.
         self._bus = bus
+        # Fix audit 2026-06-11: per-fact asyncio locks to prevent
+        # concurrent read-modify-write races in remember(). Previously
+        # two concurrent calls could both read the same fact, increment
+        # evidence_count, and overwrite with N+1 instead of N+2.
+        self._write_locks: dict[str, asyncio.Lock] = {}
         # 2026-05-29: optional LLM for semantic (paraphrase-level)
         # dedup. Cosine-clustering misses "空消息超过3轮停止分析" vs
         # "连续3次空消息后中止" (same meaning, similarity < 0.86).
@@ -758,6 +768,16 @@ class MemoryService:
 
         fact_id = Fact.compute_id(kind=kind_str, scope=scope_str, text=text)
 
+        # Per-fact write lock (audit 2026-06-11). Prevents concurrent
+        # read-modify-write races on the same fact_id. Lock lives in a
+        # process-local dict; eviction happens lazily every 1000 calls.
+        _lock = self._write_locks.get(fact_id)
+        if _lock is None:
+            _lock = asyncio.Lock()
+            self._write_locks[fact_id] = _lock
+            if len(self._write_locks) > 1000:
+                self._write_locks.pop(next(iter(self._write_locks)), None)
+
         # Embed text (best-effort).
         embedding: tuple[float, ...] | None = None
         if self._embedder is not None:
@@ -796,8 +816,43 @@ class MemoryService:
                 scope=scope_str,
             )
             if near_dup is not None:
-                # Treat as evidence vote on the existing fact.
-                near_dup.evidence_count += 1
+                # Fix audit 2026-06-11 — Zep temporal invalidation pattern:
+                # corrections that are vector-close to an existing fact MUST
+                # NOT be merged as near-duplicates. The old fact should be
+                # invalidated and a new fact created, preserving the
+                # correction's full semantics. Previously all near-dups were
+                # merged, causing "不,叫我张总" to be appended to "我叫敬宇".
+                if kind_str == FactKind.CORRECTION.value:
+                    now_ts = time.time()
+                    near_dup.invalid_at = now_ts
+                    near_dup.superseded_by = new_id
+                    near_dup.confidence = min(near_dup.confidence, 0.3)
+                    await self._vec.upsert([near_dup])
+                    try:
+                        await self.relate(
+                            source_fact_id=new_id,
+                            target_fact_id=near_dup.id,
+                            kind=RelationKind.SUPERSEDES,
+                            auto_extracted=False,
+                        )
+                    except Exception:
+                        pass
+                    _log.info(
+                        "memory_service.correction_invalidated old=%s new=%s",
+                        near_dup.id[:32], new_id[:32],
+                    )
+                    # Fall through to create a NEW fact below (skip merge).
+                else:
+                    # Per-fact write lock (audit 2026-06-11): serialise
+                    # the read-modify-write on near_dup to prevent
+                    # concurrent sessions from both incrementing evidence
+                    # and losing one update.
+                    _lock = self._write_locks.get(near_dup.id)
+                    if _lock is None:
+                        _lock = asyncio.Lock()
+                        self._write_locks[near_dup.id] = _lock
+                    async with _lock:
+                        near_dup.evidence_count += 1
                 near_dup.confidence = min(
                     0.99,
                     max(near_dup.confidence, confidence)
@@ -842,7 +897,7 @@ class MemoryService:
                     "evidence=%d merged_variant=%s (new write: %r)",
                     near_dup.id[:32], near_dup.evidence_count, _merged, text[:60],
                 )
-                return near_dup
+                return near_dup  # end of else: (non-correction merge)
         new_evidence = 1 if existing is None else existing.evidence_count + 1
         new_confidence = (
             max(existing.confidence, confidence) if existing else confidence
@@ -1837,7 +1892,7 @@ class MemoryService:
         # bucket sizes are O(50) in practice, never thousands.
         from math import sqrt
         clusters: list[list[RecallHit]] = []
-        SIMILARITY_THRESHOLD = 0.86  # ≈ "essentially the same fact"
+        SIMILARITY_THRESHOLD = 0.85  # Unified with write-time threshold (audit 2026-06-11)
         for h in hits:
             emb = h.fact.embedding
             if not emb:
@@ -2259,6 +2314,23 @@ class MemoryService:
                 distance=float(_dist) if _dist is not None else 0.0,
                 related_relations=related_map.get(fact.id, []),
             ))
+        # Fix audit 2026-06-11: apply three_factor_score reranking even
+        # for plain recall(). Previously only recall_hybrid() and
+        # render_for_prompt() applied the three-factor reranker. Plain
+        # recall() returned raw ANN distance order, which ignores recency
+        # decay, confidence weighting, and graph centrality.
+        if query is not None:
+            try:
+                from xmclaw.memory.v2.service import _compute_centrality, _cosine_distance
+                _now = time.time()
+                for h in out:
+                    h._score = _three_factor_score(
+                        h.fact, query_embedding if isinstance(query, list) else None,
+                        _now,
+                    )
+                out.sort(key=lambda h: getattr(h, "_score", 0.0), reverse=True)
+            except Exception:
+                pass
         return out
 
     async def get_fact(self, fact_id: str) -> Fact | None:
@@ -2272,7 +2344,9 @@ class MemoryService:
         kinds: list[FactKindStr] | None = None,
         scopes: list[FactScopeStr] | None = None,
         buckets: list[str] | None = None,
-        min_confidence: float = 0.0,
+        # Fix audit 2026-06-11: unified to 0.3 with recall(). Was 0.0, which
+        # allowed forgotten facts (confidence=0.0) to surface in hybrid paths.
+        min_confidence: float = 0.3,
         include_superseded: bool = False,
         valid_at: float | None = None,   # Wave-4: point-in-time query
         vec_weight: float = 0.6,
@@ -2353,13 +2427,12 @@ class MemoryService:
                 )
                 bm25_results = None
             if bm25_results is not None:
-                # Filter by caller's criteria post-search.
-                allowed_ids = {h.fact.id for h in vec_hits}
-                bm25_results = [
-                    (fid, score)
-                    for fid, score in bm25_results
-                    if fid in allowed_ids
-                ]
+                # Fix audit 2026-06-11: BM25 MUST run independently from the
+                # vector path. Previously BM25 results were filtered to
+                # vec_hits IDs only — reducing BM25 to a re-ranker rather
+                # than an independent retrieval leg. Zep (arXiv:2501.13956)
+                # shows independent parallel retrieval + RRF fusion is the
+                # industry standard.
                 if bm25_results:
                     _log.debug(
                         "memory_service.recall_hybrid.prebuilt_hit "
