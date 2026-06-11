@@ -75,6 +75,7 @@ class BuiltinToolsWorktreeMixin:
             check = subprocess.run(
                 ["git", "-C", str(original_root), "rev-parse", "--is-inside-work-tree"],
                 capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace",
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             return _fail(call, t0, f"git unavailable: {exc}")
@@ -123,6 +124,7 @@ class BuiltinToolsWorktreeMixin:
         try:
             res = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
             )
         except subprocess.TimeoutExpired as exc:
             return _fail(call, t0, f"git worktree add timed out: {exc}")
@@ -187,6 +189,7 @@ class BuiltinToolsWorktreeMixin:
                 res = subprocess.run(
                     ["git", "-C", str(wt_path), "rev-parse", "--show-superproject-working-tree"],
                     capture_output=True, text=True, timeout=10,
+                    encoding="utf-8", errors="replace",
                 )
                 if res.returncode == 0 and res.stdout.strip():
                     origin = Path(res.stdout.strip())
@@ -221,6 +224,7 @@ class BuiltinToolsWorktreeMixin:
             br = subprocess.run(
                 ["git", "-C", str(wt_path), "branch", "--show-current"],
                 capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace",
             )
             if br.returncode == 0:
                 branch_name = (br.stdout or "").strip() or None
@@ -240,6 +244,7 @@ class BuiltinToolsWorktreeMixin:
                 rm = subprocess.run(
                     ["git", "-C", str(origin), "worktree", "remove", "--force", str(wt_path)],
                     capture_output=True, text=True, timeout=30,
+                    encoding="utf-8", errors="replace",
                 )
                 removed = rm.returncode == 0
             except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -253,6 +258,7 @@ class BuiltinToolsWorktreeMixin:
                     subprocess.run(
                         ["git", "-C", str(origin), "branch", "-D", branch_name],
                         capture_output=True, text=True, timeout=10,
+                        encoding="utf-8", errors="replace",
                     )
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     pass

@@ -603,6 +603,8 @@ def _git_clone(url: str, target: Path, *, runner: Any = None) -> None:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_CLONE_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
