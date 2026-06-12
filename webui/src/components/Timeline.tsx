@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useApp } from "../store/app";
 import type { Entry } from "../lib/types";
 import ToolCard, { AgentGroupCard } from "./ToolCards";
-import Markdown from "../lib/Markdown";
+import Markdown from "./LazyMarkdown";
 
 function QuestionCard({ e }: { e: Entry }) {
   const answerQuestion = useApp((s) => s.answerQuestion);
@@ -134,6 +134,24 @@ function Row({ e }: { e: Entry }) {
         <span className="text-mc-warn text-sm mt-1 shrink-0">⚠</span>
         <div className="flex-1 min-w-0">
           <QuestionCard e={e} />
+        </div>
+      </div>
+    );
+  }
+  if (e.kind === "security") {
+    const high = e.severity === "high" || e.severity === "critical" || e.status === "error";
+    return (
+      <div className="flex gap-2.5">
+        <span className={"text-sm mt-0.5 shrink-0 " + (high ? "text-mc-err" : "text-mc-warn")}>🛡</span>
+        <div
+          className={
+            "flex-1 min-w-0 text-[12.5px] rounded-md border px-3 py-2 " +
+            (high
+              ? "border-mc-err/40 bg-mc-err/5 text-mc-err"
+              : "border-mc-warn/40 bg-mc-warn/5 text-mc-warn")
+          }
+        >
+          {e.content}
         </div>
       </div>
     );

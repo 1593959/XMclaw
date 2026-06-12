@@ -70,6 +70,38 @@ export default function TaskRail() {
           <div className="text-xs text-mc-faint px-2 py-4">暂无任务 — 在下方下达第一条指令</div>
         )}
       </div>
+      <DomainNav />
     </aside>
+  );
+}
+
+// 四域导航（10.M3）：任务是主视图，其余三域是驾驶舱仪表。
+const DOMAINS = [
+  { key: "tasks", label: "任务", icon: "◧" },
+  { key: "memory", label: "记忆", icon: "◔" },
+  { key: "skills", label: "能力", icon: "⚡" },
+  { key: "system", label: "系统", icon: "⚙" },
+] as const;
+
+function DomainNav() {
+  const view = useApp((s) => s.view);
+  const setView = useApp((s) => s.setView);
+  return (
+    <div className="shrink-0 border-t border-mc-border grid grid-cols-4">
+      {DOMAINS.map((d) => (
+        <button
+          key={d.key}
+          onClick={() => setView(d.key)}
+          title={d.label}
+          className={
+            "py-2 text-center cursor-pointer " +
+            (view === d.key ? "text-mc-accent bg-mc-accent/10" : "text-mc-faint hover:text-mc-muted")
+          }
+        >
+          <div className="text-sm leading-none">{d.icon}</div>
+          <div className="text-[10px] mt-0.5">{d.label}</div>
+        </button>
+      ))}
+    </div>
   );
 }

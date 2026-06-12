@@ -40,7 +40,8 @@ export interface Question {
 export interface Entry {
   id: string;
   role: "user" | "assistant" | "system";
-  kind?: "tool_use" | "question" | "worker" | "subagent";
+  kind?: "tool_use" | "question" | "worker" | "subagent" | "security";
+  severity?: string;
   content: string;
   status: EntryStatus;
   ts: number;

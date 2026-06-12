@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 
 from xmclaw.daemon.lifecycle import _resolve_python_executable
@@ -43,7 +43,7 @@ _log = get_logger(__name__)
 
 
 @router.get("/health")
-async def health_check(request: "Request") -> JSONResponse:
+async def health_check(request: Request) -> JSONResponse:
     """Liveness + readiness probe for k8s / docker / load-balancer.
 
     Checks:

@@ -64,6 +64,9 @@ interface AppState {
   tasks: TaskSnapshot[];
   hud: HudStatus | null;
   draft: string;
+  // 四域导航（10.M3）：任务=主视图，其余为驾驶舱仪表域。
+  view: "tasks" | "memory" | "skills" | "system";
+  setView(v: AppState["view"]): void;
   // 工作区联动：时间线点击 → 右栏聚焦文件；nonce 触发重渲染。
   workspaceFocus: { path: string; nonce: number } | null;
   // 跟随 agent：新 artifact/截图/文件变更自动切右栏对应 tab。
@@ -194,6 +197,10 @@ export const useApp = create<AppState>((set, get) => {
     tasks: [],
     hud: null,
     draft: "",
+    view: "tasks",
+    setView(v) {
+      set({ view: v });
+    },
     workspaceFocus: null,
     followAgent: true,
 

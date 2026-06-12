@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../store/app";
 import { apiGet } from "../lib/api";
-import Markdown from "../lib/Markdown";
+import Markdown from "./LazyMarkdown";
 import { parseUnifiedDiff } from "../lib/difflines";
 import { DiffBlock } from "./ToolCards";
 

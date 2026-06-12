@@ -489,6 +489,59 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       return { ...chat, plan: { ...chat.plan, active: false, status } };
     }
 
+    // ── 安全事件红条（10.M2.5） ─────────────────────────────────
+
+    case "anti_req_violation": {
+      // 违规终止当前回合：清 pending + 在飞泡转 error（B-38/B-46 语义），
+      // 否则"正在调用 LLM · Ns"永远转下去。
+      const id = "antireq_" + corr;
+      const reason =
+        str(payload.reason) || str(payload.message) || str(payload.kind) || "anti-requirement violation";
+      const withAlert = chat.entries.concat({
+        id,
+        role: "system" as const,
+        kind: "security" as const,
+        severity: "high",
+        content: `回合被拦截：${reason}`,
+        status: "error" as const,
+        ts,
+      });
+      const haveBubble = chat.entries.some((e) => e.id === corr);
+      return {
+        ...chat,
+        pendingAssistantId: null,
+        entries: haveBubble
+          ? upsertById(withAlert, corr, (e) =>
+              e.status === "complete" ? e : { ...e, status: "error" as const, phase: null },
+            )
+          : withAlert,
+      };
+    }
+
+    case "prompt_injection_detected": {
+      const severity = str(payload.severity) || "low";
+      const source = str(payload.source) || "?";
+      const id = `inj_${corr}_${payload.tool_call_id || "x"}`;
+      if (chat.entries.some((e) => e.id === id)) return chat;
+      const findings = Array.isArray(payload.findings)
+        ? (payload.findings as Array<Record<string, unknown>>)
+            .map((f) => str(f.pattern_id) || "?")
+            .join(", ")
+        : "";
+      return {
+        ...chat,
+        entries: chat.entries.concat({
+          id,
+          role: "system",
+          kind: "security",
+          severity,
+          content: `Prompt 注入检测（源: ${source}）${findings ? " — " + findings : ""}${payload.acted ? "（已按策略处置）" : ""}`,
+          status: "complete",
+          ts,
+        }),
+      };
+    }
+
     // ── 实时预览数据源（10.M2 深度融合） ────────────────────────
 
     case "canvas_artifact_created": {

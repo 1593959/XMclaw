@@ -993,6 +993,21 @@ def build_tools_from_config(
 
     # Live Canvas / A2UI: callback that fires CANVAS_ARTIFACT_* events
     # onto the bus so the frontend reducer can surface live mutations.
+    #
+    # 主 event loop 引用：工具多在 executor 线程同步执行，那里没有
+    # running loop —— 10.M2 实测发现 asyncio.create_task 在监听器里抛
+    # RuntimeError 被吞，CANVAS_ARTIFACT_* 从未发布（前端预览 tab 永远
+    # 空）。首个在 loop 内的调用记下 loop，线程侧用
+    # run_coroutine_threadsafe 交回主 loop（与 channel adapter 同模式）。
+    _canvas_loop: list = []
+    try:
+        # factory 由 daemon 的 async lifespan 调用 —— 这里通常已在 loop 内，
+        # 构建期就把主 loop 捕获下来，listener 的线程侧路径才有处可交。
+        import asyncio as _aio
+        _canvas_loop.append(_aio.get_running_loop())
+    except RuntimeError:
+        pass  # 同步上下文构建（测试等）——退化为首次 in-loop 调用时捕获
+
     def _canvas_listener(event_type, payload):
         if bus is None:
             return
@@ -1013,7 +1028,19 @@ def build_tools_from_config(
             )
             # Fire-and-forget; don't block the tool call over bus back-pressure.
             import asyncio
-            asyncio.create_task(bus.publish(event))
+            try:
+                loop = asyncio.get_running_loop()
+                if not _canvas_loop:
+                    _canvas_loop.append(loop)
+                loop.create_task(bus.publish(event))
+            except RuntimeError:
+                # executor 线程：没有 running loop —— 交回主 loop。
+                if _canvas_loop:
+                    asyncio.run_coroutine_threadsafe(bus.publish(event), _canvas_loop[0])
+                else:
+                    # 主 loop 还没被记录（daemon 启动极早期）。同步兜底，
+                    # 丢事件比抛错好不到哪去 —— 记录进聚合器便于诊断。
+                    raise RuntimeError("canvas listener: no main loop captured yet")
         except Exception as _exc:
             get_aggregator().record(ErrorSeverity.INFO, __name__, "_canvas_listener", _exc)
             pass
@@ -1255,7 +1282,7 @@ def build_tools_from_config(
                 llm=None,  # plumbed in by build_agent_from_config
                 tools=None,  # plumbed in by build_agent_from_config
                 max_hops_per_subagent=int(
-                    subagent_cfg.get("max_hops_per_subagent", 6)
+                    subagent_cfg.get("max_hops_per_subagent", 20)
                 ),
                 max_concurrency=int(
                     subagent_cfg.get("max_concurrency", 4)

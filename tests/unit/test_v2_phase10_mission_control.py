@@ -180,6 +180,16 @@ def test_tasks_route_registered_once(client: TestClient) -> None:
     assert paths.count("/api/v2/tasks") == 1
 
 
+def test_system_health_not_422(client: TestClient) -> None:
+    """回归（10.M3 实测发现）：health_check(request: \"Request\") 字符串注解
+    且未 import Request — FastAPI 把 request 当必填 query 参数，端点对
+    所有调用方 422。系统域健康卡因此全挂。"""
+    r = client.get("/api/v2/system/health")
+    assert r.status_code in (200, 503), f"422 = Request 注解又坏了: {r.text}"
+    body = r.json()
+    assert "status" in body and "checks" in body
+
+
 # ── /ui-next/ 挂载 ────────────────────────────────────────────────
 
 _DIST = Path(__file__).resolve().parents[2] / "xmclaw" / "daemon" / "webui_dist"
