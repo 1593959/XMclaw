@@ -39,6 +39,7 @@ Design contract (mirrors §4.4-§4.5 of MEMORY_EVOLUTION_REDESIGN.md):
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import time
@@ -92,52 +93,6 @@ def _maybe_warn_scan_truncated(
             "cursor-based pagination when fact_count exceeds limit",
             operation, n_returned, limit,
         )
-
-
-async def _scan_all(
-    self,
-    *,
-    where: str | None = None,
-    order_by: str = "ts_last DESC",
-    batch_size: int = _MAINTENANCE_SCAN_LIMIT,
-) -> list[Fact]:
-    """Cursor-based pagination scan that yields ALL facts, not just first N.
-
-    Wave-2 fix (2026-06-06): replaces the single ``limit=_MAINTENANCE_SCAN_LIMIT``
-    calls that silently truncated large stores. Uses ``ts_last`` as cursor
-    so each batch starts where the previous one ended.
-    """
-    all_facts: list[Fact] = []
-    last_ts: float | None = None
-    last_id: str | None = None
-    seen_ids: set[str] = set()
-    while True:
-        batch_where = where or ""
-        if last_ts is not None:
-            # P1-4 fix (audit 2026-06-11): use (ts_last, id) composite cursor
-            # instead of bare ts_last < last_ts. Previously facts with the
-            # same timestamp at the batch boundary were silently skipped.
-            ts_clause = (
-                f"(ts_last < {last_ts} OR "
-                f"(ts_last = {last_ts} AND id < '{last_id}'))"
-            )
-            batch_where = f"{batch_where} AND {ts_clause}" if batch_where else ts_clause
-        batch = await self._vec.search(
-            None, where=batch_where or None, limit=batch_size,
-        )
-        if not batch:
-            break
-        new_facts = [f for f in batch if f.id not in seen_ids]
-        if not new_facts:
-            break
-        all_facts.extend(new_facts)
-        for f in new_facts:
-            seen_ids.add(f.id)
-        last_ts = min(f.ts_last for f in batch)
-        last_id = min(f.id for f in batch if f.ts_last == last_ts)
-        if len(batch) < batch_size:
-            break
-    return all_facts
 
 
 # Thresholds — exposed as module constants so tests can pin them and
@@ -2846,6 +2801,61 @@ class MemoryService:
             len(self._centrality_scores), max_deg,
         )
         return self._centrality_scores
+
+    async def _scan_all(
+        self,
+        *,
+        where: str | None = None,
+        order_by: str = "ts_last DESC",
+        batch_size: int = _MAINTENANCE_SCAN_LIMIT,
+    ) -> list[Fact]:
+        """Cursor-based pagination scan that yields ALL facts, not just first N.
+
+        Wave-2 fix (2026-06-06): replaces the single
+        ``limit=_MAINTENANCE_SCAN_LIMIT`` calls that silently truncated
+        large stores. Uses ``ts_last`` as cursor so each batch starts
+        where the previous one ended.
+
+        2026-06-12 修复：此前被误放在模块层（带 self 却不在类内），
+        ``self._scan_all`` 在 sweep 与 prebuilt-BM25 重建两条路径上
+        恒抛 AttributeError —— sweep 永远 0 清理、BM25 重建永远失败，
+        且都被各自的 except 吞成 warning。回归测试：
+        tests/unit/test_v2_memory_scan_all.py。
+        """
+        all_facts: list[Fact] = []
+        last_ts: float | None = None
+        last_id: str | None = None
+        seen_ids: set[str] = set()
+        while True:
+            batch_where = where or ""
+            if last_ts is not None:
+                # P1-4 fix (audit 2026-06-11): use (ts_last, id) composite
+                # cursor instead of bare ts_last < last_ts. Previously facts
+                # with the same timestamp at the batch boundary were
+                # silently skipped.
+                ts_clause = (
+                    f"(ts_last < {last_ts} OR "
+                    f"(ts_last = {last_ts} AND id < '{last_id}'))"
+                )
+                batch_where = (
+                    f"{batch_where} AND {ts_clause}" if batch_where else ts_clause
+                )
+            batch = await self._vec.search(
+                None, where=batch_where or None, limit=batch_size,
+            )
+            if not batch:
+                break
+            new_facts = [f for f in batch if f.id not in seen_ids]
+            if not new_facts:
+                break
+            all_facts.extend(new_facts)
+            for f in new_facts:
+                seen_ids.add(f.id)
+            last_ts = min(f.ts_last for f in batch)
+            last_id = min(f.id for f in batch if f.ts_last == last_ts)
+            if len(batch) < batch_size:
+                break
+        return all_facts
 
     async def sweep(
         self,
