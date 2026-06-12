@@ -4,6 +4,7 @@
 
 import { useRef, useState } from "react";
 import { useApp } from "../store/app";
+import SlashMenu, { matchSlash, type SlashCommand } from "./SlashMenu";
 
 function fileIcon(mime: string): string {
   if (mime.startsWith("audio/")) return "🎵";
@@ -60,8 +61,22 @@ export default function Composer() {
   const removeAttachment = useApp((s) => s.removeAttachment);
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const slashMatches = matchSlash(draft);
+
+  function runSlash(c: SlashCommand) {
+    setDraft("");
+    setSlashIdx(0);
+    c.run(useApp.getState());
+  }
 
   function submit() {
+    // 纯命令（完整匹配某条）→ 执行而非发送。
+    if (slashMatches && slashMatches.length > 0) {
+      const exact = slashMatches.find((c) => c.cmd === draft.trim());
+      runSlash(exact || slashMatches[slashIdx] || slashMatches[0]);
+      return;
+    }
     if (draft.trim() || attachments.length > 0) sendUser(draft);
   }
 
@@ -145,7 +160,7 @@ export default function Composer() {
           if (e.dataTransfer.files.length > 0) addAttachments(e.dataTransfer.files);
         }}
         className={
-          "flex items-end gap-2 border rounded-xl bg-mc-panel2 px-3.5 py-2.5 transition-shadow " +
+          "relative flex items-end gap-2 border rounded-xl bg-mc-panel2 px-3.5 py-2.5 transition-shadow " +
           (dragOver
             ? "border-mc-accent border-dashed shadow-[0_0_0_3px_rgba(139,92,246,0.12)]"
             : "border-mc-border focus-within:border-mc-accent/60 focus-within:shadow-[0_0_0_3px_rgba(139,92,246,0.08)]")
@@ -169,11 +184,40 @@ export default function Composer() {
         >
           ＋
         </button>
+        {slashMatches && slashMatches.length > 0 && (
+          <SlashMenu matches={slashMatches} active={slashIdx} onPick={runSlash} />
+        )}
         <textarea
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setSlashIdx(0);
+          }}
           onPaste={onPaste}
           onKeyDown={(e) => {
+            const sm = slashMatches;
+            if (sm && sm.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setSlashIdx((i) => (i + 1) % sm.length);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setSlashIdx((i) => (i - 1 + sm.length) % sm.length);
+                return;
+              }
+              if (e.key === "Tab") {
+                e.preventDefault();
+                runSlash(sm[slashIdx] || sm[0]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setDraft("");
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               submit();

@@ -94,8 +94,9 @@ function AssistantRow({ e }: { e: Entry }) {
     for (let i = blocks.length - 1; i >= 0; i--) if (blocks[i].type === "text") return i;
     return -1;
   })();
+  const complete = e.status === "complete" || e.status === "error";
   return (
-    <div className="flex gap-2.5">
+    <div className="flex gap-2.5 group">
       <RoleMark kind="agent" />
       <div className="flex-1 min-w-0 space-y-1.5">
         {e.proactive && (
@@ -121,6 +122,25 @@ function AssistantRow({ e }: { e: Entry }) {
         {e.status === "cancelled" && <div className="text-xs text-mc-faint">⊘ 已停止</div>}
         {e.status === "error" && !e.content && (
           <div className="text-xs text-mc-err">回合出错</div>
+        )}
+        {complete && e.content && (
+          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(e.content);
+                useApp.getState().showToast("已复制回复", "ok");
+              }}
+              className="text-[10.5px] text-mc-faint hover:text-mc-accent cursor-pointer"
+            >
+              复制
+            </button>
+            <button
+              onClick={() => useApp.getState().retryLast()}
+              className="text-[10.5px] text-mc-faint hover:text-mc-accent cursor-pointer"
+            >
+              重试
+            </button>
+          </div>
         )}
       </div>
     </div>

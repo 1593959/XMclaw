@@ -118,6 +118,12 @@ interface AppState {
   setDraft(v: string): void;
   startNewSession(): void;
   resumeSession(sid: string): void;
+  // power-user 动作（slash 命令 + 消息操作）
+  retryLast(): void;
+  undoLast(): void;
+  clearChat(): void;
+  toast: { text: string; tone: "info" | "ok" | "err" } | null;
+  showToast(text: string, tone?: "info" | "ok" | "err"): void;
   refreshTasks(): Promise<void>;
   refreshHud(): Promise<void>;
 }
@@ -389,6 +395,57 @@ export const useApp = create<AppState>((set, get) => {
       set({ sid, sids, chat: emptyChat() });
       connectFor(sid, s.token);
       get().refreshTasks();
+    },
+
+    toast: null,
+    showToast(text: string, tone: "info" | "ok" | "err" = "info") {
+      set({ toast: { text, tone } });
+      setTimeout(() => {
+        // 仅当还是同一条 toast 时清除（避免清掉后来的）。
+        if (get().toast?.text === text) set({ toast: null });
+      }, 2600);
+    },
+
+    retryLast() {
+      // /retry：把最后一条用户消息回填输入框，供 review-and-resend。
+      const s = get();
+      for (let i = s.chat.entries.length - 1; i >= 0; i--) {
+        const e = s.chat.entries[i];
+        if (e.role === "user" && !e.kind) {
+          set({ draft: e.content });
+          get().showToast("已回填上一条指令，可编辑后重发", "info");
+          return;
+        }
+      }
+      get().showToast("没有可重试的指令", "err");
+    },
+
+    undoLast() {
+      // /undo：剥掉本地最后一组 user+assistant，并请 daemon 同步弹出历史。
+      if (!wsHandle) {
+        get().showToast("WS 未连接，撤销失败", "err");
+        return;
+      }
+      set((s) => {
+        const es = s.chat.entries.slice();
+        // 从尾部删到（含）最后一条 user 消息为止。
+        let cut = es.length;
+        for (let i = es.length - 1; i >= 0; i--) {
+          if (es[i].role === "user" && !es[i].kind) {
+            cut = i;
+            break;
+          }
+        }
+        return { chat: { ...s.chat, entries: es.slice(0, cut), pendingAssistantId: null } };
+      });
+      wsHandle.send({ type: "undo" });
+      get().showToast("已撤销上一轮", "ok");
+    },
+
+    clearChat() {
+      // /clear：仅清本地面板，daemon 历史保留。
+      set((s) => ({ chat: { ...emptyChat(), tokenUsage: s.chat.tokenUsage } }));
+      get().showToast("已清空本地面板（daemon 历史保留）", "info");
     },
 
     resumeSession(sid: string) {

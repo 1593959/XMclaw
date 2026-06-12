@@ -2259,6 +2259,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
+- 2026-06-12: **前端 power-user 轮**（移植旧 UI 的高频功能）。① Slash 命令：Composer 首字符 `/` 弹命令面板（↑↓选/Enter/Tab 执行/Esc 关），10 条命令——会话动作（/new /clear /retry /undo /plan /think）+ 域跳转（/memory /skills /system /tasks），retry 回填上条指令、undo 走既有 WS `undo` 帧、clear 仅清本地。② 代码块复制：Markdown `<pre>` hover 出"复制"按钮（agent 频繁输出代码的刚需）。③ 消息悬停操作：assistant 完成态 hover 出"复制/重试"。④ 轻量 Toast 反馈所有 power 动作。实测 slash 过滤+执行切域、代码块复制按钮渲染均通过。
+
 - 2026-06-12: **多模态输入补全（音视频/文件）**。上轮仅图片（ws_image_intake 限 data:image）；本轮新增 `ws_file_intake.py`：文档/代码/音频/视频经 WS 帧 `files` 字段（`{name,mime,data_url}`）落盘到 uploads（文件名保留+消毒+路径穿越拍平），按统一路径哲学**不内联解码**——`build_files_note()` 把磁盘路径 + 工具提示（text→file_read / audio→voice_transcribe / video→view_video）作为 `<user-uploaded-files>` 块注入 user 消息，agent 用既有工具处理。前端 Composer 放开任意文件类型（图片走 vision 8MB / 文件走落盘 48MB 双通道），文件 chip 带类型图标；reducer 剥离注入块不污染显示。8 个后端单测（解码/消毒/kind 分类/超限跳过/note 渲染）+ 前端 chip 实测。
 
 - 2026-06-12: **媒体体验轮**（本 commit，用户实测反馈批次）。① 裂图根因：`/api/v2/media/` 只服务 screenshots/audio/uploads 三目录，但 screenshot 工具把 PNG 存桌面 → URL 必 404。hop_loop `_ensure_servable()` 把不在可服务目录的附件复制进 uploads 再出 URL（screenshot/截图工具产物现可见）。② Lightbox 当前页缩放查看（用户点名"点击放大跳页面"）：图片滚轮缩放+拖拽平移+双击复位，视频原生控件，Esc/遮罩关闭——替代旧的 `<a target=_blank>` 跳页。③ 视频/音频渲染：工具卡 MediaStrip + 工作区视觉流支持 `<video>`/`<audio>`，裂图占位反馈。④ 多模态输入回归（M1 砍掉的能力）：Composer 支持粘贴/拖拽/选择图片，附件预览条+移除，随用户帧 `images` 字段发送（后端 ws_image_intake 仅接 data:image，非图前端拦截给提示）——实测图片发送→后端存 uploads→模型视觉全链路通。前端 22 测试 + hop_loop import 验证通过。
