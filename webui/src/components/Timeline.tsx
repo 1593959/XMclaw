@@ -20,13 +20,13 @@ function QuestionCard({ e }: { e: Entry }) {
         <div className="text-xs text-mc-muted">已回答：{String(e.answer ?? "")}</div>
       ) : (
         <div className="flex flex-wrap gap-2">
-          {q.options.map((opt) => (
+          {q.options.map((opt, i) => (
             <button
-              key={opt}
-              onClick={() => answerQuestion(q.id, opt)}
+              key={`${opt.value}-${i}`}
+              onClick={() => answerQuestion(q.id, opt.value)}
               className="text-xs px-3 py-1 rounded border border-mc-border hover:border-mc-warn/60 hover:bg-mc-warn/10 cursor-pointer"
             >
-              {opt}
+              {opt.label}
             </button>
           ))}
           {q.allow_other && (

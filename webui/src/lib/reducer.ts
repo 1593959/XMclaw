@@ -388,7 +388,13 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
           question: {
             id: qid,
             question: str(payload.question),
-            options: Array.isArray(payload.options) ? (payload.options as string[]) : [],
+            options: (Array.isArray(payload.options) ? (payload.options as Array<Record<string, unknown>>) : [])
+              .map((o) => {
+                const label = str(o.label || o.name || "");
+                const value = str(o.value || o);
+                return label ? { label, value } : null;
+              })
+              .filter(Boolean) as Array<{ label: string; value: string }>,
             multi_select: !!payload.multi_select,
             allow_other: payload.allow_other !== false,
             tool_call_id: str(payload.tool_call_id) || null,

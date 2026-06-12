@@ -3,7 +3,7 @@
 
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
-import { apiGet } from "../lib/api";
+import { apiGet, apiPost } from "../lib/api";
 
 const MemoryGraph = lazy(() => import("./MemoryGraph"));
 
@@ -49,18 +49,20 @@ export default function MemoryView() {
   const [facts, setFacts] = useState<Fact[]>([]);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"list" | "graph">("list");
+  const [tick, setTick] = useState(0);
+  const refetch = () => setTick((t) => t + 1);
 
   useEffect(() => {
     if (!token) return;
     apiGet<Overview>("/api/v2/memory/v2/overview", token).then(setOv).catch(() => setOv(null));
-  }, [token]);
+  }, [token, tick]);
 
   useEffect(() => {
     if (!token) return;
     setLoading(true);
     const t = setTimeout(() => {
       apiGet<{ facts?: Fact[] }>(
-        `/api/v2/memory/v2/facts?limit=80${q ? `&q=${encodeURIComponent(q)}` : ""}`,
+        `/api/v2/memory/v2/facts?limit=80&include_superseded=true${q ? `&q=${encodeURIComponent(q)}` : ""}`,
         token,
       )
         .then((d) => setFacts(d?.facts || []))
@@ -68,7 +70,7 @@ export default function MemoryView() {
         .finally(() => setLoading(false));
     }, 250);
     return () => clearTimeout(t);
-  }, [token, q]);
+  }, [token, q, tick]);
 
   return (
     <div className="flex-1 overflow-y-auto p-5 space-y-4">
@@ -137,20 +139,77 @@ export default function MemoryView() {
         {loading && <div className="text-xs text-mc-faint">检索中…</div>}
         {!loading && facts.length === 0 && <div className="text-xs text-mc-faint">没有匹配的记忆</div>}
         {facts.map((f) => (
-          <div key={f.id} className="border border-mc-border rounded-md px-3 py-2 bg-mc-panel2/40">
-            <div className="text-[13px] leading-relaxed">{f.text}</div>
-            <div className="flex gap-2 mt-1 text-[10.5px] text-mc-faint flex-wrap">
-              <span className="text-mc-accent">{f.kind}</span>
-              <span>{f.scope}</span>
-              <span>{f.layer === "long_term" ? "长期" : "工作"}</span>
-              {f.bucket && <span>{f.bucket}</span>}
-              <span>证据 ×{f.evidence_count}</span>
-              <span>置信 {Math.round((f.confidence || 0) * 100)}%</span>
-              {f.forgotten && <span className="text-mc-warn">已遗忘</span>}
-              {f.superseded_by && !f.forgotten && <span className="text-mc-faint">已被取代</span>}
-            </div>
-          </div>
+          <FactRow key={f.id} fact={f} token={token} onChanged={refetch} />
         ))}
+      </div>
+    </div>
+  );
+}
+
+function FactRow({ fact: f, token, onChanged }: { fact: Fact; token: string | null; onChanged: () => void }) {
+  const showToast = useApp((s) => s.showToast);
+  const [busy, setBusy] = useState(false);
+
+  async function act(kind: "forget" | "restore") {
+    setBusy(true);
+    try {
+      const r = await apiPost<{ ok: boolean }>(
+        `/api/v2/memory/v2/facts/${encodeURIComponent(f.id)}/${kind}`,
+        {},
+        token,
+      );
+      if (r.ok) {
+        showToast(kind === "forget" ? "已遗忘该记忆" : "已恢复该记忆", "ok");
+        onChanged();
+      } else {
+        showToast("操作失败", "err");
+      }
+    } catch {
+      showToast("操作失败（daemon 未响应）", "err");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className={
+        "border border-mc-border rounded-md px-3 py-2 bg-mc-panel2/40 group " +
+        (f.forgotten ? "opacity-50" : "")
+      }
+    >
+      <div className="flex items-start gap-2">
+        <div className="text-[13px] leading-relaxed flex-1 min-w-0">{f.text}</div>
+        <div className="flex gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          {f.forgotten ? (
+            <button
+              onClick={() => act("restore")}
+              disabled={busy}
+              className="text-[11px] text-mc-faint hover:text-mc-ok cursor-pointer disabled:opacity-50"
+            >
+              恢复
+            </button>
+          ) : (
+            <button
+              onClick={() => act("forget")}
+              disabled={busy}
+              className="text-[11px] text-mc-faint hover:text-mc-err cursor-pointer disabled:opacity-50"
+              title="软删除：标记遗忘，可恢复"
+            >
+              遗忘
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="flex gap-2 mt-1 text-[10.5px] text-mc-faint flex-wrap">
+        <span className="text-mc-accent">{f.kind}</span>
+        <span>{f.scope}</span>
+        <span>{f.layer === "long_term" ? "长期" : "工作"}</span>
+        {f.bucket && <span>{f.bucket}</span>}
+        <span>证据 ×{f.evidence_count}</span>
+        <span>置信 {Math.round((f.confidence || 0) * 100)}%</span>
+        {f.forgotten && <span className="text-mc-warn">已遗忘</span>}
+        {f.superseded_by && !f.forgotten && <span className="text-mc-faint">已被取代</span>}
       </div>
     </div>
   );

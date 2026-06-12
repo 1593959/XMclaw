@@ -205,7 +205,13 @@ async function rehydrateQuestions(token: string | null, set: (fn: (s: AppState) 
           question: {
             id: q.question_id as string,
             question: (q.question as string) || "",
-            options: Array.isArray(q.options) ? (q.options as string[]) : [],
+            options: (Array.isArray(q.options) ? (q.options as Array<Record<string, unknown>>) : [])
+              .map((o) => {
+                const label = String(o.label || o.name || "");
+                const value = String(o.value || o);
+                return label ? { label, value } : null;
+              })
+              .filter(Boolean) as Array<{ label: string; value: string }>,
             multi_select: !!q.multi_select,
             allow_other: q.allow_other !== false,
             tool_call_id: (q.tool_call_id as string) || null,

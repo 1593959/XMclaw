@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from "react";
 import { useApp } from "../store/app";
-import { apiGet } from "../lib/api";
+import { apiGet, apiPost } from "../lib/api";
 
 interface SkillVersion {
   version: number;
@@ -128,22 +128,111 @@ export default function SkillsView() {
       <div>
         <h3 className="text-[13px] font-medium mb-1.5">技能清单</h3>
         <div className="space-y-1">
-          {skills.map((s) => {
-            const head = s.versions?.find((v) => v.is_head);
-            return (
-              <div key={s.id} className="border border-mc-border rounded-md px-3 py-2 bg-mc-panel2/40 flex items-baseline gap-2">
-                <span className="font-mono text-[12.5px]">{s.id}</span>
-                <span className="text-[11px] text-mc-faint">v{s.head_version}</span>
-                {s.source && <span className="text-[11px] text-mc-faint">{s.source}</span>}
-                <span className="text-[11.5px] text-mc-muted truncate flex-1">
-                  {String(head?.manifest?.description || "")}
-                </span>
-              </div>
-            );
-          })}
+          {skills.map((s) => (
+            <SkillRow key={s.id} skill={s} token={token} />
+          ))}
           {skills.length === 0 && <div className="text-xs text-mc-faint">暂无注册技能</div>}
         </div>
       </div>
+    </div>
+  );
+}
+
+interface HistoryRecord {
+  action?: string;
+  from_version?: number;
+  to_version?: number;
+  reason?: string;
+  ts?: number;
+}
+
+function SkillRow({ skill: s, token }: { skill: Skill; token: string | null }) {
+  const showToast = useApp((s) => s.showToast);
+  const [open, setOpen] = useState(false);
+  const [history, setHistory] = useState<HistoryRecord[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const head = s.versions?.find((v) => v.is_head);
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next && history === null && token) {
+      apiGet<{ records?: HistoryRecord[] }>(`/api/v2/skills/${encodeURIComponent(s.id)}/history`, token)
+        .then((d) => setHistory(d?.records || []))
+        .catch(() => setHistory([]));
+    }
+  }
+
+  async function rollback(toVersion: number) {
+    if (!token || busy) return;
+    setBusy(true);
+    try {
+      const r = await apiPost<{ ok?: boolean; error?: string }>(
+        `/api/v2/skills/${encodeURIComponent(s.id)}/rollback`,
+        { to_version: toVersion, reason: "用户从 UI 手动回滚" },
+        token,
+      );
+      if (r.error) showToast(r.error, "err");
+      else showToast(`已回滚 ${s.id} 到 v${toVersion}`, "ok");
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : String(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="border border-mc-border rounded-md bg-mc-panel2/40">
+      <button onClick={toggle} className="w-full text-left px-3 py-2 flex items-baseline gap-2 cursor-pointer">
+        <span className="text-mc-faint text-[10px]">{open ? "▾" : "▸"}</span>
+        <span className="font-mono text-[12.5px]">{s.id}</span>
+        <span className="text-[11px] text-mc-faint">v{s.head_version}</span>
+        {s.source && <span className="text-[11px] text-mc-faint">{s.source}</span>}
+        <span className="text-[11.5px] text-mc-muted truncate flex-1">
+          {String(head?.manifest?.description || "")}
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-2.5 pt-0.5 space-y-2 border-t border-mc-border/50">
+          <div className="text-[11px] text-mc-faint mt-2">版本（点击回滚到非当前版本）</div>
+          <div className="flex gap-1.5 flex-wrap">
+            {(s.versions || [])
+              .slice()
+              .sort((a, b) => b.version - a.version)
+              .map((v) => (
+                <button
+                  key={v.version}
+                  disabled={v.is_head || busy}
+                  onClick={() => rollback(v.version)}
+                  className={
+                    "text-[11px] px-2 py-0.5 rounded border cursor-pointer disabled:cursor-default " +
+                    (v.is_head
+                      ? "border-mc-accent/50 text-mc-accent bg-mc-accent/10"
+                      : "border-mc-border text-mc-muted hover:border-mc-accent/40 hover:text-mc-accent")
+                  }
+                  title={v.is_head ? "当前版本" : `回滚到 v${v.version}`}
+                >
+                  v{v.version}
+                  {v.is_head ? " · 当前" : ""}
+                </button>
+              ))}
+          </div>
+          {history && history.length > 0 && (
+            <div className="space-y-0.5">
+              <div className="text-[11px] text-mc-faint">晋升 / 回滚记录</div>
+              {history.slice(-6).reverse().map((h, i) => (
+                <div key={i} className="text-[11px] text-mc-muted">
+                  {h.action || "?"} v{h.from_version ?? "?"} → v{h.to_version ?? "?"}
+                  {h.reason ? ` · ${h.reason}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+          {history && history.length === 0 && (
+            <div className="text-[11px] text-mc-faint">无晋升/回滚历史</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

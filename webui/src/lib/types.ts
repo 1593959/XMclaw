@@ -29,7 +29,7 @@ export interface Block {
 export interface Question {
   id: string;
   question: string;
-  options: string[];
+  options: Array<{ label: string; value: string }>;
   multi_select: boolean;
   allow_other: boolean;
   tool_call_id: string | null;
