@@ -92,6 +92,9 @@ export async function apiSend<T = unknown>(
 export const apiPost = <T = unknown>(path: string, body: unknown, token: string | null) =>
   apiSend<T>("POST", path, body, token);
 
+export const apiDelete = <T = unknown>(path: string, token: string | null) =>
+  apiSend<T>("DELETE", path, null, token);
+
 // ── pairing token ────────────────────────────────────────────────
 
 const PAIR_ENDPOINT = "/api/v2/pair";

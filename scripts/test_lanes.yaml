@@ -108,6 +108,7 @@ lanes:
       - "xmclaw/daemon/routers/**"
     tests:
       - tests/unit/test_v2_session_workspaces.py
+      - tests/unit/test_v2_llm_discovery.py
       - tests/unit/test_v2_daemon_factory.py
       - tests/unit/test_v2_daemon_lifecycle.py
       - tests/unit/test_v2_memory_retention.py

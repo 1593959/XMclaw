@@ -1,9 +1,11 @@
 // 系统域（10.M3 收编旧 Settings/Logs/Dashboard 摘要）— 健康读数 +
 // 日志尾巴。深度配置仍走旧 /ui/ 的 Settings（M3 过渡期），这里是驾驶舱仪表。
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
 import { apiGet, type ApiError } from "../lib/api";
+
+const ModelDiscoveryView = lazy(() => import("./ModelDiscoveryView"));
 
 interface Health {
   status?: string;
@@ -16,6 +18,7 @@ export default function SystemView() {
   const hud = useApp((s) => s.hud);
   const [health, setHealth] = useState<Health | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [tab, setTab] = useState<"status" | "models">("status");
 
   useEffect(() => {
     if (!token) return;
@@ -28,8 +31,26 @@ export default function SystemView() {
       .catch(() => setLogs([]));
   }, [token]);
 
+  if (tab === "models") {
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex gap-1.5 px-5 pt-4 shrink-0">
+          <SystemTab id="status" cur={tab} onPick={setTab}>健康 / 日志</SystemTab>
+          <SystemTab id="models" cur={tab} onPick={setTab}>模型管理</SystemTab>
+        </div>
+        <Suspense fallback={<div className="p-5 text-mc-faint text-sm">加载中…</div>}>
+          <ModelDiscoveryView />
+        </Suspense>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 overflow-y-auto p-5 space-y-4 min-h-0 flex flex-col">
+      <div className="flex gap-1.5 shrink-0">
+        <SystemTab id="status" cur={tab} onPick={setTab}>健康 / 日志</SystemTab>
+        <SystemTab id="models" cur={tab} onPick={setTab}>模型管理</SystemTab>
+      </div>
       <div className="shrink-0">
         <h2 className="text-base font-semibold">系统</h2>
         <p className="text-xs text-mc-faint mt-0.5">
@@ -80,5 +101,31 @@ export default function SystemView() {
         </pre>
       </div>
     </div>
+  );
+}
+
+function SystemTab({
+  id,
+  cur,
+  onPick,
+  children,
+}: {
+  id: "status" | "models";
+  cur: string;
+  onPick: (v: "status" | "models") => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={() => onPick(id)}
+      className={
+        "text-xs px-3 py-1.5 rounded-md border cursor-pointer " +
+        (cur === id
+          ? "border-mc-accent/50 text-mc-accent bg-mc-accent/10"
+          : "border-mc-border text-mc-faint hover:text-mc-muted")
+      }
+    >
+      {children}
+    </button>
   );
 }

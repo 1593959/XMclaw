@@ -2259,6 +2259,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
+- 2026-06-12: **任务栏管理 + 模型管理接入**。① TaskRail：>6 任务时出搜索框（标题子串过滤），任务卡 hover 出删除按钮（二次确认 → DELETE /api/v2/sessions/{sid}，删当前会话自动切下一个/新建，乐观移除 + toast）。② 接入用户在建的 ModelDiscoveryView（输入 base_url+api_key → 拉模型 → 多选批量注册），修其编译错误（apiPost 参数序/泛型/主题类名/hotloaded 字段名），挂进系统域"模型管理"子标签——apply 走热加载无需重启即可在 Composer 选用。**broken-HEAD 修复**：app.py 已 import 并注册 `llm_discovery` router 但该文件 + 其 10 个测试未入库（fresh clone ImportError），本 commit 补上。注：`model_discovery.py` 是同前缀 `/api/v2/llm/endpoints` 的未注册死重复，无人引用，未入库（避免路由冲突 landmine）。
+
 - 2026-06-12: **前端 power-user 轮**（移植旧 UI 的高频功能）。① Slash 命令：Composer 首字符 `/` 弹命令面板（↑↓选/Enter/Tab 执行/Esc 关），10 条命令——会话动作（/new /clear /retry /undo /plan /think）+ 域跳转（/memory /skills /system /tasks），retry 回填上条指令、undo 走既有 WS `undo` 帧、clear 仅清本地。② 代码块复制：Markdown `<pre>` hover 出"复制"按钮（agent 频繁输出代码的刚需）。③ 消息悬停操作：assistant 完成态 hover 出"复制/重试"。④ 轻量 Toast 反馈所有 power 动作。实测 slash 过滤+执行切域、代码块复制按钮渲染均通过。
 
 - 2026-06-12: **多模态输入补全（音视频/文件）**。上轮仅图片（ws_image_intake 限 data:image）；本轮新增 `ws_file_intake.py`：文档/代码/音频/视频经 WS 帧 `files` 字段（`{name,mime,data_url}`）落盘到 uploads（文件名保留+消毒+路径穿越拍平），按统一路径哲学**不内联解码**——`build_files_note()` 把磁盘路径 + 工具提示（text→file_read / audio→voice_transcribe / video→view_video）作为 `<user-uploaded-files>` 块注入 user 消息，agent 用既有工具处理。前端 Composer 放开任意文件类型（图片走 vision 8MB / 文件走落盘 48MB 双通道），文件 chip 带类型图标；reducer 剥离注入块不污染显示。8 个后端单测（解码/消毒/kind 分类/超限跳过/note 渲染）+ 前端 chip 实测。

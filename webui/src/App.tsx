@@ -14,6 +14,7 @@ import { ResizeHandle, useResizable } from "./lib/useResizable";
 const MemoryView = lazy(() => import("./views/MemoryView"));
 const SkillsView = lazy(() => import("./views/SkillsView"));
 const SystemView = lazy(() => import("./views/SystemView"));
+const ModelDiscoveryView = lazy(() => import("./views/ModelDiscoveryView"));
 
 function DomainFallback() {
   return <div className="flex-1 flex items-center justify-center text-mc-faint text-sm">加载中…</div>;
@@ -60,6 +61,7 @@ export default function App() {
               {view === "memory" && <MemoryView />}
               {view === "skills" && <SkillsView />}
               {view === "system" && <SystemView />}
+              {view === "discover" && <ModelDiscoveryView />}
             </Suspense>
           </main>
         )}

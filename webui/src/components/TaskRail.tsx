@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useApp } from "../store/app";
 import type { TaskSnapshot } from "../lib/types";
 
@@ -35,9 +36,12 @@ export default function TaskRail({ width }: { width?: number }) {
   const activeSid = useApp((s) => s.sid);
   const resumeSession = useApp((s) => s.resumeSession);
   const startNewSession = useApp((s) => s.startNewSession);
+  const deleteSession = useApp((s) => s.deleteSession);
+  const [query, setQuery] = useState("");
+  const [confirmSid, setConfirmSid] = useState<string | null>(null);
 
   // /api/v2/tasks 不可用（旧 daemon）时退化为本地 sid 列表。
-  const items: TaskSnapshot[] =
+  const all: TaskSnapshot[] =
     tasks.length > 0
       ? tasks
       : sids.map((sid) => ({
@@ -49,6 +53,8 @@ export default function TaskRail({ width }: { width?: number }) {
           updated_at: 0,
           last_activity: "",
         }));
+  const q = query.trim().toLowerCase();
+  const items = q ? all.filter((t) => (t.title || t.sid).toLowerCase().includes(q)) : all;
 
   return (
     <aside
@@ -65,25 +71,73 @@ export default function TaskRail({ width }: { width?: number }) {
           + 新建
         </button>
       </div>
+      {all.length > 6 && (
+        <div className="px-2 pb-2">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索任务…"
+            className="w-full text-[11.5px] px-2.5 py-1.5 rounded-md border border-mc-border bg-mc-panel2 outline-none focus:border-mc-accent placeholder:text-mc-faint"
+          />
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-1">
         {items.map((t) => {
           const meta = STATUS_META[t.status] || STATUS_META.chat;
           const active = t.sid === activeSid;
           const activity = ACTIVITY_LABEL[t.last_activity] || "";
           return (
-            <button
+            <div
               key={t.sid}
+              role="button"
+              tabIndex={0}
               onClick={() => resumeSession(t.sid)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") resumeSession(t.sid);
+              }}
               style={{ "--mc-task-accent": meta.bar } as React.CSSProperties}
               className={
-                "mc-task-card mc-card w-full text-left rounded-md pl-3 pr-2.5 py-2 cursor-pointer border " +
+                "mc-task-card mc-card group relative w-full text-left rounded-md pl-3 pr-2.5 py-2 cursor-pointer border " +
                 (active
                   ? "bg-mc-accent/10 border-mc-accent/40"
                   : "border-mc-border/60 bg-mc-panel2/30 hover:bg-mc-panel2")
               }
             >
-              <div className="text-[12.5px] font-medium truncate leading-snug">
-                {t.title || t.sid}
+              <div className="flex items-start gap-1">
+                <div className="text-[12.5px] font-medium truncate leading-snug flex-1">
+                  {t.title || t.sid}
+                </div>
+                {confirmSid === t.sid ? (
+                  <span className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => {
+                        deleteSession(t.sid);
+                        setConfirmSid(null);
+                      }}
+                      className="text-[10px] text-mc-err hover:underline cursor-pointer"
+                    >
+                      删除
+                    </button>
+                    <button
+                      onClick={() => setConfirmSid(null)}
+                      className="text-[10px] text-mc-faint hover:text-mc-muted cursor-pointer"
+                    >
+                      取消
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmSid(t.sid);
+                    }}
+                    className="text-mc-faint hover:text-mc-err text-xs leading-none shrink-0 opacity-0 group-hover:opacity-100 cursor-pointer"
+                    title="删除会话"
+                    aria-label="删除会话"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
               <div className="flex items-center gap-1.5 mt-1">
                 <span className={"text-[11px] " + meta.cls}>
@@ -114,11 +168,13 @@ export default function TaskRail({ width }: { width?: number }) {
                   />
                 </div>
               )}
-            </button>
+            </div>
           );
         })}
         {items.length === 0 && (
-          <div className="text-xs text-mc-faint px-2 py-4">暂无任务 — 在下方下达第一条指令</div>
+          <div className="text-xs text-mc-faint px-2 py-4">
+            {q ? "没有匹配的任务" : "暂无任务 — 在下方下达第一条指令"}
+          </div>
         )}
       </div>
       <DomainNav />
@@ -126,19 +182,20 @@ export default function TaskRail({ width }: { width?: number }) {
   );
 }
 
-// 四域导航（10.M3）：任务是主视图，其余三域是驾驶舱仪表。
+// 五域导航（10.M3 + model discovery）：任务是主视图，其余为驾驶舱仪表。
 const DOMAINS = [
   { key: "tasks", label: "任务", icon: "◧" },
   { key: "memory", label: "记忆", icon: "◔" },
   { key: "skills", label: "能力", icon: "⚡" },
   { key: "system", label: "系统", icon: "⚙" },
+  { key: "discover", label: "模型", icon: "◆" },
 ] as const;
 
 function DomainNav() {
   const view = useApp((s) => s.view);
   const setView = useApp((s) => s.setView);
   return (
-    <div className="shrink-0 border-t border-mc-border grid grid-cols-4">
+    <div className="shrink-0 border-t border-mc-border grid grid-cols-5">
       {DOMAINS.map((d) => (
         <button
           key={d.key}

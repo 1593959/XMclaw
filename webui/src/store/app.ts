@@ -3,7 +3,7 @@
 // + 历史水化（B-60）+ pending question 恢复（B-99）。
 
 import { create } from "zustand";
-import { apiGet, fetchPairingToken, setMediaToken } from "../lib/api";
+import { apiDelete, apiGet, fetchPairingToken, setMediaToken } from "../lib/api";
 import { createWsClient, type WsHandle } from "../lib/ws";
 import {
   applyEvent,
@@ -102,8 +102,8 @@ interface AppState {
   lightbox: LightboxState | null;
   openLightbox(url: string, kind?: "image" | "video"): void;
   closeLightbox(): void;
-  // 四域导航（10.M3）：任务=主视图，其余为驾驶舱仪表域。
-  view: "tasks" | "memory" | "skills" | "system";
+  // 五域导航（10.M3 + model discovery）：任务=主视图，其余为驾驶舱仪表域。
+  view: "tasks" | "memory" | "skills" | "system" | "discover";
   setView(v: AppState["view"]): void;
   // 工作区联动：时间线点击 → 右栏聚焦文件；nonce 触发重渲染。
   workspaceFocus: { path: string; nonce: number } | null;
@@ -118,6 +118,7 @@ interface AppState {
   setDraft(v: string): void;
   startNewSession(): void;
   resumeSession(sid: string): void;
+  deleteSession(sid: string): Promise<void>;
   // power-user 动作（slash 命令 + 消息操作）
   retryLast(): void;
   undoLast(): void;
@@ -126,6 +127,7 @@ interface AppState {
   showToast(text: string, tone?: "info" | "ok" | "err"): void;
   refreshTasks(): Promise<void>;
   refreshHud(): Promise<void>;
+  refreshProfiles(): Promise<void>;
 }
 
 let wsHandle: WsHandle | null = null;
@@ -457,6 +459,31 @@ export const useApp = create<AppState>((set, get) => {
       connectFor(sid, s.token);
     },
 
+    async deleteSession(sid: string) {
+      const s = get();
+      const remaining = s.sids.filter((x) => x !== sid);
+      // 乐观从列表移除（任务栏 + 本地 sid 列表）。
+      set({
+        sids: remaining,
+        tasks: s.tasks.filter((t) => t.sid !== sid),
+      });
+      try {
+        await apiDelete(`/api/v2/sessions/${encodeURIComponent(sid)}`, s.token);
+        get().showToast("已删除会话", "ok");
+      } catch {
+        get().showToast("删除失败（daemon 未响应）", "err");
+      }
+      // 删的是当前会话 → 切到下一个或新建。
+      if (sid === s.sid) {
+        if (remaining.length > 0) {
+          get().resumeSession(remaining[0]);
+        } else {
+          get().startNewSession();
+        }
+      }
+      get().refreshTasks();
+    },
+
     async refreshTasks() {
       const { token } = get();
       if (!token) return;
@@ -476,6 +503,17 @@ export const useApp = create<AppState>((set, get) => {
         set({ hud: (data?.telemetry as HudStatus) || data || null });
       } catch {
         /* 非关键 */
+      }
+    },
+
+    async refreshProfiles() {
+      const { token } = get();
+      if (!token) return;
+      try {
+        const data = await apiGet<{ profiles?: LlmProfile[] }>("/api/v2/llm/profiles", token);
+        set({ profiles: Array.isArray(data?.profiles) ? data.profiles : [] });
+      } catch {
+        /* non-critical */
       }
     },
   };
