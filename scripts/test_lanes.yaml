@@ -285,6 +285,7 @@ lanes:
       - tests/unit/test_v2_ui_scaffold.py
       - tests/unit/test_v2_phase9_canvas_bridge.py
       - tests/unit/test_v2_phase10_mission_control.py
+      - tests/unit/test_v2_ws_file_intake.py
 
   # Deployment templates (Epic #19). Cheap parse + drift checks on
   # Dockerfile / compose / fly.toml / systemd unit / launchd plist /

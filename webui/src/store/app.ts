@@ -66,6 +66,8 @@ export interface Attachment {
   dataUrl: string;
   name: string;
   mime: string;
+  // image → 走 WS 帧 images 字段（vision）；file → files 字段（落盘+工具）。
+  channel: "image" | "file";
 }
 
 export interface LightboxState {
@@ -255,14 +257,12 @@ export const useApp = create<AppState>((set, get) => {
     addAttachments(files: FileList | File[]) {
       const list = Array.from(files);
       for (const f of list) {
-        // 后端 WS intake（ws_image_intake.py）目前只解析 data:image/* —
-        // 非图片先拦在前端给明确提示，避免静默丢弃。
-        if (!f.type.startsWith("image/")) {
-          console.warn("[mc] 暂仅支持图片附件（后端 intake 限制）:", f.name, f.type);
-          continue;
-        }
-        if (f.size > 8 * 1024 * 1024) {
-          console.warn("[mc] 图片超过 8MB 上限:", f.name);
+        const isImage = f.type.startsWith("image/");
+        // 图片走 vision 通道(8MB), 其余走文件落盘通道(48MB, 后端
+        // ws_file_intake 保存 + agent 用 file_read/voice_transcribe 处理)。
+        const cap = isImage ? 8 * 1024 * 1024 : 48 * 1024 * 1024;
+        if (f.size > cap) {
+          console.warn(`[mc] 附件超过上限(${isImage ? "8" : "48"}MB):`, f.name);
           continue;
         }
         const reader = new FileReader();
@@ -270,7 +270,15 @@ export const useApp = create<AppState>((set, get) => {
           const dataUrl = String(reader.result || "");
           if (!dataUrl.startsWith("data:")) return;
           set((s) => ({
-            attachments: [...s.attachments, { dataUrl, name: f.name, mime: f.type }].slice(0, 8),
+            attachments: [
+              ...s.attachments,
+              {
+                dataUrl,
+                name: f.name || (isImage ? "image" : "file"),
+                mime: f.type || "application/octet-stream",
+                channel: isImage ? ("image" as const) : ("file" as const),
+              },
+            ].slice(0, 8),
           }));
         };
         reader.readAsDataURL(f);
@@ -323,8 +331,12 @@ export const useApp = create<AppState>((set, get) => {
     sendUser(text: string) {
       const trimmed = text.trim();
       const s = get();
-      const images = s.attachments.map((a) => a.dataUrl);
-      if ((!trimmed && images.length === 0) || !wsHandle) return;
+      const images = s.attachments.filter((a) => a.channel === "image").map((a) => a.dataUrl);
+      const files = s.attachments
+        .filter((a) => a.channel === "file")
+        .map((a) => ({ name: a.name, mime: a.mime, data_url: a.dataUrl }));
+      if ((!trimmed && images.length === 0 && files.length === 0) || !wsHandle) return;
+      // 乐观回显图片缩略；文件以占位让用户知道已附带。
       const { id, chat } = appendOptimisticUser(s.chat, trimmed, images);
       set({ chat: appendThinkingAssistant(chat, id), draft: "", attachments: [] });
       wsHandle.send({
@@ -332,6 +344,7 @@ export const useApp = create<AppState>((set, get) => {
         content: trimmed,
         correlation_id: id,
         images: images.length > 0 ? images : undefined,
+        files: files.length > 0 ? files : undefined,
         // missing = 默认（与后端约定一致），只在非默认时带字段。
         plan_mode: s.planMode || undefined,
         ultrathink: s.ultrathink || undefined,

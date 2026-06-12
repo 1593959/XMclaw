@@ -2445,6 +2445,31 @@ def create_app(
                                 "image_routing failed, fallback to raw "
                                 "passthrough: %s", exc,
                             )
+
+                    # Phase 10 (2026-06-12): non-image attachments
+                    # (documents / code / audio / video) ride a parallel
+                    # ``files`` frame field. Save to uploads + append a
+                    # note so the agent reaches for file_read /
+                    # voice_transcribe / view_video on the on-disk path
+                    # (unified-paths: file landing on disk IS the
+                    # integration point — no per-type inline decoder).
+                    try:
+                        from xmclaw.daemon.ws_file_intake import (
+                            save_user_frame_files as _save_user_frame_files,
+                            build_files_note as _build_files_note,
+                        )
+                        _saved_files = _save_user_frame_files(
+                            frame.get("files"),
+                            _data_dir() / "v2" / "uploads",
+                        )
+                        if _saved_files:
+                            content = (content or "") + _build_files_note(_saved_files)
+                    except Exception as exc:  # noqa: BLE001
+                        from xmclaw.utils.log import get_logger as _gl
+                        _gl(__name__).warning(
+                            "file intake failed, attachments dropped: %s", exc,
+                        )
+
                     if active_agent is not None:
                         # Phase 4.1: run the full LLM ↔ tool loop. The
                         # AgentLoop publishes USER_MESSAGE + every LLM /
@@ -2459,6 +2484,16 @@ def create_app(
                         # agent), route through it so complex goals get
                         # PlanEngine → WorkerSwarm treatment.
                         try:
+                            # 打断: when the user sends a new message while a
+                            # turn is in flight, cancel the old turn so the
+                            # new message gets served immediately.
+                            if active_agent is not None:
+                                try:
+                                    active_agent.cancel_session(session_id)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                await _aio.sleep(0.05)
+
                             with use_current_agent_id(resolved_agent_id):
                                 jarvis_orch = getattr(
                                     app.state, "jarvis_orchestrator", None,

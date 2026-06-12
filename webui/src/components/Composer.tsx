@@ -5,6 +5,15 @@
 import { useRef, useState } from "react";
 import { useApp } from "../store/app";
 
+function fileIcon(mime: string): string {
+  if (mime.startsWith("audio/")) return "🎵";
+  if (mime.startsWith("video/")) return "🎬";
+  if (mime === "application/pdf") return "📕";
+  if (mime.startsWith("text/") || mime.includes("json") || mime.includes("xml")) return "📄";
+  if (mime.includes("zip") || mime.includes("compressed")) return "🗜";
+  return "📎";
+}
+
 function Chip({
   active,
   onClick,
@@ -99,11 +108,20 @@ export default function Composer() {
         <div className="flex gap-2 flex-wrap mb-2">
           {attachments.map((a, i) => (
             <div key={i} className="relative group">
-              <img
-                src={a.dataUrl}
-                alt={a.name}
-                className="h-16 w-16 object-cover rounded-md border border-mc-border"
-              />
+              {a.channel === "image" ? (
+                <img
+                  src={a.dataUrl}
+                  alt={a.name}
+                  className="h-16 w-16 object-cover rounded-md border border-mc-border"
+                />
+              ) : (
+                <div className="h-16 w-28 rounded-md border border-mc-border bg-mc-panel2 flex flex-col items-center justify-center px-1.5">
+                  <span className="text-lg leading-none">{fileIcon(a.mime)}</span>
+                  <span className="text-[9px] text-mc-faint truncate max-w-full mt-0.5" title={a.name}>
+                    {a.name}
+                  </span>
+                </div>
+              )}
               <button
                 onClick={() => removeAttachment(i)}
                 className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-mc-err text-white text-[10px] flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100"
@@ -136,7 +154,6 @@ export default function Composer() {
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
           multiple
           className="hidden"
           onChange={(e) => {
@@ -146,7 +163,7 @@ export default function Composer() {
         />
         <button
           onClick={() => fileRef.current?.click()}
-          title="添加图片（也可直接粘贴 / 拖拽到此）"
+          title="添加图片 / 文档 / 音视频（也可直接粘贴 / 拖拽到此）"
           className="text-mc-faint hover:text-mc-accent cursor-pointer shrink-0 text-lg leading-none mb-0.5"
           aria-label="添加附件"
         >

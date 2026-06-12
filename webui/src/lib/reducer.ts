@@ -71,7 +71,7 @@ const str = (v: unknown): string => (typeof v === "string" ? v : "");
 // 给 LLM 看的，不是用户打的字 — 展示层剥掉。标签名单与
 // routers/tasks.py 的 _INJECTED_BLOCKS 保持同步。
 const INJECTED_BLOCKS =
-  /<(session-workspace|output_schema|memory-[\w-]+|recalled-memory-files|recalled|curriculum-[\w-]+)>[\s\S]*?<\/\1>/g;
+  /<(session-workspace|output_schema|memory-[\w-]+|recalled-memory-files|recalled|curriculum-[\w-]+|user-uploaded-files)>[\s\S]*?<\/\1>/g;
 export function stripInjectedBlocks(text: string): string {
   return text.replace(INJECTED_BLOCKS, "").trim();
 }
