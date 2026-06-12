@@ -197,12 +197,19 @@ function FilesTab() {
       .catch(() => setTree([]));
   }, [token, sid, version]);
 
-  // 时间线"在工作区查看"联动：绝对路径里截出 workspace 相对段尽力匹配。
+  // 时间线点击文件名联动：绝对路径里截出 workspace 相对段尽力匹配；
+  // 不在工作区的文件给出明确反馈而不是没反应。
+  const [focusMiss, setFocusMiss] = useState<string | null>(null);
   useEffect(() => {
     if (!focus) return;
     const base = focus.path.split(/[\\/]/).pop() || focus.path;
     const hit = tree.find((n) => n.path === focus.path || n.path.endsWith(base));
-    if (hit) setSelPath(hit.path);
+    if (hit) {
+      setSelPath(hit.path);
+      setFocusMiss(null);
+    } else {
+      setFocusMiss(focus.path);
+    }
   }, [focus, tree]);
 
   useEffect(() => {
@@ -215,8 +222,19 @@ function FilesTab() {
       .catch(() => setFile(null));
   }, [token, sid, selPath]);
 
+  const missNotice = focusMiss && (
+    <div className="mx-2 mt-2 px-2.5 py-1.5 rounded border border-mc-warn/40 bg-mc-warn/5 text-[11px] text-mc-warn break-all">
+      该文件不在本会话工作区（{focusMiss}）— 工作区只索引 agent 在 scratch 目录的产物
+    </div>
+  );
+
   if (tree.length === 0)
-    return <div className="text-xs text-mc-faint p-3">工作区暂无文件 — agent 产出后实时出现</div>;
+    return (
+      <div>
+        {missNotice}
+        <div className="text-xs text-mc-faint p-3">工作区暂无文件 — agent 产出后实时出现</div>
+      </div>
+    );
 
   if (selPath) {
     const e = ext(selPath);
@@ -248,6 +266,7 @@ function FilesTab() {
 
   return (
     <ul className="p-2 space-y-0.5">
+      {missNotice && <li>{missNotice}</li>}
       {tree.map((n) => (
         <li key={n.path}>
           <button
@@ -299,7 +318,7 @@ function TerminalTab() {
 
 // ── 面板壳 + 跟随逻辑 ──────────────────────────────────────────
 
-export default function WorkspacePanel() {
+export default function WorkspacePanel({ width }: { width?: number }) {
   const [tab, setTab] = useState<Tab>("预览");
   const follow = useApp((s) => s.followAgent);
   const setFollow = useApp((s) => s.setFollowAgent);
@@ -332,7 +351,10 @@ export default function WorkspacePanel() {
   }, [focus]);
 
   return (
-    <aside className="w-80 border-l border-mc-border bg-mc-panel hidden xl:flex flex-col shrink-0">
+    <aside
+      style={width ? { width } : undefined}
+      className="w-80 border-l border-mc-border bg-mc-panel hidden xl:flex flex-col shrink-0"
+    >
       <div className="flex items-center gap-1 px-2 pt-2 border-b border-mc-border shrink-0">
         {TABS.map((t) => (
           <button

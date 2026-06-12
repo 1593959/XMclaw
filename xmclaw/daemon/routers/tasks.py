@@ -137,7 +137,10 @@ def _derive(events: list[Any], now: float) -> dict[str, Any]:
     steps_total = plan_total or todo_total
     steps_done = plan_done if plan_total else todo_done
 
-    if asked > answered:
+    # awaiting_input 仅当未答问题真的挂在事件流尾部（最后事件就是提问）。
+    # 旧条件只看 asked>answered 计数 —— 历史会话里被弃置的提问会让任务
+    # 永远顶着"等你回答"，用户实测点名误导（2026-06-12）。
+    if asked > answered and last_type == "agent_asked_question":
         status = "awaiting_input"
     elif last_type in _RUNNING_TAIL and (now - last_ts) < STALE_S:
         status = "running"

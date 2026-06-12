@@ -89,15 +89,20 @@ function EditCard({ e }: { e: Entry }) {
     return { lines: d.lines, stat: d.stat, fullText: content };
   }, [e.name, args]);
 
+  const focusFile = useApp((s) => s.focusWorkspaceFile);
   return (
     <div className="border border-mc-border rounded-md bg-mc-panel2/60 min-w-0">
       <div className="flex items-center gap-2 px-3 py-1.5">
         <StatusDot status={e.status} />
-        <button onClick={() => setOpen(!open)} className="flex items-center gap-2 cursor-pointer min-w-0">
-          <span className="text-xs text-mc-muted">✎ 编辑</span>
-          <span className="font-mono text-xs text-mc-text truncate" title={path}>
-            {fileName}
-          </span>
+        <span className="text-xs text-mc-muted shrink-0">✎ 编辑</span>
+        <button
+          onClick={() => focusFile(path)}
+          className="font-mono text-xs text-mc-text truncate cursor-pointer hover:text-mc-accent hover:underline decoration-mc-accent/50"
+          title={`在右侧打开 ${path}`}
+        >
+          {fileName}
+        </button>
+        <button onClick={() => setOpen(!open)} className="flex items-center gap-2 cursor-pointer shrink-0">
           <span className="text-xs text-mc-ok">+{stat.adds}</span>
           <span className="text-xs text-mc-err">−{stat.dels}</span>
         </button>
@@ -181,22 +186,37 @@ const SUMMARY_TOOLS: Record<string, string> = {
 
 function SummaryCard({ e }: { e: Entry }) {
   const [open, setOpen] = useState(false);
+  const focusFile = useApp((s) => s.focusWorkspaceFile);
   const label = SUMMARY_TOOLS[e.name || ""] || `⚙ ${e.name}`;
+  const path = str(e.args?.path);
   const arg =
-    str(e.args?.path) || str(e.args?.pattern) || str(e.args?.query) || str(e.args?.url) ||
+    path || str(e.args?.pattern) || str(e.args?.query) || str(e.args?.url) ||
     str(e.args?.text)?.slice(0, 80) ||
     "";
   return (
     <div className="min-w-0">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-left cursor-pointer max-w-full"
-      >
+      <div className="flex items-center gap-2 max-w-full">
         <StatusDot status={e.status} />
         <span className="text-xs text-mc-muted shrink-0">{label}</span>
-        <span className="font-mono text-[11.5px] text-mc-faint truncate">{arg}</span>
-        <span className="text-mc-faint text-[10px]">{open ? "▾" : "▸"}</span>
-      </button>
+        {path ? (
+          <button
+            onClick={() => focusFile(path)}
+            className="font-mono text-[11.5px] text-mc-faint truncate cursor-pointer hover:text-mc-accent hover:underline decoration-mc-accent/50"
+            title={`在右侧打开 ${path}`}
+          >
+            {arg}
+          </button>
+        ) : (
+          <span className="font-mono text-[11.5px] text-mc-faint truncate">{arg}</span>
+        )}
+        <button
+          onClick={() => setOpen(!open)}
+          className="text-mc-faint text-[10px] cursor-pointer px-1"
+          aria-label="展开结果"
+        >
+          {open ? "▾" : "▸"}
+        </button>
+      </div>
       {open && e.result != null && (
         <pre className="mt-1 px-3 py-2 text-[11px] font-mono text-mc-muted whitespace-pre-wrap break-all max-h-64 overflow-y-auto border border-mc-border rounded-md bg-mc-panel2/60">
           {String(e.result).slice(0, 8000)}
@@ -310,26 +330,16 @@ export function AgentGroupCard({ e }: { e: Entry }) {
 // ── 路由器 ─────────────────────────────────────────────────────
 
 export default function ToolCard({ e }: { e: Entry }) {
-  const focusFile = useApp((s) => s.focusWorkspaceFile);
   const name = e.name || "";
   let card;
   if (name === "file_write" || name === "apply_patch") card = <EditCard e={e} />;
   else if (name === "bash") card = <TerminalCard e={e} />;
   else if (name in SUMMARY_TOOLS) card = <SummaryCard e={e} />;
   else card = <GenericCard e={e} />;
-  const path = str(e.args?.path);
   return (
     <div className="min-w-0">
       {card}
       <MediaStrip e={e} />
-      {(name === "file_write" || name === "apply_patch") && path && e.status !== "running" && (
-        <button
-          onClick={() => focusFile(path)}
-          className="text-[11px] text-mc-faint hover:text-mc-accent cursor-pointer mt-0.5"
-        >
-          ↗ 在工作区查看
-        </button>
-      )}
     </div>
   );
 }

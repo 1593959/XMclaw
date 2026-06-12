@@ -2259,6 +2259,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
+- 2026-06-12: **交互升级轮**（本 commit，用户实测反馈批次）。① /ui-next/ 黑屏 → 根因是无错误边界（B-223 同款），补 ErrorBoundary（崩溃显示堆栈+恢复按钮）+ lazy chunk 加载失败自动刷新兜底；② 左右侧栏拖拽自由缩放（宽度持久化 + 双击恢复默认）；③ 时间线文件名全面可点击直达右栏文件 tab（编辑卡/读取卡），不在工作区时给明确提示；④ "等待审批"误导 → 语义修正（仅当未答提问真挂事件流尾部）+ 文案改"等你回答"+ 回归测试；⑤ 记忆图谱回归：/memory/v2/graph 数据 + 自绘 SVG 力导向（不引 vis-network，4.6KB chunk），kind 配色/点击聚焦邻边/节点拖拽/手动布局位置优先，实测 40 节点 112 边渲染。canvas 预览链路确认前端无责——daemon 进程仍是 factory 修复前代码，待重启复测。终端卡中文乱码 = bash 工具 GBK 解码（后端，另线处理中）。
+
 - 2026-06-12: **视觉打磨轮 + Composer 功能补全**（本 commit，用户反馈"还是太简陋"）。HUD 重做（品牌徽标/指标分组/状态胶囊/执行中呼吸灯）；任务卡升级（状态色条/相对时间/当前活动行/迷你进度条/hover）；时间线（你-X 角色块/用户消息竖线引用/入场动画/流式光标/呼吸灯思考态/空态画面）；Composer 补回 plan_mode + ultrathink + 模型 profile 切换（帧字段与旧 UI 一致，/api/v2/llm/profiles 拉列表）+ 聚焦光晕。全局动效 token（mc-rise/mc-caret/mc-breathe/mc-card hover/:focus-visible）。实测窄宽双视口零控制台错误。
 
 - 2026-06-11: Phase 10 立项（commit d13bbd2）。M0 完成：设计文档 + 三项方向决策 + ADR-010 + 用户视觉方向认可。下一步 10.M1 Web 骨架。

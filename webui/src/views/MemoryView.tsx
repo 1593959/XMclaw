@@ -1,9 +1,11 @@
 // 记忆域（10.M3 收编旧 Memory 页）— 驾驶舱仪表式：
 // 读数条（/memory/v2/overview）+ facts 检索列表（/facts?q=）。
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
 import { apiGet } from "../lib/api";
+
+const MemoryGraph = lazy(() => import("./MemoryGraph"));
 
 interface Overview {
   enabled?: boolean;
@@ -46,6 +48,7 @@ export default function MemoryView() {
   const [q, setQ] = useState("");
   const [facts, setFacts] = useState<Fact[]>([]);
   const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState<"list" | "graph">("list");
 
   useEffect(() => {
     if (!token) return;
@@ -99,14 +102,38 @@ export default function MemoryView() {
         </div>
       )}
 
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="检索记忆（关键词子串匹配）…"
-        className="w-full max-w-md text-[13px] px-3 py-2 rounded-md border border-mc-border bg-mc-panel2 outline-none focus:border-mc-accent"
-      />
+      <div className="flex items-center gap-2">
+        {(["list", "graph"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={
+              "text-xs px-3 py-1.5 rounded-md border cursor-pointer " +
+              (tab === t
+                ? "border-mc-accent/50 text-mc-accent bg-mc-accent/10"
+                : "border-mc-border text-mc-faint hover:text-mc-muted")
+            }
+          >
+            {t === "list" ? "☰ 列表" : "◉ 图谱"}
+          </button>
+        ))}
+        {tab === "list" && (
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="检索记忆（关键词子串匹配）…"
+            className="flex-1 max-w-md text-[13px] px-3 py-1.5 rounded-md border border-mc-border bg-mc-panel2 outline-none focus:border-mc-accent"
+          />
+        )}
+      </div>
 
-      <div className="space-y-1.5">
+      {tab === "graph" && (
+        <Suspense fallback={<div className="text-xs text-mc-faint">图谱加载中…</div>}>
+          <MemoryGraph />
+        </Suspense>
+      )}
+
+      <div className="space-y-1.5" style={tab === "graph" ? { display: "none" } : undefined}>
         {loading && <div className="text-xs text-mc-faint">检索中…</div>}
         {!loading && facts.length === 0 && <div className="text-xs text-mc-faint">没有匹配的记忆</div>}
         {facts.map((f) => (

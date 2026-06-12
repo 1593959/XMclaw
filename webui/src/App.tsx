@@ -6,6 +6,7 @@ import PlanStrip from "./components/PlanStrip";
 import Timeline from "./components/Timeline";
 import Composer from "./components/Composer";
 import WorkspacePanel from "./components/WorkspacePanel";
+import { ResizeHandle, useResizable } from "./lib/useResizable";
 
 // 域页懒加载：不打进主 bundle，切到对应域才拉。
 const MemoryView = lazy(() => import("./views/MemoryView"));
@@ -20,6 +21,9 @@ export default function App() {
   const boot = useApp((s) => s.boot);
   const authFetched = useApp((s) => s.authFetched);
   const view = useApp((s) => s.view);
+  // 左右侧栏自由缩放（2026-06-12 用户点名），宽度持久化。
+  const rail = useResizable({ key: "rail", defaultWidth: 224, min: 170, max: 420 });
+  const ws = useResizable({ key: "workspace", defaultWidth: 320, min: 240, max: 640, invert: true });
 
   useEffect(() => {
     boot();
@@ -30,7 +34,8 @@ export default function App() {
     <div className="h-full flex flex-col">
       <Hud />
       <div className="flex-1 flex min-h-0">
-        <TaskRail />
+        <TaskRail width={rail.width} />
+        <ResizeHandle onMouseDown={rail.onMouseDown} onDoubleClick={rail.reset} />
         {view === "tasks" ? (
           <>
             <main className="flex-1 flex flex-col min-w-0">
@@ -44,7 +49,8 @@ export default function App() {
               )}
               <Composer />
             </main>
-            <WorkspacePanel />
+            <ResizeHandle onMouseDown={ws.onMouseDown} onDoubleClick={ws.reset} />
+            <WorkspacePanel width={ws.width} />
           </>
         ) : (
           <main className="flex-1 flex flex-col min-w-0">

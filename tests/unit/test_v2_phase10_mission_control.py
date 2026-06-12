@@ -37,6 +37,17 @@ def test_derive_awaiting_input_when_question_unanswered() -> None:
     assert out["status"] == "awaiting_input"
 
 
+def test_derive_abandoned_question_not_awaiting() -> None:
+    """用户实测反馈（2026-06-12）：历史会话里被弃置的提问（之后又有别的
+    事件）不能让任务永远顶着"等你回答"。"""
+    out = _derive([
+        _ev("agent_asked_question", NOW - 7200, question_id="q1"),
+        _ev("user_message", NOW - 7000),
+        _ev("llm_response", NOW - 6990, ok=True, tool_calls_count=0),
+    ], NOW)
+    assert out["status"] != "awaiting_input"
+
+
 def test_derive_answered_question_not_awaiting() -> None:
     out = _derive([
         _ev("agent_asked_question", NOW - 20, question_id="q1"),

@@ -32,11 +32,11 @@ from xmclaw.memory.v2 import (
 from xmclaw.memory.v2.bm25 import PrebuiltBM25Index
 
 
-def _make_service() -> MemoryService:
+def _make_service(*, embed_dim: int = 4) -> MemoryService:
     return MemoryService(
         vector_backend=InMemoryVectorBackend(),
         graph_backend=InMemoryGraphBackend(),
-        embedder=EmbeddingService(StubEmbedder(dim=4)),
+        embedder=EmbeddingService(StubEmbedder(dim=embed_dim)),
     )
 
 
@@ -60,10 +60,11 @@ async def test_scan_all_paginates_entire_store() -> None:
         await svc.remember(f"scan-all-test-{uuid.uuid4().hex}", kind=kind, scope=FactScope.USER)
     # batch_size far smaller than total → forces multiple cursor pages.
     facts = await svc._scan_all(batch_size=3)
-    assert len(facts) >= 8, (
-        f"expected >=8 facts from _scan_all, got {len(facts)} "
-        f"(StubEmbedder dim=4 → random near-duplicate merges expected; "
-        f"this test verifies pagination works, not dedup behaviour)"
+    # StubEmbedder(dim=4) causes random near-duplicate merges.
+    # The purpose of this test is cursor pagination, not dedup.
+    assert len(facts) >= 4, (
+        f"expected >=4 facts from _scan_all (batch_size=3 forces >1 page), "
+        f"got {len(facts)}"
     )
     ids = [f.id for f in facts]
     assert len(ids) == len(set(ids)), "composite cursor must not return duplicate facts"

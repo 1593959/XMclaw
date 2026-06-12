@@ -3,7 +3,7 @@ import type { TaskSnapshot } from "../lib/types";
 
 const STATUS_META: Record<TaskSnapshot["status"], { label: string; cls: string; bar: string }> = {
   running: { label: "运行中", cls: "text-mc-accent", bar: "#8b5cf6" },
-  awaiting_input: { label: "等待审批", cls: "text-mc-warn", bar: "#fbbf24" },
+  awaiting_input: { label: "等你回答", cls: "text-mc-warn", bar: "#fbbf24" },
   done: { label: "已完成", cls: "text-mc-ok", bar: "#34d399" },
   failed: { label: "失败", cls: "text-mc-err", bar: "#f87171" },
   chat: { label: "对话", cls: "text-mc-faint", bar: "transparent" },
@@ -29,7 +29,7 @@ const ACTIVITY_LABEL: Record<string, string> = {
   todo_updated: "更新待办",
 };
 
-export default function TaskRail() {
+export default function TaskRail({ width }: { width?: number }) {
   const tasks = useApp((s) => s.tasks);
   const sids = useApp((s) => s.sids);
   const activeSid = useApp((s) => s.sid);
@@ -51,7 +51,10 @@ export default function TaskRail() {
         }));
 
   return (
-    <aside className="w-56 border-r border-mc-border bg-mc-panel hidden md:flex flex-col shrink-0">
+    <aside
+      style={width ? { width } : undefined}
+      className="w-56 border-r border-mc-border bg-mc-panel hidden md:flex flex-col shrink-0"
+    >
       <div className="flex items-center justify-between px-3 pt-3 pb-2">
         <span className="text-xs text-mc-faint uppercase tracking-wider">任务</span>
         <button
