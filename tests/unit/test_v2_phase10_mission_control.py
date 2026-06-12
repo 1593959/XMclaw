@@ -214,6 +214,26 @@ def test_webui_dist_committed() -> None:
     )
 
 
+def test_ui_switchover_primary_and_legacy(client: TestClient) -> None:
+    """10.M3.2 切换：/ui/ = 新 Mission Control，/ui-legacy/ = 旧 Preact UI，
+    /ui-next/ 别名仍可用，/ 重定向到 /ui/。"""
+    r = client.get("/ui/", follow_redirects=False)
+    assert r.status_code == 200
+    assert '<div id="root">' in r.text, "/ui/ 应是新 Mission Control 壳"
+
+    r = client.get("/ui-next/", follow_redirects=False)
+    assert r.status_code == 200
+    assert '<div id="root">' in r.text, "/ui-next/ 别名应仍服务新 UI"
+
+    r = client.get("/ui-legacy/", follow_redirects=False)
+    assert r.status_code == 200
+    assert "bootstrap" in r.text.lower(), "/ui-legacy/ 应是旧 Preact UI"
+
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert r.headers.get("location") == "/ui/"
+
+
 def test_ui_next_serves_spa_shell(client: TestClient) -> None:
     r = client.get("/ui-next/")
     assert r.status_code == 200, r.text

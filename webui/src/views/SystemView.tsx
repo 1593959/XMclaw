@@ -1,5 +1,5 @@
 // 系统域（10.M3 收编旧 Settings/Logs/Dashboard 摘要）— 健康读数 +
-// 日志尾巴。深度配置仍走旧 /ui/ 的 Settings（M3 过渡期），这里是驾驶舱仪表。
+// 日志尾巴。深度配置仍走 /ui-legacy/ 的旧 Settings（M3 过渡期），这里是驾驶舱仪表。
 
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
@@ -55,7 +55,7 @@ export default function SystemView() {
         <h2 className="text-base font-semibold">系统</h2>
         <p className="text-xs text-mc-faint mt-0.5">
           daemon 健康与日志 — 深度配置暂在
-          <a href="/ui/settings" target="_blank" rel="noreferrer" className="text-mc-accent underline mx-1">
+          <a href="/ui-legacy/settings" target="_blank" rel="noreferrer" className="text-mc-accent underline mx-1">
             旧 Settings
           </a>
           （M3 过渡期）

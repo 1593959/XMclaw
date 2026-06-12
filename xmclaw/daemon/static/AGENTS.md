@@ -1,11 +1,11 @@
 # AGENTS.md — `xmclaw/daemon/static/`
 
-> ⚠ **DEPRECATED（Phase 10, 2026-06-11 起）**：本目录进入退役轨道，
-> 冻结只修崩溃级 bug。新 Mission Control UI 在 `webui/`（Vite + React + TS，
-> ADR-010 取代下文 ADR-001/002 的"无构建"约束）。设计规格见
+> ⚠ **RETIRED（Phase 10.M3.2, 2026-06-13 起）**：`/ui/` 已切到新
+> Mission Control（`webui/` → `webui_dist/`），本目录退至 `/ui-legacy/`，
+> 冻结只修崩溃级 bug，保留一个 tag 周期后删除。新 UI 用 Vite + React + TS
+> （ADR-010 取代下文 ADR-001/002 的"无构建"约束）。设计规格见
 > [docs/MISSION_CONTROL_DESIGN_2026.md](../../../docs/MISSION_CONTROL_DESIGN_2026.md)，
-> 进度见 JARVIS plan §Phase 10。本目录在 `/ui/` 切换到 webui_dist 并保留
-> 一个 tag 周期后删除。下文约束仅在本目录退役前对本目录内文件继续有效。
+> 进度见 JARVIS plan §Phase 10。下文约束仅在本目录删除前对本目录内文件继续有效。
 
 ## 1. 职责（Responsibility）
 

@@ -566,6 +566,7 @@ def create_app(
     # profiles / workspaces). Included here so the panels have real
     # data instead of the ``xmclaw_adapter.js`` mocks they used to hit.
     from xmclaw.daemon.routers import files as _files_router
+    from xmclaw.daemon.routers import llm_discovery as _llm_discovery_router
     from xmclaw.daemon.routers import llm_profiles as _llm_profiles_router
     from xmclaw.daemon.routers import memory as _memory_router
     # Wave 27: Memory v2 — L1 facts + relations API for the new
@@ -602,6 +603,7 @@ def create_app(
     )
     from xmclaw.daemon.routers import tasks as _tasks_router  # Phase 10.M1.3
     app.include_router(_files_router.router)
+    app.include_router(_llm_discovery_router.router)
     app.include_router(_llm_profiles_router.router)
     app.include_router(_memory_router.router)
     app.include_router(_memory_v2_router.router)  # Wave 27
@@ -1786,8 +1788,11 @@ def create_app(
                 )
             return FileResponse(str(path), headers=_NO_STORE_HEADERS)
 
-        @app.get("/ui/{spa_path:path}", response_model=None)
-        async def ui_spa_fallback(spa_path: str):
+        # Phase 10.M3.2 (2026-06-13): 旧 Preact UI 退到 /ui-legacy/。
+        # /ui/ 现由新 Mission Control（webui_dist）接管（见下方块）。
+        # 旧 UI 冻结只修崩溃级 bug，保留一个 tag 周期后删除。
+        @app.get("/ui-legacy/{spa_path:path}", response_model=None)
+        async def ui_legacy_spa_fallback(spa_path: str):
             if spa_path:
                 candidate = (_static_dir / spa_path).resolve()
                 try:
@@ -1813,16 +1818,16 @@ def create_app(
                 return resp
 
         app.mount(
-            "/ui",
+            "/ui-legacy",
             _BootStampingStaticFiles(directory=str(_static_dir), html=True),
-            name="ui",
+            name="ui-legacy",
         )
 
-    # ── /ui-next/ — Mission Control (Phase 10) ──
+    # ── /ui/ — Mission Control (Phase 10，2026-06-13 起为默认) ──
     # Vite 构建产物（webui/ 源码 → xmclaw/daemon/webui_dist/，提交进
     # git）。产物文件名带内容哈希，不需要旧 UI 的 BOOT_VERSION 重写；
     # 只有 index.html 本身要 no-store，否则切版本后浏览器拿旧壳。
-    # M3 验收通过后 /ui/ 切到这里，旧 static/ 退役。
+    # 同一处理器服务 /ui/（主入口）与 /ui-next/（兼容旧书签别名）。
     _webui_dist = Path(__file__).parent / "webui_dist"
     if (_webui_dist / "index.html").is_file():
         _webui_root = _webui_dist.resolve()
@@ -1830,8 +1835,7 @@ def create_app(
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         }
 
-        @app.get("/ui-next/{spa_path:path}", response_model=None)
-        async def ui_next_spa(spa_path: str):
+        def _serve_webui(spa_path: str) -> FileResponse:
             if spa_path:
                 candidate = (_webui_dist / spa_path).resolve()
                 try:
@@ -1851,6 +1855,15 @@ def create_app(
             return FileResponse(
                 str(_webui_dist / "index.html"), headers=_UI_NEXT_NO_STORE,
             )
+
+        @app.get("/ui/{spa_path:path}", response_model=None)
+        async def ui_spa(spa_path: str):
+            return _serve_webui(spa_path)
+
+        # 兼容期别名：Phase 10 早期文档/书签指向 /ui-next/。
+        @app.get("/ui-next/{spa_path:path}", response_model=None)
+        async def ui_next_spa(spa_path: str):
+            return _serve_webui(spa_path)
 
         # B-MULTIMODAL-UI: serve screenshots saved by screen_capture /
         # screen_region_capture / image_read / camera_capture so the

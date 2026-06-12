@@ -2239,7 +2239,7 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 - [x] **10.M3.1 四域收编（首轮）**：左栏底部四域导航；记忆域（overview 读数条 + kind 分布 + facts 关键词检索，实测 63 事实/长期 10/工作 52）；能力域（技能清单 + 进化 arms 晋升进度条，实测 87 技能/5 arm/2 待晋升）；系统域（health checks 卡 + 日志尾巴，503 degraded body 也渲染）；域页全部懒加载 chunk。深度操作（fact 编辑/技能回滚/配置写入）留 10.M3.1b 迭代。
 - [ ] **10.M3.1b 域页深化**：fact 钉选/遗忘/修正操作；技能版本历史与回滚；系统域收编 doctor/备份/配置只读；Cron/Trace 入任务域。
-- [ ] **10.M3.2 切换**：`/ui/` 指向 webui_dist；旧 `static/` 移入 archive，留一个 tag 周期后删除；更新 static/AGENTS.md → webui/AGENTS.md。
+- [x] **10.M3.2 切换**（2026-06-13）：`/ui/` 已切到新 Mission Control（webui_dist），旧 Preact UI 退至 `/ui-legacy/`，`/ui-next/` 保留为兼容别名，`/` → `/ui/`。CLAUDE.md + static/AGENTS.md 标 RETIRED（保留一个 tag 周期后删）。SystemView"旧 Settings"链接改指 `/ui-legacy/settings`。跨前后端测试覆盖四路径（test_ui_switchover_primary_and_legacy）。
 
 ### 10.M4 TUI（Textual 重建）
 

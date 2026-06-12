@@ -41,8 +41,9 @@ xmclaw/              Python package — see per-subdir AGENTS.md for contracts
 └── plugins/         Third-party plugins
 
 xmclaw/daemon/static/ 旧 Web UI (Preact + htm via ESM, no build step) — served at
-                     `/ui/` via FastAPI `StaticFiles`. ⚠ Phase 10 (2026-06-11) 起
-                     进入退役轨道：冻结，只修崩溃级 bug。
+                     FastAPI `StaticFiles`. ⚠ Phase 10.M3.2 (2026-06-13) 起退至
+                     `/ui-legacy/`，`/ui/` 已切到新 Mission Control。冻结，只修
+                     崩溃级 bug，保留一个 tag 周期后删除。
 webui/               新 Mission Control UI（Phase 10，Vite + React + TS — ADR-010
                      取代 ADR-001 "无 Node 构建"约束）。构建产物提交到
                      `xmclaw/daemon/webui_dist/`，最终用户安装运行仍零 Node、
