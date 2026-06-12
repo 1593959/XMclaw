@@ -1,14 +1,14 @@
 """LLM Profiles API — list / upsert / delete deployed model profiles.
 
 Mounted at ``/api/v2/llm/profiles``. Backs the Settings page so the
-user can manage multiple LLM endpoints (Anthropic + OpenAI + a local
-DeepSeek over an OpenAI-compatible base URL, …) and pick which one
-to route each chat session through.
+user can manage multiple LLM endpoints (Anthropic + OpenAI + OpenRouter
++ any OpenAI-compat shim), and pick which one to route each chat session
+through.
 
 GET returns the list with ``api_key`` redacted. POST upserts a profile
-into ``daemon/config.json`` and returns ``restart_required: true`` —
-the in-memory ``LLMRegistry`` is built at boot and we don't hot-swap
-SDK clients. DELETE removes a profile by id (also restart-required).
+into ``daemon/config.json`` and returns ``restart_required: true`` — the
+in-memory ``LLMRegistry`` is built at boot and we don't hot-swap SDK
+clients. DELETE removes a profile by id (also restart-required).
 
 The default profile (``id == "default"``) is synthesised by the
 factory from the legacy ``llm.{anthropic,openai}`` block; it's
@@ -27,9 +27,12 @@ from starlette.responses import JSONResponse
 
 router = APIRouter(prefix="/api/v2/llm/profiles", tags=["llm-profiles"])
 
-
 _VALID_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_VALID_PROVIDERS = ("anthropic", "openai")
+
+# Extended provider set: native providers + openrouter + any generic
+# OpenAI-compat endpoint. "openai_compat" means "use OpenAILLM with a
+# custom base_url" — the user supplies their own model name.
+_VALID_PROVIDERS = ("anthropic", "openai", "openrouter", "openai_compat")
 
 
 def _redact_key(key: str | None) -> str:
@@ -113,6 +116,8 @@ async def list_profiles(request: Request) -> JSONResponse:
                         "api_key_redacted": _redact_key(
                             entry.get("api_key") if isinstance(entry.get("api_key"), str) else "",
                         ),
+                        # Phase 10: channel/model enable state (missing = enabled).
+                        "enabled": entry.get("enabled") is not False,
                     })
 
     return JSONResponse({
@@ -129,12 +134,16 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
     Body schema::
 
         {
-          "id": "haiku-fast",          required, slug
-          "label": "Claude Haiku",     optional
-          "provider": "anthropic",     required, "anthropic" | "openai"
-          "model": "claude-haiku-4-5", required
-          "api_key": "sk-...",         required
-          "base_url": "https://..."    optional
+          "id": "haiku-fast",                required, slug
+          "label": "Claude Haiku",            optional
+          "provider": "anthropic",            required
+          "model": "claude-haiku-4-5",        required
+          "api_key": "sk-...",                required
+          "base_url": "https://...",          optional
+          "max_tokens": 8192,                 optional
+          "context_length": 200000,           optional
+          "prompt_cache_enabled": true,       optional
+          "extended_thinking": false,         optional
         }
 
     The reserved id ``"default"`` is rejected — that block is owned by
@@ -165,6 +174,20 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
     if not model:
         return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
     base_url = str(payload.get("base_url") or "").strip()
+
+    # openrouter requires its own api_key; openai_compat without
+    # base_url is a no-op so we allow it but warn.
+    if provider == "openrouter" and not api_key:
+        return JSONResponse(
+            {"ok": False, "error": "api_key is required for openrouter"},
+            status_code=400,
+        )
+    if provider == "openai_compat" and not base_url:
+        return JSONResponse(
+            {"ok": False, "error": "base_url is required for openai_compat"},
+            status_code=400,
+        )
+
     label = str(payload.get("label") or "").strip() or pid
 
     target = _config_path(request)
@@ -195,20 +218,50 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
     }
     if base_url:
         new_entry["base_url"] = base_url
-    # Preserve existing api_key when caller submits an empty string (UI
-    # convention: empty means "leave the secret alone, edit only label/
-    # model/base_url"). Same pattern as PUT /api/v2/config/llm.
+
+    # Optional numeric / boolean knobs.
+    max_tokens = payload.get("max_tokens")
+    if max_tokens is not None:
+        if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0:
+            new_entry["max_tokens"] = max_tokens
+        elif isinstance(max_tokens, str) and max_tokens.strip().isdigit():
+            v = int(max_tokens.strip())
+            if v > 0:
+                new_entry["max_tokens"] = v
+
+    context_length = payload.get("context_length")
+    if context_length is not None:
+        if isinstance(context_length, int) and not isinstance(context_length, bool) and context_length > 0:
+            new_entry["context_length"] = context_length
+        elif isinstance(context_length, str) and context_length.strip().isdigit():
+            v = int(context_length.strip())
+            if v > 0:
+                new_entry["context_length"] = v
+
+    pc = payload.get("prompt_cache_enabled")
+    if isinstance(pc, bool):
+        new_entry["prompt_cache_enabled"] = pc
+
+    et = payload.get("extended_thinking")
+    if isinstance(et, bool):
+        new_entry["extended_thinking"] = et
+
+    # Phase 10: Proma-style channel/model enable toggle. ``enabled:false``
+    # persists the profile (+ api_key) but the factory skips registry
+    # load. Only write when explicitly false — keeps existing configs
+    # flag-free (missing = enabled).
+    en = payload.get("enabled")
+    if en is False:
+        new_entry["enabled"] = False
+
+    # API key handling: preserve existing key when caller submits empty.
     existing = next((e for e in profiles if isinstance(e, dict) and e.get("id") == pid), None)
     if api_key:
         new_entry["api_key"] = api_key
     elif isinstance(existing, dict) and isinstance(existing.get("api_key"), str):
         new_entry["api_key"] = existing["api_key"]
     else:
-        # B-146: skip the require-api_key check when the legacy
-        # same-provider block has a key the profile can inherit.
-        # Build-time falls through to llm.<provider>.api_key in
-        # build_llm_profiles_from_config; persisting an empty string
-        # here just means "use whatever the legacy key resolves to".
+        # B-146: inherit from legacy same-provider block when set.
         legacy_pcfg = llm.get(provider)
         legacy_key = (
             legacy_pcfg.get("api_key")
@@ -216,8 +269,6 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
             else None
         )
         if isinstance(legacy_key, str) and legacy_key.strip():
-            # Don't write the secret into the new entry — just let it
-            # inherit. Keeps the on-disk config DRY.
             pass
         else:
             return JSONResponse(
@@ -249,6 +300,78 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
         "path": str(target),
         "restart_required": True,
     })
+
+
+@router.patch("/{profile_id}/enabled")
+async def set_profile_enabled(
+    request: Request, profile_id: str, payload: dict[str, Any],
+) -> JSONResponse:
+    """Phase 10: flip a profile's ``enabled`` flag in-place + apply live.
+
+    Body: ``{"enabled": true|false}``. Unlike upsert this touches ONLY
+    the flag — no risk of dropping max_tokens / context_length the
+    caller didn't resend. Takes effect immediately (no restart):
+      * disable → pop from the in-memory registry (vanishes from picker)
+      * enable  → rebuild that one profile from config + insert back
+    """
+    if profile_id == "default":
+        return JSONResponse(
+            {"ok": False, "error": "cannot toggle the default profile"},
+            status_code=400,
+        )
+    want = bool(payload.get("enabled"))
+    target = _config_path(request)
+    if target is None:
+        return JSONResponse(
+            {"ok": False, "error": "daemon has no config_path; cannot persist"},
+            status_code=500,
+        )
+    try:
+        cfg = _load_config(target)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    llm = cfg.get("llm")
+    profiles = llm.get("profiles") if isinstance(llm, dict) else None
+    entry = (
+        next((e for e in profiles if isinstance(e, dict) and e.get("id") == profile_id), None)
+        if isinstance(profiles, list)
+        else None
+    )
+    if entry is None:
+        return JSONResponse({"ok": False, "error": "profile not found"}, status_code=404)
+
+    if want:
+        entry.pop("enabled", None)  # missing = enabled
+    else:
+        entry["enabled"] = False
+    try:
+        _atomic_write(target, cfg)
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": f"write failed: {exc}"}, status_code=500)
+
+    # Live apply against the in-memory registry (no restart).
+    registry = getattr(request.app.state, "llm_registry", None)
+    if registry is not None:
+        try:
+            if not want:
+                registry.profiles.pop(profile_id, None)
+                if registry.default_id == profile_id:
+                    registry.default_id = next(iter(registry.profiles), None)
+            else:
+                from xmclaw.daemon.factory import build_llm_profiles_from_config
+                rebuilt = build_llm_profiles_from_config(cfg)
+                match = next((p for p in rebuilt if p.id == profile_id), None)
+                if match is not None:
+                    registry.profiles[profile_id] = match
+                    if registry.default_id is None:
+                        registry.default_id = profile_id
+        except Exception as exc:  # noqa: BLE001 — config persisted; live apply best-effort
+            return JSONResponse(
+                {"ok": True, "id": profile_id, "enabled": want, "live_applied": False, "warn": str(exc)},
+            )
+
+    return JSONResponse({"ok": True, "id": profile_id, "enabled": want, "live_applied": True})
 
 
 @router.delete("/{profile_id}")

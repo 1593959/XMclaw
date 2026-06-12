@@ -2259,6 +2259,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
+- 2026-06-13: **Proma 式模型配置 UI**（用户出 Proma 截图为标杆）。把一次性"发现→注册"的 ModelDiscoveryView 重做为两级管理：①渠道列表（profile 按 provider+base_url 分组成"渠道"，每渠道一卡：provider 图标/名称/模型计数/启用开关；Agent 供应商分区）；②渠道编辑器（供应商类型/名称/Base URL+预览/API Key+测试连接+眼睛/启用此渠道/已启用模型 chips/可用模型从供应商获取+手动添加 ID+显示名）。**后端新增 profile `enabled` 字段**：factory 加载时 `enabled:false` 跳过 registry（保留 api_key 不丢），upsert 持久化、GET 返回；新增 `PATCH /api/v2/llm/profiles/{id}/enabled` 原地翻转（只动 flag 不丢其他字段）+ 在内存 registry 即时 apply（禁用 pop / 启用 rebuild 插回，无需重启）。挂进系统域"模型管理"子标签，删除旧 ModelDiscoveryView + 用户加的第 5 个 nav 项（收回四域）。7 个后端 enabled 测试（factory 跳过/back-compat/PATCH 持久化无损/404/GET 报告）+ 前端列表/编辑器结构实测。注：渠道开关端到端需 daemon 重启（运行中实例无 PATCH 路由）。
+
 - 2026-06-12: **任务栏管理 + 模型管理接入**。① TaskRail：>6 任务时出搜索框（标题子串过滤），任务卡 hover 出删除按钮（二次确认 → DELETE /api/v2/sessions/{sid}，删当前会话自动切下一个/新建，乐观移除 + toast）。② 接入用户在建的 ModelDiscoveryView（输入 base_url+api_key → 拉模型 → 多选批量注册），修其编译错误（apiPost 参数序/泛型/主题类名/hotloaded 字段名），挂进系统域"模型管理"子标签——apply 走热加载无需重启即可在 Composer 选用。**broken-HEAD 修复**：app.py 已 import 并注册 `llm_discovery` router 但该文件 + 其 10 个测试未入库（fresh clone ImportError），本 commit 补上。注：`model_discovery.py` 是同前缀 `/api/v2/llm/endpoints` 的未注册死重复，无人引用，未入库（避免路由冲突 landmine）。
 
 - 2026-06-12: **前端 power-user 轮**（移植旧 UI 的高频功能）。① Slash 命令：Composer 首字符 `/` 弹命令面板（↑↓选/Enter/Tab 执行/Esc 关），10 条命令——会话动作（/new /clear /retry /undo /plan /think）+ 域跳转（/memory /skills /system /tasks），retry 回填上条指令、undo 走既有 WS `undo` 帧、clear 仅清本地。② 代码块复制：Markdown `<pre>` hover 出"复制"按钮（agent 频繁输出代码的刚需）。③ 消息悬停操作：assistant 完成态 hover 出"复制/重试"。④ 轻量 Toast 反馈所有 power 动作。实测 slash 过滤+执行切域、代码块复制按钮渲染均通过。

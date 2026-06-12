@@ -66,7 +66,9 @@ from xmclaw.utils.paths import (
 # hitting the native API by default (cheaper + lower latency); they
 # opt into OpenRouter explicitly via the profiles array or by clearing
 # the native api_key.
-_PROVIDER_ORDER: tuple[str, ...] = ("anthropic", "openai", "openrouter")
+# B-XXX: ``openai_compat`` is added so Discovery API-created profiles
+# (which use provider="openai_compat") are actually instantiated.
+_PROVIDER_ORDER: tuple[str, ...] = ("anthropic", "openai", "openrouter", "openai_compat")
 
 
 class ConfigError(ValueError):
@@ -467,6 +469,8 @@ def _instantiate_llm(
     model: str,
     base_url: str | None,
     prompt_cache_enabled: bool | None = None,
+    max_tokens: int | None = None,
+    extended_thinking: bool = False,
 ) -> LLMProvider | None:
     """Construct one LLMProvider from already-resolved config values.
 
@@ -478,9 +482,18 @@ def _instantiate_llm(
     ``prompt_cache_enabled`` (B-320): forwarded only to OpenAILLM since
     AnthropicLLM caches unconditionally (B-245). ``None`` keeps the
     provider's auto-detect — explicit True/False overrides.
+
+    ``max_tokens`` (Epic #27): forwarded to AnthropicLLM for completion
+    token cap.
+
+    ``extended_thinking`` (B-216): forwarded to AnthropicLLM for
+    extended-thinking / reasoning block support.
     """
     if provider_name == "anthropic":
-        return AnthropicLLM(api_key=api_key, model=model, base_url=base_url or None)
+        return AnthropicLLM(
+            api_key=api_key, model=model, base_url=base_url or None,
+            max_tokens=max_tokens, extended_thinking=extended_thinking,
+        )
     if provider_name == "openai":
         return OpenAILLM(
             api_key=api_key, model=model, base_url=base_url or None,
@@ -490,6 +503,13 @@ def _instantiate_llm(
         # B-386: same shape as openai but with OpenRouter's base URL
         # default + HTTP-Referer / X-Title attribution headers.
         return OpenRouterLLM(
+            api_key=api_key, model=model, base_url=base_url or None,
+            prompt_cache_enabled=prompt_cache_enabled,
+        )
+    # B-XXX: openai_compat — generic OpenAI-compatible shim.
+    # Same shape as openai but the user provides the base_url explicitly.
+    if provider_name == "openai_compat":
+        return OpenAILLM(
             api_key=api_key, model=model, base_url=base_url or None,
             prompt_cache_enabled=prompt_cache_enabled,
         )
@@ -542,6 +562,15 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
         provider_name = str(entry.get("provider") or "").strip().lower()
         if not pid or pid in seen or provider_name not in _PROVIDER_ORDER:
             continue
+        # Phase 10 (2026-06-13): Proma-style channel enable toggle.
+        # ``enabled: false`` keeps the profile + its api_key in config
+        # but skips registry load → it won't appear in the model picker
+        # and can't be selected, yet flipping it back on doesn't lose
+        # the key. Missing/true = enabled (back-compat: existing configs
+        # have no flag → load as before).
+        if entry.get("enabled") is False:
+            seen.add(pid)
+            continue
 
         raw_key = entry.get("api_key")
         api_key = raw_key if isinstance(raw_key, str) else ""
@@ -593,10 +622,24 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
                 raw_inherited = legacy_pcfg.get("prompt_cache_enabled")
                 if isinstance(raw_inherited, bool):
                     prompt_cache_enabled = raw_inherited
+        # Epic #27: per-profile max_tokens override.
+        raw_mt = entry.get("max_tokens")
+        max_tokens: int | None = None
+        if isinstance(raw_mt, int) and not isinstance(raw_mt, bool) and raw_mt > 0:
+            max_tokens = raw_mt
+        elif isinstance(raw_mt, str) and raw_mt.strip().isdigit():
+            max_tokens = int(raw_mt.strip())
+        # B-216: per-profile extended_thinking.
+        raw_et = entry.get("extended_thinking")
+        extended_thinking = (
+            bool(raw_et) if isinstance(raw_et, bool) else False
+        )
         llm = _instantiate_llm(
             provider_name, api_key=api_key, model=model,
             base_url=base_url_str,
             prompt_cache_enabled=prompt_cache_enabled,
+            max_tokens=max_tokens,
+            extended_thinking=extended_thinking,
         )
         if llm is None:
             continue

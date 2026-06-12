@@ -5,7 +5,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
 import { apiGet, type ApiError } from "../lib/api";
 
-const ModelDiscoveryView = lazy(() => import("./ModelDiscoveryView"));
+const ModelConfig = lazy(() => import("./ModelConfig"));
 
 interface Health {
   status?: string;
@@ -39,7 +39,7 @@ export default function SystemView() {
           <SystemTab id="models" cur={tab} onPick={setTab}>模型管理</SystemTab>
         </div>
         <Suspense fallback={<div className="p-5 text-mc-faint text-sm">加载中…</div>}>
-          <ModelDiscoveryView />
+          <ModelConfig />
         </Suspense>
       </div>
     );

@@ -95,6 +95,9 @@ export const apiPost = <T = unknown>(path: string, body: unknown, token: string 
 export const apiDelete = <T = unknown>(path: string, token: string | null) =>
   apiSend<T>("DELETE", path, null, token);
 
+export const apiPatch = <T = unknown>(path: string, body: unknown, token: string | null) =>
+  apiSend<T>("PATCH", path, body, token);
+
 // ── pairing token ────────────────────────────────────────────────
 
 const PAIR_ENDPOINT = "/api/v2/pair";
