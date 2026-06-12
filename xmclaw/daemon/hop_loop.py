@@ -96,6 +96,7 @@ async def _invoke_single_tool(
     tool_timeout_s: float = 180.0,
     hook_engine: Any = None,
     agent_id: str = "main",
+    cancel_event: "asyncio.Event | None" = None,
 ) -> Any:
     """Invoke one tool with defensive error handling and retry.
 
@@ -106,10 +107,21 @@ async def _invoke_single_tool(
     Returns the raw ``ToolResult``.  Event publishing and loop-state
     mutation are the caller's responsibility so that multiple calls
     can be executed in parallel.
+
+    2026-06-12: accepts ``cancel_event`` so the user's Stop button
+    takes effect mid-tool instead of waiting for the next hop boundary.
     """
     import dataclasses as _dc
     import asyncio as _asyncio
     from xmclaw.core.ir import ToolResult as _ToolResult
+
+    # Fast check before any work.
+    if cancel_event is not None and cancel_event.is_set():
+        return _ToolResult(
+            call_id=call.id, ok=False, content=None,
+            error="cancelled by user",
+        )
+
     call_with_sid = _dc.replace(call, session_id=session_id)
 
     # Wave-32: PreToolUse hook dispatch.
@@ -150,10 +162,39 @@ async def _invoke_single_tool(
             )
 
     try:
-        result = await _asyncio.wait_for(
-            effective_tools.invoke(call_with_sid),
-            timeout=tool_timeout_s,
-        )
+        invoke_coro = effective_tools.invoke(call_with_sid)
+        if cancel_event is not None:
+            # Race invoke against cancel — whichever finishes first wins.
+            invoke_task = _asyncio.ensure_future(invoke_coro)
+            cancel_task = _asyncio.ensure_future(cancel_event.wait())
+            done, pending = await _asyncio.wait(
+                [invoke_task, cancel_task],
+                timeout=tool_timeout_s,
+                return_when=_asyncio.FIRST_COMPLETED,
+            )
+            if cancel_task in done:
+                invoke_task.cancel()
+                for t in pending:
+                    t.cancel()
+                result = _ToolResult(
+                    call_id=call.id, ok=False, content=None,
+                    error="cancelled by user",
+                )
+            elif invoke_task in done:
+                cancel_task.cancel()
+                for t in pending:
+                    t.cancel()
+                result = invoke_task.result()
+            else:
+                # timeout — neither finished
+                invoke_task.cancel()
+                cancel_task.cancel()
+                raise _asyncio.TimeoutError()
+        else:
+            result = await _asyncio.wait_for(
+                invoke_coro,
+                timeout=tool_timeout_s,
+            )
     except _asyncio.TimeoutError:
         from xmclaw.utils.log import get_logger as _gl
         _gl(__name__).warning(
@@ -264,9 +305,12 @@ class HopLoopMixin:
 
     async def _invoke_single_tool(
         self, call: Any, effective_tools: Any, session_id: str,
+        *,
+        cancel_event: "asyncio.Event | None" = None,
     ) -> Any:
         """Thin wrapper around the module-level function that forwards
-        instance-level configuration."""
+        instance-level configuration. 2026-06-12: accepts cancel_event
+        so the Stop button interrupts long-running tool calls."""
         return await _invoke_single_tool(
             call, effective_tools, session_id,
             tool_timeout_s=float(
@@ -274,6 +318,7 @@ class HopLoopMixin:
             ),
             hook_engine=getattr(self, "_hook_engine", None),
             agent_id=getattr(self, "_agent_id", "main"),
+            cancel_event=cancel_event,
         )
 
     async def _run_hop_loop(
@@ -401,7 +446,9 @@ class HopLoopMixin:
                     "hop": hop,
                 })
                 return AgentTurnResult(
-                    ok=False, text="", hops=hop,
+                    ok=False,
+                    text="已取消。" if tool_calls_made else "",
+                    hops=hop,
                     tool_calls=tool_calls_made,
                     events=events,
                     error="cancelled",
@@ -616,7 +663,7 @@ class HopLoopMixin:
                 )
                 _spec_cache = SpeculationCache()
                 _spec_invoke = lambda tc: self._invoke_single_tool(  # noqa: E731
-                    tc, effective_tools, session_id,
+                    tc, effective_tools, session_id, cancel_event=cancel_event,
                 )
                 _on_tool_block = make_speculation_callback(_spec_cache, _spec_invoke)
 
@@ -890,6 +937,15 @@ class HopLoopMixin:
                                         messages = _new_msgs
                                         _last_compress_hash = _messages_hash(messages)
                                         _last_compressed_messages = list(messages)
+                                        # 2026-06-12: re-stash inflight after
+                                        # compression so the finally block sees
+                                        # post-compression progress.
+                                        try:
+                                            _ims = getattr(self, "_inflight_messages", None)
+                                            if _ims is not None and session_id in _ims:
+                                                _ims[session_id] = messages
+                                        except Exception:
+                                            pass
                                         await publish(EventType.CONTEXT_COMPRESSED, {
                                             "hop": hop,
                                             "trigger": "reactive_" + ce.reason.value,
@@ -930,6 +986,14 @@ class HopLoopMixin:
                                 messages = _new_msgs
                                 _last_compress_hash = None
                                 _last_compressed_messages = None
+                                # 2026-06-12: re-stash inflight after B-230
+                                # force compression.
+                                try:
+                                    _ims = getattr(self, "_inflight_messages", None)
+                                    if _ims is not None and session_id in _ims:
+                                        _ims[session_id] = messages
+                                except Exception:
+                                    pass
                         except Exception:  # noqa: BLE001
                             pass
                         # 2026-06-04: give the LLM more headroom on the
@@ -1281,6 +1345,7 @@ class HopLoopMixin:
                         _spec_cache, call,
                         lambda c=call: self._invoke_single_tool(
                             c, effective_tools, session_id,
+                            cancel_event=cancel_event,
                         ),
                     )
 
@@ -1350,6 +1415,20 @@ class HopLoopMixin:
                 # bugs).
                 _spec_cache.cancel_remaining()
 
+                # 2026-06-12: check cancel after tool phase completes.
+                # Tools that were already running may have finished even
+                # though cancel was set, but any subsequent hop iteration
+                # should bail before the next LLM call.
+                if cancel_event.is_set():
+                    return AgentTurnResult(
+                        ok=False,
+                        text="已取消。" if tool_calls_made else "",
+                        hops=hop + 1,
+                        tool_calls=tool_calls_made,
+                        events=events,
+                        error="cancelled",
+                    )
+
                 # Phase C: process results in original order (serial).
                 _had_success_this_hop = False
                 # B-Vision: collect ``metadata.attach_image`` paths from
@@ -1382,10 +1461,37 @@ class HopLoopMixin:
                     _video_urls: list[str] = []
                     _audio_urls: list[str] = []
                     _media_dicts: list[dict[str, Any]] = []
+
+                    def _ensure_servable(att: Any) -> str:
+                        """/api/v2/media/ 只服务 screenshots/audio/uploads 三个
+                        目录 — 工具把产物存在别处（screenshot 存桌面是典型）
+                        时 URL 必 404，前端裂图（2026-06-12 用户实测）。不在
+                        可服务目录的文件复制进 uploads 再出 URL。"""
+                        from pathlib import Path as _P
+                        from xmclaw.utils.paths import data_dir as _dd
+                        url = att.public_url()
+                        try:
+                            src = _P(str(getattr(att, "path", "") or ""))
+                            if not src.is_file():
+                                return url
+                            v2 = _dd() / "v2"
+                            servable = (v2 / "screenshots", v2 / "audio", v2 / "uploads")
+                            if any(str(src.parent) == str(d) for d in servable):
+                                return url
+                            uploads = v2 / "uploads"
+                            uploads.mkdir(parents=True, exist_ok=True)
+                            dst = uploads / src.name
+                            if not dst.exists():
+                                import shutil as _sh
+                                _sh.copy2(str(src), str(dst))
+                            return f"/api/v2/media/{dst.name}"
+                        except Exception:  # noqa: BLE001
+                            return url  # 复制失败退回原 URL，最坏与修前一致
+
                     for att in normalize_attachments(
                         getattr(result, "metadata", None),
                     ):
-                        url = att.public_url()
+                        url = _ensure_servable(att)
                         if att.kind == "image":
                             _image_urls.append(url)
                         elif att.kind == "video":

@@ -2259,6 +2259,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
+- 2026-06-12: **媒体体验轮**（本 commit，用户实测反馈批次）。① 裂图根因：`/api/v2/media/` 只服务 screenshots/audio/uploads 三目录，但 screenshot 工具把 PNG 存桌面 → URL 必 404。hop_loop `_ensure_servable()` 把不在可服务目录的附件复制进 uploads 再出 URL（screenshot/截图工具产物现可见）。② Lightbox 当前页缩放查看（用户点名"点击放大跳页面"）：图片滚轮缩放+拖拽平移+双击复位，视频原生控件，Esc/遮罩关闭——替代旧的 `<a target=_blank>` 跳页。③ 视频/音频渲染：工具卡 MediaStrip + 工作区视觉流支持 `<video>`/`<audio>`，裂图占位反馈。④ 多模态输入回归（M1 砍掉的能力）：Composer 支持粘贴/拖拽/选择图片，附件预览条+移除，随用户帧 `images` 字段发送（后端 ws_image_intake 仅接 data:image，非图前端拦截给提示）——实测图片发送→后端存 uploads→模型视觉全链路通。前端 22 测试 + hop_loop import 验证通过。
+
 - 2026-06-12: **交互升级轮**（本 commit，用户实测反馈批次）。① /ui-next/ 黑屏 → 根因是无错误边界（B-223 同款），补 ErrorBoundary（崩溃显示堆栈+恢复按钮）+ lazy chunk 加载失败自动刷新兜底；② 左右侧栏拖拽自由缩放（宽度持久化 + 双击恢复默认）；③ 时间线文件名全面可点击直达右栏文件 tab（编辑卡/读取卡），不在工作区时给明确提示；④ "等待审批"误导 → 语义修正（仅当未答提问真挂事件流尾部）+ 文案改"等你回答"+ 回归测试；⑤ 记忆图谱回归：/memory/v2/graph 数据 + 自绘 SVG 力导向（不引 vis-network，4.6KB chunk），kind 配色/点击聚焦邻边/节点拖拽/手动布局位置优先，实测 40 节点 112 边渲染。canvas 预览链路确认前端无责——daemon 进程仍是 factory 修复前代码，待重启复测。终端卡中文乱码 = bash 工具 GBK 解码（后端，另线处理中）。
 
 - 2026-06-12: **视觉打磨轮 + Composer 功能补全**（本 commit，用户反馈"还是太简陋"）。HUD 重做（品牌徽标/指标分组/状态胶囊/执行中呼吸灯）；任务卡升级（状态色条/相对时间/当前活动行/迷你进度条/hover）；时间线（你-X 角色块/用户消息竖线引用/入场动画/流式光标/呼吸灯思考态/空态画面）；Composer 补回 plan_mode + ultrathink + 模型 profile 切换（帧字段与旧 UI 一致，/api/v2/llm/profiles 拉列表）+ 聚焦光晕。全局动效 token（mc-rise/mc-caret/mc-breathe/mc-card hover/:focus-visible）。实测窄宽双视口零控制台错误。

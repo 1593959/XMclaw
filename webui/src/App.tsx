@@ -6,6 +6,7 @@ import PlanStrip from "./components/PlanStrip";
 import Timeline from "./components/Timeline";
 import Composer from "./components/Composer";
 import WorkspacePanel from "./components/WorkspacePanel";
+import Lightbox from "./components/Lightbox";
 import { ResizeHandle, useResizable } from "./lib/useResizable";
 
 // 域页懒加载：不打进主 bundle，切到对应域才拉。
@@ -62,6 +63,7 @@ export default function App() {
           </main>
         )}
       </div>
+      <Lightbox />
     </div>
   );
 }

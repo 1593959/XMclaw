@@ -195,9 +195,19 @@ function Row({ e }: { e: Entry }) {
         <RoleMark kind="user" />
         <div className="flex-1 min-w-0 text-[13px] text-mc-text/90 whitespace-pre-wrap leading-relaxed border-l-2 border-mc-border/70 -ml-0.5 pl-2.5">
           {e.content}
-          {(e.images || []).map((src) => (
-            <img key={src} src={src} className="max-w-xs rounded mt-1 border border-mc-border" />
-          ))}
+          {(e.images || []).length > 0 && (
+            <div className="flex gap-2 flex-wrap mt-1.5">
+              {e.images!.map((src) => (
+                <button
+                  key={src}
+                  onClick={() => useApp.getState().openLightbox(src, "image")}
+                  className="cursor-zoom-in"
+                >
+                  <img src={src} className="max-h-40 rounded border border-mc-border" alt="附件" />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );

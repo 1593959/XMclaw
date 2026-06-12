@@ -62,6 +62,17 @@ export interface LlmProfile {
   is_default: boolean;
 }
 
+export interface Attachment {
+  dataUrl: string;
+  name: string;
+  mime: string;
+}
+
+export interface LightboxState {
+  url: string;
+  kind: "image" | "video";
+}
+
 interface AppState {
   token: string | null;
   authFetched: boolean;
@@ -81,6 +92,14 @@ interface AppState {
   togglePlan(): void;
   toggleUltrathink(): void;
   setLlmProfile(id: string): void;
+  // 多模态输入：粘贴/拖拽/选择的附件（随用户帧 images 字段发送）。
+  attachments: Attachment[];
+  addAttachments(files: FileList | File[]): void;
+  removeAttachment(idx: number): void;
+  // 当前页媒体放大查看（不跳新页面）。
+  lightbox: LightboxState | null;
+  openLightbox(url: string, kind?: "image" | "video"): void;
+  closeLightbox(): void;
   // 四域导航（10.M3）：任务=主视图，其余为驾驶舱仪表域。
   view: "tasks" | "memory" | "skills" | "system";
   setView(v: AppState["view"]): void;
@@ -231,6 +250,43 @@ export const useApp = create<AppState>((set, get) => {
     setLlmProfile(id: string) {
       set({ llmProfileId: id });
     },
+
+    attachments: [],
+    addAttachments(files: FileList | File[]) {
+      const list = Array.from(files);
+      for (const f of list) {
+        // 后端 WS intake（ws_image_intake.py）目前只解析 data:image/* —
+        // 非图片先拦在前端给明确提示，避免静默丢弃。
+        if (!f.type.startsWith("image/")) {
+          console.warn("[mc] 暂仅支持图片附件（后端 intake 限制）:", f.name, f.type);
+          continue;
+        }
+        if (f.size > 8 * 1024 * 1024) {
+          console.warn("[mc] 图片超过 8MB 上限:", f.name);
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || "");
+          if (!dataUrl.startsWith("data:")) return;
+          set((s) => ({
+            attachments: [...s.attachments, { dataUrl, name: f.name, mime: f.type }].slice(0, 8),
+          }));
+        };
+        reader.readAsDataURL(f);
+      }
+    },
+    removeAttachment(idx: number) {
+      set((s) => ({ attachments: s.attachments.filter((_, i) => i !== idx) }));
+    },
+
+    lightbox: null,
+    openLightbox(url: string, kind: "image" | "video" = "image") {
+      set({ lightbox: { url, kind } });
+    },
+    closeLightbox() {
+      set({ lightbox: null });
+    },
     workspaceFocus: null,
     followAgent: true,
 
@@ -266,14 +322,16 @@ export const useApp = create<AppState>((set, get) => {
 
     sendUser(text: string) {
       const trimmed = text.trim();
-      if (!trimmed || !wsHandle) return;
       const s = get();
-      const { id, chat } = appendOptimisticUser(s.chat, trimmed);
-      set({ chat: appendThinkingAssistant(chat, id), draft: "" });
+      const images = s.attachments.map((a) => a.dataUrl);
+      if ((!trimmed && images.length === 0) || !wsHandle) return;
+      const { id, chat } = appendOptimisticUser(s.chat, trimmed, images);
+      set({ chat: appendThinkingAssistant(chat, id), draft: "", attachments: [] });
       wsHandle.send({
         type: "user",
         content: trimmed,
         correlation_id: id,
+        images: images.length > 0 ? images : undefined,
         // missing = 默认（与后端约定一致），只在非默认时带字段。
         plan_mode: s.planMode || undefined,
         ultrathink: s.ultrathink || undefined,

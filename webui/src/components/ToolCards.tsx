@@ -258,18 +258,54 @@ function GenericCard({ e }: { e: Entry }) {
   );
 }
 
-function MediaStrip({ e }: { e: Entry }) {
-  if (!e.images?.length) return null;
+function BrokenMedia({ name }: { name: string }) {
   return (
-    <div className="flex gap-2 flex-wrap mt-1.5">
-      {e.images.map((src) => (
-        <a key={src} href={src} target="_blank" rel="noreferrer">
-          <img
-            src={src}
-            className="h-28 rounded border border-mc-border hover:border-mc-accent/60"
-            alt="tool screenshot"
-          />
-        </a>
+    <div className="h-28 w-36 rounded border border-dashed border-mc-border flex flex-col items-center justify-center text-mc-faint gap-1">
+      <span className="text-lg">🖼</span>
+      <span className="text-[10px] px-2 text-center break-all">{name} 加载失败</span>
+    </div>
+  );
+}
+
+function MediaStrip({ e }: { e: Entry }) {
+  const openLightbox = useApp((s) => s.openLightbox);
+  const [broken, setBroken] = useState<Record<string, boolean>>({});
+  if (!e.images?.length && !e.videos?.length && !e.audios?.length) return null;
+  return (
+    <div className="flex gap-2 flex-wrap mt-1.5 items-start">
+      {(e.images || []).map((src) =>
+        broken[src] ? (
+          <BrokenMedia key={src} name={src.split("/").pop()?.split("?")[0] || "image"} />
+        ) : (
+          <button key={src} onClick={() => openLightbox(src, "image")} className="cursor-zoom-in">
+            <img
+              src={src}
+              className="h-28 rounded border border-mc-border hover:border-mc-accent/60"
+              alt="tool media"
+              onError={() => setBroken((b) => ({ ...b, [src]: true }))}
+            />
+          </button>
+        ),
+      )}
+      {(e.videos || []).map((src) => (
+        <video
+          key={src}
+          src={src}
+          controls
+          preload="metadata"
+          className="h-40 max-w-72 rounded border border-mc-border cursor-zoom-in"
+          onClick={(ev) => {
+            // 点画面区放大；点控制条正常操作。
+            const v = ev.currentTarget;
+            if (ev.clientY < v.getBoundingClientRect().bottom - 40) {
+              ev.preventDefault();
+              openLightbox(src, "video");
+            }
+          }}
+        />
+      ))}
+      {(e.audios || []).map((src) => (
+        <audio key={src} src={src} controls preload="metadata" className="h-9" />
       ))}
     </div>
   );

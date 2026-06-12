@@ -2,6 +2,7 @@
 // 2026-06-12 打磨轮：补回 plan 模式 / ultrathink / 模型 profile 切换
 // （WS 帧字段与旧 UI 一致：plan_mode / ultrathink / llm_profile_id）。
 
+import { useRef, useState } from "react";
 import { useApp } from "../store/app";
 
 function Chip({
@@ -45,9 +46,22 @@ export default function Composer() {
   const profiles = useApp((s) => s.profiles);
   const llmProfileId = useApp((s) => s.llmProfileId);
   const setLlmProfile = useApp((s) => s.setLlmProfile);
+  const attachments = useApp((s) => s.attachments);
+  const addAttachments = useApp((s) => s.addAttachments);
+  const removeAttachment = useApp((s) => s.removeAttachment);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   function submit() {
-    if (draft.trim()) sendUser(draft);
+    if (draft.trim() || attachments.length > 0) sendUser(draft);
+  }
+
+  function onPaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData.files);
+    if (files.length > 0) {
+      e.preventDefault();
+      addAttachments(files);
+    }
   }
 
   return (
@@ -81,10 +95,67 @@ export default function Composer() {
           </span>
         )}
       </div>
-      <div className="flex items-end gap-2 border border-mc-border rounded-xl bg-mc-panel2 px-3.5 py-2.5 focus-within:border-mc-accent/60 focus-within:shadow-[0_0_0_3px_rgba(139,92,246,0.08)] transition-shadow">
+      {attachments.length > 0 && (
+        <div className="flex gap-2 flex-wrap mb-2">
+          {attachments.map((a, i) => (
+            <div key={i} className="relative group">
+              <img
+                src={a.dataUrl}
+                alt={a.name}
+                className="h-16 w-16 object-cover rounded-md border border-mc-border"
+              />
+              <button
+                onClick={() => removeAttachment(i)}
+                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-mc-err text-white text-[10px] flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100"
+                aria-label="移除"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (e.dataTransfer.files.length > 0) addAttachments(e.dataTransfer.files);
+        }}
+        className={
+          "flex items-end gap-2 border rounded-xl bg-mc-panel2 px-3.5 py-2.5 transition-shadow " +
+          (dragOver
+            ? "border-mc-accent border-dashed shadow-[0_0_0_3px_rgba(139,92,246,0.12)]"
+            : "border-mc-border focus-within:border-mc-accent/60 focus-within:shadow-[0_0_0_3px_rgba(139,92,246,0.08)]")
+        }
+      >
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files) addAttachments(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        <button
+          onClick={() => fileRef.current?.click()}
+          title="添加图片（也可直接粘贴 / 拖拽到此）"
+          className="text-mc-faint hover:text-mc-accent cursor-pointer shrink-0 text-lg leading-none mb-0.5"
+          aria-label="添加附件"
+        >
+          ＋
+        </button>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          onPaste={onPaste}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -93,11 +164,13 @@ export default function Composer() {
             if (e.key === "Escape" && busy) cancelTurn();
           }}
           placeholder={
-            connected
-              ? planMode
-                ? "描述目标 — agent 会先给出计划等你批准…"
-                : "下达指令、追加要求，或随时打断…"
-              : "等待连接 daemon…"
+            dragOver
+              ? "松手添加图片…"
+              : connected
+                ? planMode
+                  ? "描述目标 — agent 会先给出计划等你批准…"
+                  : "下达指令、追加要求，或粘贴/拖拽图片…"
+                : "等待连接 daemon…"
           }
           rows={Math.min(6, Math.max(1, draft.split("\n").length))}
           className="flex-1 bg-transparent outline-none resize-none text-[13px] leading-relaxed placeholder:text-mc-faint"

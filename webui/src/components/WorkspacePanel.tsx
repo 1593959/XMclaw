@@ -59,6 +59,29 @@ function ArtifactView({ kind, content, title }: { kind: string; content: string;
   );
 }
 
+function LiveShotItem({ url, tool, latest }: { url: string; tool: string; latest: boolean }) {
+  const openLightbox = useApp((s) => s.openLightbox);
+  const [broken, setBroken] = useState(false);
+  if (broken) {
+    return (
+      <div className="w-full rounded border border-dashed border-mc-border py-3 text-center text-[10px] text-mc-faint">
+        {tool} · 图像加载失败（{url.split("/").pop()?.split("?")[0]}）
+      </div>
+    );
+  }
+  return (
+    <button onClick={() => openLightbox(url, "image")} className="block w-full cursor-zoom-in text-left">
+      <img
+        src={url}
+        className={"w-full rounded border " + (latest ? "border-mc-accent/60" : "border-mc-border opacity-80")}
+        alt={tool}
+        onError={() => setBroken(true)}
+      />
+      <div className="text-[10px] text-mc-faint mt-0.5">{tool}</div>
+    </button>
+  );
+}
+
 function PreviewTab() {
   const artifacts = useApp((s) => s.chat.artifacts);
   const liveShots = useApp((s) => s.chat.liveShots);
@@ -88,17 +111,7 @@ function PreviewTab() {
           </div>
           <div className="space-y-2">
             {liveShots.map((s, i) => (
-              <a key={`${s.url}_${i}`} href={s.url} target="_blank" rel="noreferrer" className="block">
-                <img
-                  src={s.url}
-                  className={
-                    "w-full rounded border " +
-                    (i === 0 ? "border-mc-accent/60" : "border-mc-border opacity-80")
-                  }
-                  alt={s.tool}
-                />
-                <div className="text-[10px] text-mc-faint mt-0.5">{s.tool}</div>
-              </a>
+              <LiveShotItem key={`${s.url}_${i}`} url={s.url} tool={s.tool} latest={i === 0} />
             ))}
           </div>
         </div>
