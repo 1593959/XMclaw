@@ -1,12 +1,32 @@
 import { useApp } from "../store/app";
 import type { TaskSnapshot } from "../lib/types";
 
-const STATUS_META: Record<TaskSnapshot["status"], { label: string; cls: string }> = {
-  running: { label: "运行中", cls: "text-mc-accent" },
-  awaiting_input: { label: "等待审批", cls: "text-mc-warn" },
-  done: { label: "已完成", cls: "text-mc-ok" },
-  failed: { label: "失败", cls: "text-mc-err" },
-  chat: { label: "对话", cls: "text-mc-faint" },
+const STATUS_META: Record<TaskSnapshot["status"], { label: string; cls: string; bar: string }> = {
+  running: { label: "运行中", cls: "text-mc-accent", bar: "#8b5cf6" },
+  awaiting_input: { label: "等待审批", cls: "text-mc-warn", bar: "#fbbf24" },
+  done: { label: "已完成", cls: "text-mc-ok", bar: "#34d399" },
+  failed: { label: "失败", cls: "text-mc-err", bar: "#f87171" },
+  chat: { label: "对话", cls: "text-mc-faint", bar: "transparent" },
+};
+
+function relTime(ts: number): string {
+  if (!ts) return "";
+  const d = Date.now() / 1000 - ts;
+  if (d < 60) return "刚刚";
+  if (d < 3600) return `${Math.floor(d / 60)} 分钟前`;
+  if (d < 86400) return `${Math.floor(d / 3600)} 小时前`;
+  return `${Math.floor(d / 86400)} 天前`;
+}
+
+const ACTIVITY_LABEL: Record<string, string> = {
+  tool_call_emitted: "调用工具",
+  tool_invocation_finished: "工具返回",
+  llm_request: "思考中",
+  llm_response: "已回复",
+  plan_step_started: "执行计划步骤",
+  agent_asked_question: "等你拍板",
+  user_message: "收到指令",
+  todo_updated: "更新待办",
 };
 
 export default function TaskRail() {
@@ -46,23 +66,51 @@ export default function TaskRail() {
         {items.map((t) => {
           const meta = STATUS_META[t.status] || STATUS_META.chat;
           const active = t.sid === activeSid;
+          const activity = ACTIVITY_LABEL[t.last_activity] || "";
           return (
             <button
               key={t.sid}
               onClick={() => resumeSession(t.sid)}
+              style={{ "--mc-task-accent": meta.bar } as React.CSSProperties}
               className={
-                "w-full text-left rounded-md px-2.5 py-2 cursor-pointer border " +
+                "mc-task-card mc-card w-full text-left rounded-md pl-3 pr-2.5 py-2 cursor-pointer border " +
                 (active
                   ? "bg-mc-accent/10 border-mc-accent/40"
-                  : "border-transparent hover:bg-mc-panel2")
+                  : "border-mc-border/60 bg-mc-panel2/30 hover:bg-mc-panel2")
               }
             >
-              <div className="text-[13px] font-medium truncate">{t.title || t.sid}</div>
-              <div className={"text-xs mt-0.5 " + meta.cls}>
-                {t.status === "running" && <span className="animate-pulse">● </span>}
-                {meta.label}
-                {t.steps_total > 0 && ` · ${t.steps_done}/${t.steps_total}`}
+              <div className="text-[12.5px] font-medium truncate leading-snug">
+                {t.title || t.sid}
               </div>
+              <div className="flex items-center gap-1.5 mt-1">
+                <span className={"text-[11px] " + meta.cls}>
+                  {t.status === "running" && (
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-mc-accent mc-breathe mr-1 align-middle" />
+                  )}
+                  {meta.label}
+                </span>
+                {t.steps_total > 0 && (
+                  <span className="text-[10.5px] text-mc-faint tabular-nums">
+                    {t.steps_done}/{t.steps_total}
+                  </span>
+                )}
+                <span className="flex-1" />
+                <span className="text-[10px] text-mc-faint">{relTime(t.updated_at)}</span>
+              </div>
+              {t.status === "running" && activity && (
+                <div className="text-[10.5px] text-mc-faint mt-0.5 truncate">{activity}…</div>
+              )}
+              {t.steps_total > 0 && (
+                <div className="h-0.5 rounded-full bg-mc-border mt-1.5">
+                  <div
+                    className="h-0.5 rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.round((t.steps_done / t.steps_total) * 100)}%`,
+                      background: meta.bar,
+                    }}
+                  />
+                </div>
+              )}
             </button>
           );
         })}

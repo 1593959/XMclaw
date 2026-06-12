@@ -68,34 +68,57 @@ function ThinkingBlock({ content }: { content: string }) {
   );
 }
 
+function RoleMark({ kind }: { kind: "user" | "agent" }) {
+  if (kind === "user") {
+    return (
+      <span className="w-5 h-5 rounded-md bg-mc-panel2 border border-mc-border text-mc-faint text-[10px] flex items-center justify-center shrink-0 mt-0.5 select-none">
+        你
+      </span>
+    );
+  }
+  return (
+    <span className="w-5 h-5 rounded-md bg-gradient-to-br from-mc-accent to-mc-accent-dim text-white text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5 select-none">
+      X
+    </span>
+  );
+}
+
 function AssistantRow({ e }: { e: Entry }) {
   const blocks = e.blocks?.length
     ? e.blocks
     : e.content
       ? [{ type: "text" as const, id: e.id + ":t", content: e.content }]
       : [];
+  const streaming = e.status === "streaming";
+  const lastTextIdx = (() => {
+    for (let i = blocks.length - 1; i >= 0; i--) if (blocks[i].type === "text") return i;
+    return -1;
+  })();
   return (
     <div className="flex gap-2.5">
-      <span className="text-mc-accent text-sm mt-0.5 shrink-0">◆</span>
+      <RoleMark kind="agent" />
       <div className="flex-1 min-w-0 space-y-1.5">
         {e.proactive && (
           <span className="text-[11px] text-mc-accent border border-mc-accent/40 rounded px-1.5">
             主动提议
           </span>
         )}
-        {blocks.map((b) =>
+        {blocks.map((b, i) =>
           b.type === "thinking" ? (
             <ThinkingBlock key={b.id} content={b.content} />
           ) : (
-            <Markdown key={b.id} text={b.content} />
+            <div key={b.id} className={streaming && i === lastTextIdx ? "mc-caret" : undefined}>
+              <Markdown text={b.content} />
+            </div>
           ),
         )}
         {e.status === "thinking" && (
-          <div className="text-xs text-mc-faint animate-pulse">
+          <div className="flex items-center gap-1.5 text-xs text-mc-faint">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-mc-accent mc-breathe" />
             {e.phase === "calling_llm" ? "正在调用模型…" : "思考中…"}
           </div>
         )}
-        {e.status === "cancelled" && <div className="text-xs text-mc-faint">已停止</div>}
+        {e.status === "cancelled" && <div className="text-xs text-mc-faint">⊘ 已停止</div>}
         {e.status === "error" && !e.content && (
           <div className="text-xs text-mc-err">回合出错</div>
         )}
@@ -168,9 +191,9 @@ function Row({ e }: { e: Entry }) {
   }
   if (e.role === "user") {
     return (
-      <div className="flex gap-2.5">
-        <span className="text-mc-faint text-sm mt-0.5 shrink-0">›</span>
-        <div className="flex-1 text-[13px] text-mc-muted whitespace-pre-wrap">
+      <div className="flex gap-2.5 pt-2">
+        <RoleMark kind="user" />
+        <div className="flex-1 min-w-0 text-[13px] text-mc-text/90 whitespace-pre-wrap leading-relaxed border-l-2 border-mc-border/70 -ml-0.5 pl-2.5">
           {e.content}
           {(e.images || []).map((src) => (
             <img key={src} src={src} className="max-w-xs rounded mt-1 border border-mc-border" />
@@ -203,12 +226,20 @@ export default function Timeline() {
       className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
     >
       {entries.length === 0 && (
-        <div className="h-full flex items-center justify-center text-mc-faint text-sm">
-          下达一条指令开始 — agent 的计划、工具调用与产物都会在这里实时展开
+        <div className="h-full flex flex-col items-center justify-center gap-3 select-none">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-mc-accent/25 to-mc-accent-dim/10 border border-mc-accent/20 flex items-center justify-center text-xl">
+            ◧
+          </div>
+          <div className="text-mc-muted text-sm font-medium">下达第一条指令</div>
+          <div className="text-mc-faint text-xs max-w-72 text-center leading-relaxed">
+            计划步骤、工具调用、文件 diff 与审批请求都会在这条时间线上实时展开；产物同步亮在右侧工作区
+          </div>
         </div>
       )}
       {entries.map((e) => (
-        <Row key={e.id} e={e} />
+        <div key={e.id} className="mc-rise">
+          <Row e={e} />
+        </div>
       ))}
     </div>
   );

@@ -31,6 +31,80 @@ body {
   font-size: 14px;
 }
 
+/* ── 动效与质感（2026-06-12 打磨轮） ───────────────────────── */
+
+/* 时间线条目入场：轻微上浮淡入 */
+@keyframes mc-rise {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.mc-rise { animation: mc-rise 0.22s ease-out both; }
+
+/* 流式输出尾部光标 */
+@keyframes mc-caret {
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0; }
+}
+.mc-caret::after {
+  content: "▍";
+  color: var(--color-mc-accent);
+  animation: mc-caret 0.9s steps(1) infinite;
+  margin-left: 1px;
+}
+
+/* 运行中徽章：柔和呼吸光环 */
+@keyframes mc-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(139, 92, 246, 0); }
+}
+.mc-breathe { animation: mc-breathe 1.8s ease-in-out infinite; border-radius: 9999px; }
+
+/* 卡片通用 hover 提亮 */
+.mc-card {
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.12s ease;
+}
+.mc-card:hover { border-color: rgba(139, 92, 246, 0.35); }
+
+/* 按钮按压反馈 */
+button { transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease; }
+button:active:not(:disabled) { transform: scale(0.985); }
+
+/* HUD 品牌徽标 */
+.mc-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9 60%, #4c1d95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 12px;
+  color: #fff;
+  letter-spacing: -0.5px;
+  flex-shrink: 0;
+}
+
+/* 任务卡左侧状态色条 */
+.mc-task-card { position: relative; overflow: hidden; }
+.mc-task-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2.5px;
+  background: var(--mc-task-accent, transparent);
+  border-radius: 2px;
+}
+
+/* 焦点可见性（键盘导航） */
+:focus-visible {
+  outline: 2px solid rgba(139, 92, 246, 0.6);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
 /* ── markdown 渲染（.mc-md） ───────────────────────────────── */
 .mc-md {
   font-size: 13px;

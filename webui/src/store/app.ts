@@ -54,6 +54,14 @@ interface HudStatus {
   [k: string]: unknown;
 }
 
+export interface LlmProfile {
+  id: string;
+  label: string;
+  provider: string;
+  model: string;
+  is_default: boolean;
+}
+
 interface AppState {
   token: string | null;
   authFetched: boolean;
@@ -64,6 +72,15 @@ interface AppState {
   tasks: TaskSnapshot[];
   hud: HudStatus | null;
   draft: string;
+  // Composer 选项（与旧 UI 的 WS 帧字段一致：plan_mode / ultrathink /
+  // llm_profile_id，missing = 默认）。
+  planMode: boolean;
+  ultrathink: boolean;
+  llmProfileId: string;
+  profiles: LlmProfile[];
+  togglePlan(): void;
+  toggleUltrathink(): void;
+  setLlmProfile(id: string): void;
   // 四域导航（10.M3）：任务=主视图，其余为驾驶舱仪表域。
   view: "tasks" | "memory" | "skills" | "system";
   setView(v: AppState["view"]): void;
@@ -201,6 +218,19 @@ export const useApp = create<AppState>((set, get) => {
     setView(v) {
       set({ view: v });
     },
+    planMode: false,
+    ultrathink: false,
+    llmProfileId: "",
+    profiles: [],
+    togglePlan() {
+      set((s) => ({ planMode: !s.planMode }));
+    },
+    toggleUltrathink() {
+      set((s) => ({ ultrathink: !s.ultrathink }));
+    },
+    setLlmProfile(id: string) {
+      set({ llmProfileId: id });
+    },
     workspaceFocus: null,
     followAgent: true,
 
@@ -225,6 +255,13 @@ export const useApp = create<AppState>((set, get) => {
       connectFor(sid, auth.token);
       get().refreshTasks();
       get().refreshHud();
+      // 模型 profile 列表（Composer 切换器；失败不致命）。
+      try {
+        const data = await apiGet<{ profiles?: LlmProfile[] }>("/api/v2/llm/profiles", auth.token);
+        set({ profiles: Array.isArray(data?.profiles) ? data.profiles : [] });
+      } catch {
+        /* 列表为空 → 切换器隐藏 */
+      }
     },
 
     sendUser(text: string) {
@@ -233,7 +270,15 @@ export const useApp = create<AppState>((set, get) => {
       const s = get();
       const { id, chat } = appendOptimisticUser(s.chat, trimmed);
       set({ chat: appendThinkingAssistant(chat, id), draft: "" });
-      wsHandle.send({ type: "user", content: trimmed, correlation_id: id });
+      wsHandle.send({
+        type: "user",
+        content: trimmed,
+        correlation_id: id,
+        // missing = 默认（与后端约定一致），只在非默认时带字段。
+        plan_mode: s.planMode || undefined,
+        ultrathink: s.ultrathink || undefined,
+        llm_profile_id: s.llmProfileId || undefined,
+      });
     },
 
     cancelTurn() {

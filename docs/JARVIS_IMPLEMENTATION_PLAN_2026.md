@@ -2259,6 +2259,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
+- 2026-06-12: **视觉打磨轮 + Composer 功能补全**（本 commit，用户反馈"还是太简陋"）。HUD 重做（品牌徽标/指标分组/状态胶囊/执行中呼吸灯）；任务卡升级（状态色条/相对时间/当前活动行/迷你进度条/hover）；时间线（你-X 角色块/用户消息竖线引用/入场动画/流式光标/呼吸灯思考态/空态画面）；Composer 补回 plan_mode + ultrathink + 模型 profile 切换（帧字段与旧 UI 一致，/api/v2/llm/profiles 拉列表）+ 聚焦光晕。全局动效 token（mc-rise/mc-caret/mc-breathe/mc-card hover/:focus-visible）。实测窄宽双视口零控制台错误。
+
 - 2026-06-11: Phase 10 立项（commit d13bbd2）。M0 完成：设计文档 + 三项方向决策 + ADR-010 + 用户视觉方向认可。下一步 10.M1 Web 骨架。
 - 2026-06-11: 设计补充（用户出 Claude Code diff 卡截图点名要求）：工具卡按类型特化渲染入规格（设计文档新增 §2.3.1，M2 新增 10.M2.1b + 对应验收项）。file_edit 内联语法高亮 diff 卡是 M2 核心验收观感。
 - 2026-06-12: **10.M2.5 收尾 + 10.M3.1 四域首轮完成**（本 commit）。安全红条 + code-split（主包 gzip 78KB）+ 四域导航与记忆/能力/系统域页（全部实测吃真数据：63 事实、87 技能、5 evolution arms）。实测揪出并修复两个后端真 bug：canvas 事件因 executor 线程无 loop 从未发布（修 factory 线程安全发布）、/system/health 因 \"Request\" 字符串注解永远 422（修 import + 回归测试）。另发现 bm25 `_scan_all` AttributeError（独立 bug，已开后台任务卡）。21+71 测试全绿。
