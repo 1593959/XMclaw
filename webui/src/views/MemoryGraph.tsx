@@ -108,6 +108,40 @@ export default function MemoryGraph() {
   const [sel, setSel] = useState<string | null>(null);
   const [err, setErr] = useState("");
   const svgRef = useRef<SVGSVGElement>(null);
+  // 视口：滚轮缩放（围绕鼠标点）+ 空白处拖拽平移。
+  const [view, setView] = useState({ x: 0, y: 0, w: W, h: H });
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const panRef = useRef<{ startX: number; startY: number; vx: number; vy: number } | null>(null);
+
+  // React 的 onWheel 是 passive（preventDefault 无效会连页面一起滚），
+  // 原生监听绕开。
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const v = viewRef.current;
+      const rect = svg.getBoundingClientRect();
+      const px = v.x + ((e.clientX - rect.left) / rect.width) * v.w;
+      const py = v.y + ((e.clientY - rect.top) / rect.height) * v.h;
+      const k = Math.pow(1.0015, -e.deltaY);
+      const w = Math.min(W * 1.5, Math.max(W / 10, v.w / k));
+      const scale = w / v.w;
+      setView({
+        x: px - (px - v.x) * scale,
+        y: py - (py - v.y) * scale,
+        w,
+        h: w * (H / W),
+      });
+    };
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+    // 依赖 nodes.length：首渲染走"加载中"早退分支时 svgRef 还是 null，
+    // 空依赖会让监听器永远挂不上（实测踩过）。
+  }, [nodes.length > 0]);
+
+  const zoom = W / view.w;
 
   useEffect(() => {
     if (!token) return;
@@ -143,9 +177,10 @@ export default function MemoryGraph() {
   function svgPoint(ev: React.MouseEvent): { x: number; y: number } {
     const svg = svgRef.current!;
     const rect = svg.getBoundingClientRect();
+    const v = viewRef.current;
     return {
-      x: ((ev.clientX - rect.left) / rect.width) * W,
-      y: ((ev.clientY - rect.top) / rect.height) * H,
+      x: v.x + ((ev.clientX - rect.left) / rect.width) * v.w,
+      y: v.y + ((ev.clientY - rect.top) / rect.height) * v.h,
     };
   }
 
@@ -157,15 +192,40 @@ export default function MemoryGraph() {
     <div>
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${W} ${H}`}
+        viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
         className="w-full rounded-lg border border-mc-border bg-black/20 select-none"
-        onMouseMove={(ev) => {
-          if (!dragId.current) return;
-          const p = svgPoint(ev);
-          setPinned((cur) => ({ ...cur, [dragId.current!]: p }));
+        style={{ cursor: panRef.current ? "grabbing" : "grab", touchAction: "none" }}
+        onMouseDown={(ev) => {
+          // 空白处按下 = 平移（节点的 onMouseDown 会先设 dragId 并阻断冒泡）。
+          if (dragId.current) return;
+          panRef.current = { startX: ev.clientX, startY: ev.clientY, vx: view.x, vy: view.y };
         }}
-        onMouseUp={() => (dragId.current = null)}
-        onMouseLeave={() => (dragId.current = null)}
+        onMouseMove={(ev) => {
+          if (dragId.current) {
+            const p = svgPoint(ev);
+            setPinned((cur) => ({ ...cur, [dragId.current!]: p }));
+            return;
+          }
+          const pan = panRef.current;
+          if (pan) {
+            const rect = svgRef.current!.getBoundingClientRect();
+            const v = viewRef.current;
+            setView({
+              ...v,
+              x: pan.vx - ((ev.clientX - pan.startX) / rect.width) * v.w,
+              y: pan.vy - ((ev.clientY - pan.startY) / rect.height) * v.h,
+            });
+          }
+        }}
+        onMouseUp={() => {
+          dragId.current = null;
+          panRef.current = null;
+        }}
+        onMouseLeave={() => {
+          dragId.current = null;
+          panRef.current = null;
+        }}
+        onDoubleClick={() => setView({ x: 0, y: 0, w: W, h: H })}
       >
         {links.map((e) => {
           const a = pos[e.source];
@@ -197,13 +257,17 @@ export default function MemoryGraph() {
               transform={`translate(${p.x},${p.y})`}
               opacity={dim ? 0.25 : 1}
               className="cursor-pointer"
-              onMouseDown={() => (dragId.current = n.id)}
+              onMouseDown={(ev) => {
+                ev.stopPropagation();
+                dragId.current = n.id;
+              }}
               onClick={() => setSel(sel === n.id ? null : n.id)}
             >
               <circle r={r} fill={c} stroke={n.id === sel ? "#fff" : "transparent"} strokeWidth={1.5} />
-              {(n.id === sel || nodes.length <= 30) && (
-                <text y={-r - 4} textAnchor="middle" fontSize={9} fill="#94a3b8">
-                  {n.text.slice(0, 14)}
+              {/* 放大后无需点击即显示标签（zoom≥1.5 全亮；2.5 倍后显示更长文本）。 */}
+              {(n.id === sel || zoom >= 1.5 || nodes.length <= 30) && (
+                <text y={-r - 4} textAnchor="middle" fontSize={9} fill="#bdc8da">
+                  {n.text.slice(0, zoom >= 2.5 ? 40 : 14)}
                 </text>
               )}
             </g>
@@ -220,7 +284,7 @@ export default function MemoryGraph() {
             </span>
           ))}
         <span className="text-[10.5px] text-mc-faint ml-auto">
-          {nodes.length} 节点 · {links.length} 边 · 可拖拽 · 点击聚焦
+          {nodes.length} 节点 · {links.length} 边 · 滚轮缩放{zoom > 1.05 ? ` ${zoom.toFixed(1)}×` : ""} · 拖空白平移 · 双击复位
         </span>
       </div>
       {selNode && (
