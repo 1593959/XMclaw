@@ -6,6 +6,9 @@ import { useApp } from "../store/app";
 import { apiGet, type ApiError } from "../lib/api";
 
 const ModelConfig = lazy(() => import("./ModelConfig"));
+const CronView = lazy(() => import("./CronView"));
+
+type SystemTabId = "status" | "models" | "cron";
 
 interface Health {
   status?: string;
@@ -18,7 +21,7 @@ export default function SystemView() {
   const hud = useApp((s) => s.hud);
   const [health, setHealth] = useState<Health | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
-  const [tab, setTab] = useState<"status" | "models">("status");
+  const [tab, setTab] = useState<SystemTabId>("status");
 
   useEffect(() => {
     if (!token) return;
@@ -31,16 +34,19 @@ export default function SystemView() {
       .catch(() => setLogs([]));
   }, [token]);
 
-  if (tab === "models") {
+  if (tab === "models" || tab === "cron") {
     return (
       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex gap-1.5 px-5 pt-4 shrink-0">
           <SystemTab id="status" cur={tab} onPick={setTab}>健康 / 日志</SystemTab>
           <SystemTab id="models" cur={tab} onPick={setTab}>模型管理</SystemTab>
+          <SystemTab id="cron" cur={tab} onPick={setTab}>定时任务</SystemTab>
         </div>
-        <Suspense fallback={<div className="p-5 text-mc-faint text-sm">加载中…</div>}>
-          <ModelConfig />
-        </Suspense>
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <Suspense fallback={<div className="p-5 text-mc-faint text-sm">加载中…</div>}>
+            {tab === "models" ? <ModelConfig /> : <CronView />}
+          </Suspense>
+        </div>
       </div>
     );
   }
@@ -50,6 +56,7 @@ export default function SystemView() {
       <div className="flex gap-1.5 shrink-0">
         <SystemTab id="status" cur={tab} onPick={setTab}>健康 / 日志</SystemTab>
         <SystemTab id="models" cur={tab} onPick={setTab}>模型管理</SystemTab>
+        <SystemTab id="cron" cur={tab} onPick={setTab}>定时任务</SystemTab>
       </div>
       <div className="shrink-0">
         <h2 className="text-base font-semibold">系统</h2>
@@ -110,9 +117,9 @@ function SystemTab({
   onPick,
   children,
 }: {
-  id: "status" | "models";
+  id: SystemTabId;
   cur: string;
-  onPick: (v: "status" | "models") => void;
+  onPick: (v: SystemTabId) => void;
   children: React.ReactNode;
 }) {
   return (

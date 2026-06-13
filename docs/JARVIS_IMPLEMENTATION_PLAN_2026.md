@@ -2259,6 +2259,8 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
+- 2026-06-13: **定时任务视图（Cron）**。CronView：列出定时任务（名称/schedule/下次运行/运行次数/启用态/最近错误）+ 立即运行/暂停/恢复/删除（hover）+ 新建表单（名称/周期/指令）。数据 GET/POST /api/v2/cron + /{id}/{pause|resume|trigger} + DELETE。挂系统域第三子标签（健康日志 / 模型管理 / 定时任务），补上任务栏"定时·后台"一直点不开的缺口。端点在运行中 daemon 即时可用（无需重启）。实测空态正确渲染。
+
 - 2026-06-13: **认知域二级页**（XMclaw 自主灵魂进新 UI）。CognitionView：当前目标 / 注意力焦点（含 salience %）/ 自主任务 / 疲劳度 / 显著性阈值+容量读数，数据来自 /cognition/state + /cognition/tasks；cognition.enabled=false 时端点回 503 {reason,how_to_enable} → 渲染启用引导而非空白。作为"能力"域子标签（技能/进化 ↔ 认知/自主），不破坏四域导航。实测吃到真实感知流（clipboard/screen/window 变化 7 个焦点 @55% salience）。33 测试绿。
 
 - 2026-06-13: **Proma 式模型配置 UI**（用户出 Proma 截图为标杆）。把一次性"发现→注册"的 ModelDiscoveryView 重做为两级管理：①渠道列表（profile 按 provider+base_url 分组成"渠道"，每渠道一卡：provider 图标/名称/模型计数/启用开关；Agent 供应商分区）；②渠道编辑器（供应商类型/名称/Base URL+预览/API Key+测试连接+眼睛/启用此渠道/已启用模型 chips/可用模型从供应商获取+手动添加 ID+显示名）。**后端新增 profile `enabled` 字段**：factory 加载时 `enabled:false` 跳过 registry（保留 api_key 不丢），upsert 持久化、GET 返回；新增 `PATCH /api/v2/llm/profiles/{id}/enabled` 原地翻转（只动 flag 不丢其他字段）+ 在内存 registry 即时 apply（禁用 pop / 启用 rebuild 插回，无需重启）。挂进系统域"模型管理"子标签，删除旧 ModelDiscoveryView + 用户加的第 5 个 nav 项（收回四域）。7 个后端 enabled 测试（factory 跳过/back-compat/PATCH 持久化无损/404/GET 报告）+ 前端列表/编辑器结构实测。注：渠道开关端到端需 daemon 重启（运行中实例无 PATCH 路由）。
