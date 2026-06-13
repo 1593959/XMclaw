@@ -1,9 +1,11 @@
 // 能力域（10.M3 收编旧 Skills/Evolution 页核心）— 技能清单 +
 // 进化管线读数（observer arms 晋升进度）。
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
 import { apiGet, apiPost } from "../lib/api";
+
+const CognitionView = lazy(() => import("./CognitionView"));
 
 interface SkillVersion {
   version: number;
@@ -39,6 +41,7 @@ export default function SkillsView() {
   const [pendingRestarts, setPendingRestarts] = useState<unknown[]>([]);
   const [loadFailures, setLoadFailures] = useState<Array<Record<string, unknown>>>([]);
   const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [tab, setTab] = useState<"skills" | "cognition">("skills");
 
   useEffect(() => {
     if (!token) return;
@@ -57,8 +60,28 @@ export default function SkillsView() {
 
   const arms = snap?.observer?.arms || [];
 
+  if (tab === "cognition") {
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex gap-1.5 px-5 pt-4 shrink-0">
+          <SkillsTab id="skills" cur={tab} onPick={setTab}>技能 / 进化</SkillsTab>
+          <SkillsTab id="cognition" cur={tab} onPick={setTab}>认知 / 自主</SkillsTab>
+        </div>
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <Suspense fallback={<div className="p-5 text-mc-faint text-sm">加载中…</div>}>
+            <CognitionView />
+          </Suspense>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 overflow-y-auto p-5 space-y-4">
+      <div className="flex gap-1.5">
+        <SkillsTab id="skills" cur={tab} onPick={setTab}>技能 / 进化</SkillsTab>
+        <SkillsTab id="cognition" cur={tab} onPick={setTab}>认知 / 自主</SkillsTab>
+      </div>
       <div>
         <h2 className="text-base font-semibold">能力</h2>
         <p className="text-xs text-mc-faint mt-0.5">技能库与自进化管线 — Honest Grader 驱动晋升</p>
@@ -234,5 +257,31 @@ function SkillRow({ skill: s, token }: { skill: Skill; token: string | null }) {
         </div>
       )}
     </div>
+  );
+}
+
+function SkillsTab({
+  id,
+  cur,
+  onPick,
+  children,
+}: {
+  id: "skills" | "cognition";
+  cur: string;
+  onPick: (v: "skills" | "cognition") => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={() => onPick(id)}
+      className={
+        "text-xs px-3 py-1.5 rounded-md border cursor-pointer " +
+        (cur === id
+          ? "border-mc-accent/50 text-mc-accent bg-mc-accent/10"
+          : "border-mc-border text-mc-faint hover:text-mc-muted")
+      }
+    >
+      {children}
+    </button>
   );
 }
