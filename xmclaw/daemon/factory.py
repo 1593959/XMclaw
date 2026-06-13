@@ -706,16 +706,27 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
             continue
         profiles[prof.id] = prof
 
-    # B-146: explicit default_profile_id wins over the legacy fallback.
+    # Default selection — restores the 4-step order the docstring promised.
+    # 2026-06-13 regression fix: 5f747b8 (B-146) removed the
+    # ``if default_id is None: default_id = prof.id`` fallback but never
+    # wired the documented replacement, leaving ``default_id=None``
+    # hardcoded. Symptom: a config with named profiles but no legacy
+    # ``llm.anthropic`` block and no explicit ``default_profile_id`` built
+    # a registry with profiles yet NO default → AgentLoop had no model to
+    # pick → chat dead + model picker empty (runtime profiles surfaced fine
+    # but nothing was selectable). Now:
+    #   1. explicit llm.default_profile_id if it names a loaded profile
+    #   2. legacy "default" block when present
+    #   3. first loaded profile (insertion order)
+    #   4. None → echo mode (only when truly no profiles)
+    llm_section = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    explicit = llm_section.get("default_profile_id")
     default_id: str | None = None
-    llm_section = cfg.get("llm") if isinstance(cfg, dict) else None
-    if isinstance(llm_section, dict):
-        explicit = llm_section.get("default_profile_id")
-        if isinstance(explicit, str) and explicit.strip() in profiles:
-            default_id = explicit.strip()
-    if default_id is None and "default" in profiles:
+    if isinstance(explicit, str) and explicit in profiles:
+        default_id = explicit
+    elif "default" in profiles:
         default_id = "default"
-    if default_id is None and profiles:
+    elif profiles:
         default_id = next(iter(profiles))
 
     return LLMRegistry(profiles=profiles, default_id=default_id)
@@ -1655,38 +1666,18 @@ def _resolve_backend_label(cfg: dict[str, Any] | None) -> str | None:
     ``"<provider>/<model> (<label>)"`` for ground-truth injection into
     the system prompt.
 
-    Wave-27 fix-LAT6: without this, the agent answers "what model are
-    you" by hallucinating — Kimi's /coding endpoint is an Anthropic-
-    protocol-compatible shim that spoofs Claude-shaped responses, so
-    the model self-reports as "Claude 3.5 Sonnet" even though the real
-    backend is ``kimi k2.6``. Returning a structured label here lets
-    ``build_system_prompt`` inject a "## 当前后端" section that the
-    DEFAULT_IDENTITY_LINE explicitly tells the agent to consult.
-
-    Resolution order:
-      1. Newer profile-id config: ``llm.default_profile_id`` →
-         match in ``llm.profiles[]`` → "<provider>/<model> (<label>)".
-      2. Legacy top-level block: ``llm.default_provider`` →
-         ``llm.<provider>.default_model`` → "<provider>/<model>".
-      3. None when neither resolves — DEFAULT_IDENTITY_LINE has a
-         fallback ("I don't know which backend is active").
+    Now reads the first named profile from ``llm.profiles[]`` — no longer
+    looks at ``llm.default_profile_id`` (obsolete).
     """
     llm_section = (cfg or {}).get("llm") or {}
-    default_id = llm_section.get("default_profile_id")
     profiles = llm_section.get("profiles") or []
-    if default_id and isinstance(profiles, list):
-        for p in profiles:
-            if isinstance(p, dict) and p.get("id") == default_id:
-                model = p.get("model") or "?"
-                label = p.get("label") or default_id
-                provider = p.get("provider") or "?"
-                return f"{provider}/{model} ({label})"
-    provider = llm_section.get("default_provider")
-    if provider:
-        sub = llm_section.get(provider) or {}
-        model = sub.get("default_model")
-        if model:
-            return f"{provider}/{model}"
+    if profiles:
+        first = next((p for p in profiles if isinstance(p, dict) and p.get("id")), None)
+        if first:
+            model = first.get("model") or "?"
+            label = first.get("label") or first.get("id", "?")
+            provider = first.get("provider") or "?"
+            return f"{provider}/{model} ({label})"
     return None
 
 
