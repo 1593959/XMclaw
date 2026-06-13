@@ -1,4 +1,4 @@
-// 渠道编辑器（Proma 式）— 新增/编辑一个供应商渠道。
+﻿// 渠道编辑器（Proma 式）— 新增/编辑一个供应商渠道。
 // 渠道 = 同 provider+base_url 的一组模型 profile。
 // provider 类型 / 名称 / Base URL(+预览) / API Key(+测试连接+眼睛) /
 // 启用开关 / 已启用模型 / 可用模型(从供应商获取 + 手动添加)。
@@ -68,7 +68,11 @@ export default function ChannelEditor({
         token,
       );
       if (r.ok && r.connectivity_ok !== false) {
-        setTestResult(`连接成功 · ${r.model_count ?? 0} 个模型可用`);
+        if ((r.model_count ?? 0) === 0) {
+          setTestResult(`连接成功 · 未检测到可用模型，可手动添加模型 ID`);
+        } else {
+          setTestResult(`连接成功 · ${r.model_count} 个模型可用`);
+        }
       } else {
         setTestResult(r.error || "连接失败 — 检查 Base URL / API Key");
       }
@@ -91,9 +95,13 @@ export default function ChannelEditor({
         { base_url: baseUrl.trim(), api_key: apiKey.trim(), provider },
         token,
       );
-      if (r.ok && r.models) {
-        const existing = new Set(models.map((m) => m.modelId));
-        setAvailable(r.models.filter((m) => !existing.has(m.id)));
+      if (r.ok && Array.isArray(r.models)) {
+        if (r.models.length === 0) {
+          showToast("该端点未返回可用模型（可能不支持 /v1/models），请手动添加模型 ID", "info");
+        } else {
+          const existing = new Set(models.map((m) => m.modelId));
+          setAvailable(r.models.filter((m) => !existing.has(m.id)));
+        }
       } else {
         showToast(r.error || "拉取失败", "err");
       }
@@ -139,9 +147,20 @@ export default function ChannelEditor({
         const r = await apiPost<{ ok: boolean; error?: string }>("/api/v2/llm/profiles", body, token);
         if (r.ok) okCount += 1;
       }
-      // hotload 让新 profile 立即可选。
-      await apiPost("/api/v2/llm/endpoints/hotload", { profiles: [] }, token).catch(() => {});
-      showToast(`已保存 ${okCount} 个模型`, "ok");
+      // 写入成功后热载入内存，新 profile 立即可选（无需重启）。
+      try {
+        const hotProfiles = models.map((m) => ({
+          id: `${namePrefix}-${slug(m.modelId)}`,
+          label: m.label || m.modelId,
+          provider,
+          model: m.modelId,
+          api_key: apiKey.trim(),
+          base_url: baseUrl.trim() || undefined,
+        }));
+        await apiPost("/api/v2/llm/endpoints/hotload", { profiles: hotProfiles }, token);
+      } catch {
+        // hotload 失败不影响配置已持久化，下次重启生效。
+      }
       onSaved();
     } catch (e) {
       showToast(e instanceof Error ? e.message : String(e), "err");

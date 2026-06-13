@@ -152,7 +152,7 @@ export function ModelPickerDialog({ token, sessionId, currentProfileId, onClose,
     apiGet("/api/v2/llm/profiles", token)
       .then((d) => {
         if (cancelled) return;
-        const list = d.profiles || [];
+        const list = (d.profiles || []).filter((p) => p.id !== "default");
         setProfiles(list);
         const byProv = new Map();
         for (const p of list) {

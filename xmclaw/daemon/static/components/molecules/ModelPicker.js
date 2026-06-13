@@ -27,7 +27,7 @@ export function ModelPicker({ token, value, onChange }) {
       try {
         const data = await apiGet("/api/v2/llm/profiles", token);
         if (cancelled) return;
-        setProfiles(data.profiles || []);
+        setProfiles((data.profiles || []).filter((p) => p.id !== "default"));
         setDefaultId(data.default_id || null);
       } catch (_exc) {
         // Don't break the chat header on a 404 / 401. Just hide the picker.
