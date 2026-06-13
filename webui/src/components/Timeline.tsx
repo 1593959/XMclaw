@@ -22,11 +22,11 @@ function QuestionCard({ e }: { e: Entry }) {
         <div className="flex flex-wrap gap-2">
           {q.options.map((opt, i) => (
             <button
-              key={`${opt.value}-${i}`}
+              key={`${String(opt.value)}-${i}`}
               onClick={() => answerQuestion(q.id, opt.value)}
               className="text-xs px-3 py-1 rounded border border-mc-border hover:border-mc-warn/60 hover:bg-mc-warn/10 cursor-pointer"
             >
-              {opt.label}
+              {String(opt.label ?? opt.value ?? "")}
             </button>
           ))}
           {q.allow_other && (

@@ -66,6 +66,28 @@ function appendBlock(blocks: Block[] | undefined, type: "text" | "thinking", mid
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
+// ask_user_question 的 options 可能是字符串数组、或 {label,value,description}
+// 对象数组（AskUserQuestion 富选项）。统一归一成 {label,value} —— 直接把
+// 原始对象塞进 React child 会崩（"Objects are not valid as a React child"）。
+// 字符串选项也保留（旧逻辑会把它过滤掉 → 选项消失）。
+export function normalizeQuestionOptions(raw: unknown): Array<{ label: string; value: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ label: string; value: string }> = [];
+  for (const o of raw) {
+    if (typeof o === "string") {
+      if (o) out.push({ label: o, value: o });
+      continue;
+    }
+    if (o && typeof o === "object") {
+      const obj = o as Record<string, unknown>;
+      const label = str(obj.label) || str(obj.name) || str(obj.value) || str(obj.title);
+      const value = str(obj.value) || label;
+      if (label) out.push({ label, value });
+    }
+  }
+  return out;
+}
+
 // daemon 会把上下文块搭在 user 消息尾部持久化（session-workspace 提示 /
 // memory 注入 / output_schema 等，见 agent_loop.py F1 注释）。这些是
 // 给 LLM 看的，不是用户打的字 — 展示层剥掉。标签名单与
@@ -388,13 +410,7 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
           question: {
             id: qid,
             question: str(payload.question),
-            options: (Array.isArray(payload.options) ? (payload.options as Array<Record<string, unknown>>) : [])
-              .map((o) => {
-                const label = str(o.label || o.name || "");
-                const value = str(o.value || o);
-                return label ? { label, value } : null;
-              })
-              .filter(Boolean) as Array<{ label: string; value: string }>,
+            options: normalizeQuestionOptions(payload.options),
             multi_select: !!payload.multi_select,
             allow_other: payload.allow_other !== false,
             tool_call_id: str(payload.tool_call_id) || null,
