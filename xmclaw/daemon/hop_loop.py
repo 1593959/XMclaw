@@ -1,4 +1,4 @@
-"""Hop loop mixin for AgentLoop.
+﻿"""Hop loop mixin for AgentLoop.
 
 Extracted from agent_loop.py to reduce module size.
 Contains the LLM ↔ tool hop loop execution logic.
@@ -665,7 +665,35 @@ class HopLoopMixin:
                 _spec_invoke = lambda tc: self._invoke_single_tool(  # noqa: E731
                     tc, effective_tools, session_id, cancel_event=cancel_event,
                 )
-                _on_tool_block = make_speculation_callback(_spec_cache, _spec_invoke)
+                _spec_callback = make_speculation_callback(_spec_cache, _spec_invoke)
+
+                # 2026-06-14: publish TOOL_CALL_EMITTED + TOOL_INVOCATION_STARTED
+                # the moment a tool_use block streams in (not at end of LLM
+                # response). Without this the frontend gets all tool cards in
+                # one batch when Phase A iterates response.tool_calls.
+                _streamed_tool_ids: set[str] = set()
+                def _on_tool_block(tc: Any) -> Any:
+                    try:
+                        tc_id = getattr(tc, "id", None) or ""
+                        if tc_id and tc_id not in _streamed_tool_ids:
+                            _streamed_tool_ids.add(tc_id)
+                            asyncio.create_task(publish(
+                                EventType.TOOL_CALL_EMITTED, {
+                                    "call_id": tc_id,
+                                    "name": getattr(tc, "name", "") or "",
+                                    "args": getattr(tc, "args", {}) or {},
+                                    "provenance": getattr(tc, "provenance", "llm"),
+                                },
+                            ))
+                            asyncio.create_task(publish(
+                                EventType.TOOL_INVOCATION_STARTED, {
+                                    "call_id": tc_id,
+                                    "name": getattr(tc, "name", "") or "",
+                                },
+                            ))
+                    except Exception:  # noqa: BLE001 — never break streaming
+                        pass
+                    return _spec_callback(tc)
 
                 # 2026-05-30: immediate UI banner when stream() degrades
                 # to non-streaming complete() (Anthropic risk reject /
@@ -1308,8 +1336,12 @@ class HopLoopMixin:
                     ) or "",
                 ))
 
-                # Phase A: emit start events (serial, lightweight).
+                # Phase A: emit start events for any tool_use blocks
+                # whose stream-time _on_tool_block didn't fire (e.g. when
+                # the provider degraded to non-streaming complete()).
                 for call in response.tool_calls:
+                    if call.id in _streamed_tool_ids:
+                        continue  # already emitted during stream
                     await publish(EventType.TOOL_CALL_EMITTED, {
                         "call_id": call.id,
                         "name": call.name,
@@ -1319,6 +1351,12 @@ class HopLoopMixin:
                     await publish(EventType.TOOL_INVOCATION_STARTED, {
                         "call_id": call.id, "name": call.name,
                     })
+                # Yield so WS tasks flush: tool cards appear BEFORE results.
+                # Without this, bus.publish returns immediately (background
+                # asyncio tasks), Phase B starts, and the WS send races
+                # against tool execution — the frontend gets all events at
+                # once instead of seeing cards appear one by one.
+                await asyncio.sleep(0.05)
 
                 # Phase B: invoke tools with read-parallel / write-smart
                 # semantics (B-7).  Read-only tools (file_read, list_dir,
@@ -2174,6 +2212,43 @@ class HopLoopMixin:
             if _turn_metrics is not None:
                 _turn_metrics["hop_count"] = hop + 1
                 _turn_metrics["tool_call_count"] = len(tool_calls_made)
+
+            # Plan lifecycle close-out (PlanFirst path).
+            # When agent_loop's PlanFirst gate emitted PLAN_STARTED at
+            # turn entry, the front-end PlanStrip needs PLAN_COMPLETED
+            # to flip "plan.active" off; without it the bar stays
+            # "running" forever. We also fast-forward any remaining
+            # pending step pills to "done" so the user sees a clean
+            # 100% state instead of pills frozen mid-progress.
+            _plan_step_ids = list(
+                getattr(self, "_active_plan_step_ids", []) or []
+            )
+            _plan_id = getattr(self, "_active_plan_id", None)
+            if _plan_id and _plan_step_ids:
+                try:
+                    _completed = getattr(
+                        self, "_active_plan_completed", set()
+                    ) or set()
+                    for _idx, _sid in enumerate(_plan_step_ids):
+                        if _idx in _completed:
+                            continue
+                        await publish(EventType.PLAN_STEP_COMPLETED, {
+                            "plan_id": _plan_id,
+                            "step_id": _sid,
+                            "step_index": _idx,
+                            "n_steps": len(_plan_step_ids),
+                            "action_kind": "llm_turn",
+                        })
+                    await publish(EventType.PLAN_COMPLETED, {
+                        "plan_id": _plan_id,
+                        "n_steps": len(_plan_step_ids),
+                        "status": "completed",
+                    })
+                except Exception:  # noqa: BLE001 - observability only
+                    pass
+                finally:
+                    self._active_plan_id = None
+                    self._active_plan_step_ids = []
 
             return AgentTurnResult(
                 ok=True, text=response.content, hops=hop + 1,
