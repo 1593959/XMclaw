@@ -155,7 +155,7 @@ class ProactiveAgent:
         publish: Callable[[str, dict[str, Any]], Awaitable[Any]],
         agent_id: str = "main",
         tick_interval_s: float = 30.0,
-        global_min_gap_s: float = 60.0,
+        global_min_gap_s: float = 300.0,
         quiet_start_hour: int = 23,
         quiet_end_hour: int = 7,
         memory: Any | None = None,

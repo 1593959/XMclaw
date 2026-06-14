@@ -1,4 +1,4 @@
-"""LLM Endpoint Discovery — discover models from OpenAI-compatible endpoints.
+﻿"""LLM Endpoint Discovery — discover models from OpenAI-compatible endpoints.
 
 Mounted at ``/api/v2/llm/endpoints``. Backs the "Discover Models" section
 of the Settings page: the user enters a base_url + api_key, clicks
@@ -126,7 +126,11 @@ async def discover_models(request: Request) -> JSONResponse:
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
 
-    models_url = f"{base_url.rstrip('/')}/v1/models"
+    # Normalize base_url: strip trailing slash, avoid double /v1
+    base_url = base_url.rstrip('/')
+    if not base_url.endswith('/v1'):
+        base_url = f'{base_url}/v1'
+    models_url = f'{base_url}/models'
     result: dict[str, Any] = {
         "ok": True,
         "base_url": base_url,
@@ -212,6 +216,7 @@ async def discover_models(request: Request) -> JSONResponse:
             else:
                 result["models"] = []
                 result["model_count"] = 0
+                result["connectivity_ok"] = True
                 result["note"] = (
                     f"/v1/models returned HTTP {resp.status_code}. "
                     "This endpoint may not support model listing."

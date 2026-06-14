@@ -72,9 +72,10 @@ class StubEmbedder:
         out: list[list[float]] = []
         for t in texts:
             h = hashlib.sha256(t.encode("utf-8")).digest()
-            # Convert first N bytes to floats in [-1, 1]
+            # Convert bytes to floats in [-1, 1]. Use modular indexing
+            # so dim > 32 doesn't crash (SHA-256 is 32 bytes).
             vec = [
-                ((h[i] - 128) / 128.0) for i in range(self.dim)
+                ((h[i % len(h)] - 128) / 128.0) for i in range(self.dim)
             ]
             out.append(vec)
         return out

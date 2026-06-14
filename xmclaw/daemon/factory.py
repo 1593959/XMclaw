@@ -681,51 +681,44 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     """
     profiles: dict[str, LLMProfile] = {}
 
-    legacy = build_llm_from_config(cfg)
-    if legacy is not None:
-        # B-146: derive a useful label instead of the opaque "默认 (config.json)".
-        # Show "<provider>/<model>" so the chat picker can surface what
-        # the daemon is actually wired to without the user reading
-        # config.json.
-        legacy_provider = type(legacy).__name__.replace("LLM", "").lower()
-        legacy_model = getattr(legacy, "model", "") or ""
-        legacy_label = (
-            f"{legacy_provider}/{legacy_model}" if legacy_model else legacy_provider
-        )
-        profiles["default"] = LLMProfile(
-            id="default",
-            label=legacy_label,
-            provider_name=legacy_provider,
-            model=legacy_model,
-            llm=legacy,
-            tier=_infer_tier_from_model(legacy_model),
-        )
+    named = build_llm_profiles_from_config(cfg)
 
-    for prof in build_llm_profiles_from_config(cfg):
+    # Phase 10 (2026-06-13): only synthesise the legacy "default" profile
+    # when the user has NO named profiles configured. When named profiles
+    # exist, the user is explicitly managing their model list and doesn't
+    # need a clutter entry derived from the ``llm.<provider>`` block.
+    if len(named) == 0:
+        legacy = build_llm_from_config(cfg)
+        if legacy is not None:
+            legacy_provider = type(legacy).__name__.replace("LLM", "").lower()
+            legacy_model = getattr(legacy, "model", "") or ""
+            legacy_label = (
+                f"{legacy_provider}/{legacy_model}" if legacy_model else legacy_provider
+            )
+            profiles["default"] = LLMProfile(
+                id="default",
+                label=legacy_label,
+                provider_name=legacy_provider,
+                model=legacy_model,
+                llm=legacy,
+                tier=_infer_tier_from_model(legacy_model),
+            )
+
+    for prof in named:
         if prof.id in profiles:
             continue
         profiles[prof.id] = prof
 
-    # Default selection — restores the 4-step order the docstring promised.
-    # 2026-06-13 regression fix: 5f747b8 (B-146) removed the
-    # ``if default_id is None: default_id = prof.id`` fallback but never
-    # wired the documented replacement, leaving ``default_id=None``
-    # hardcoded. Symptom: a config with named profiles but no legacy
-    # ``llm.anthropic`` block and no explicit ``default_profile_id`` built
-    # a registry with profiles yet NO default → AgentLoop had no model to
-    # pick → chat dead + model picker empty (runtime profiles surfaced fine
-    # but nothing was selectable). Now:
+    # Default selection:
     #   1. explicit llm.default_profile_id if it names a loaded profile
-    #   2. legacy "default" block when present
-    #   3. first loaded profile (insertion order)
+    #   2. first loaded named profile (insertion order)
+    #   3. legacy "default" (only when no named profiles exist)
     #   4. None → echo mode (only when truly no profiles)
     llm_section = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
     explicit = llm_section.get("default_profile_id")
     default_id: str | None = None
     if isinstance(explicit, str) and explicit in profiles:
         default_id = explicit
-    elif "default" in profiles:
-        default_id = "default"
     elif profiles:
         default_id = next(iter(profiles))
 
@@ -1666,18 +1659,69 @@ def _resolve_backend_label(cfg: dict[str, Any] | None) -> str | None:
     ``"<provider>/<model> (<label>)"`` for ground-truth injection into
     the system prompt.
 
-    Now reads the first named profile from ``llm.profiles[]`` — no longer
-    looks at ``llm.default_profile_id`` (obsolete).
+    Resolution order:
+      1. ``llm.default_profile_id`` → matching enabled profile.
+      2. First enabled profile in ``llm.profiles[]``.
+      3. Legacy ``llm.<provider>`` block — first with non-empty
+         ``api_key`` (anthropic > openai > openrouter).
+      4. ``None`` → agent will answer "I don't know which backend
+         is active."
+
+    Profiles with ``"enabled": false`` are skipped.
     """
-    llm_section = (cfg or {}).get("llm") or {}
-    profiles = llm_section.get("profiles") or []
-    if profiles:
-        first = next((p for p in profiles if isinstance(p, dict) and p.get("id")), None)
-        if first:
-            model = first.get("model") or "?"
-            label = first.get("label") or first.get("id", "?")
-            provider = first.get("provider") or "?"
-            return f"{provider}/{model} ({label})"
+    llm_section: dict[str, Any] = (cfg or {}).get("llm") or {}  # type: ignore[assignment]
+    if not isinstance(llm_section, dict):
+        return None
+
+    profiles: list[dict[str, Any]] = llm_section.get("profiles") or []  # type: ignore[assignment]
+    default_id: str | None = llm_section.get("default_profile_id")  # type: ignore[assignment]
+
+    # Filter to enabled profiles with an id.
+    def _is_enabled(p: object) -> bool:
+        if not isinstance(p, dict):
+            return False
+        if not p.get("id"):
+            return False
+        # ``enabled: false`` explicitly opts-out; missing or true = enabled.
+        if p.get("enabled") is False:
+            return False
+        return True
+
+    valid: list[dict[str, Any]] = [p for p in profiles if _is_enabled(p)]  # type: ignore[arg-type]
+
+    if valid:
+        # Step 1: if default_profile_id names a valid profile, use it.
+        if isinstance(default_id, str) and default_id:
+            match = next((p for p in valid if p.get("id") == default_id), None)  # type: ignore[arg-type]
+            if match is not None:
+                model = match.get("model") or "?"
+                label = match.get("label") or match.get("id", "?")
+                provider = match.get("provider") or "?"
+                return f"{provider}/{model} ({label})"
+        # Step 2: first enabled profile.
+        first = valid[0]
+        model = first.get("model") or "?"
+        label = first.get("label") or first.get("id", "?")
+        provider = first.get("provider") or "?"
+        return f"{provider}/{model} ({label})"
+
+    # Step 3: legacy block fallback — first provider with a model name
+    # set (via default_model or model). The actual api_key may come from
+    # an ``XMC__llm__<provider>__api_key`` env var or the secrets layer,
+    # which are resolved later by build_llm_from_config; we only need
+    # the model id for the label.
+    for provider_name in ("anthropic", "openai", "openrouter"):
+        pcfg = llm_section.get(provider_name)
+        if not isinstance(pcfg, dict):
+            continue
+        model = (
+            pcfg.get("default_model")
+            or pcfg.get("model")
+            or ""
+        ).strip()
+        if model:
+            return f"{provider_name}/{model}"
+
     return None
 
 

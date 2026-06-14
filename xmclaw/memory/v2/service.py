@@ -135,7 +135,7 @@ SAME_TOPIC_DISTANCE_THRESHOLD = 0.30
 CONTRADICTS_DISTANCE_THRESHOLD = 0.25
 
 #: evidence_count at which a working-layer fact is auto-promoted.
-LONG_TERM_PROMOTE_THRESHOLD = 3
+LONG_TERM_PROMOTE_THRESHOLD = 2
 
 # ── Three-factor recall ranking (Phase 8 ⑦, Generative Agents) ────
 # Stanford Generative Agents (arXiv:2304.03442) ranks retrieved

@@ -38,11 +38,11 @@ _INTENT_LABELS: dict[str, str] = {
 # Maximum events kept in the hot context window.
 _MAX_CONTEXT_WINDOW = 256
 # Minimum confidence before a prediction is surfaced to triggers.
-_CONFIDENCE_THRESHOLD = 0.55
+_CONFIDENCE_THRESHOLD = 0.65
 # How often Layer-2 statistical pass runs (seconds).
 _STATISTICAL_INTERVAL_S = 60.0
 # How often Layer-3 LLM pass runs (seconds).
-_LLM_INTERVAL_S = 300.0
+_LLM_INTERVAL_S = 600.0
 
 
 # 2026-05-29 honesty guard. A proactive prediction is just a string
@@ -403,9 +403,22 @@ class IntentEngine:
             '"urgency": "low|normal|high"}]}\n\n'
             "规则：\n"
             "1. 所有文本字段（rationale、proposed_message）必须使用简体中文。\n"
-            "2. 只有置信度 >= 0.55 的预测才放入 predictions 数组。\n"
-            "3. 如果没什么可预测的，返回空数组 {\"predictions\": []}。\n"
+            "2. 只有置信度 >= 0.65 的预测才放入 predictions 数组。\n"
+            "3. **大多数时候应该返回空数组 {\"predictions\": []}**。主动提议是稀缺资源，"
+            "不是每个操作完成后都要刷存在感。一天出现 1-3 次是合理频率，多了就是骚扰。\n"
             "4. proposed_message 要自然、口语化。\n\n"
+            "★ 低价值提议黑名单（以下场景禁止生成提议，置信度直接判 0）：\n"
+            "  • 某个操作刚刚完成（'刚索引完'/'刚写完'/'刚整理完'/'刚分析完'等）→ "
+            "用户不需要你跟在屁股后面问要不要搜、要不要看。如果真的有价值，"
+            "用户自己会问。\n"
+            "  • 没有具体 action 的寒暄（'今天搞了啥'/'要不要过一遍'等）→ 纯骚扰。\n"
+            "  • 信息量等于零的泛泛提议（'我注意到你…，需要的话我可以…'而没有说 "
+            "具体做什么）→ 等价于没说。\n\n"
+            "★ 高价值提议白名单（以下场景才值得举手）：\n"
+            "  • 连续多次失败 → 建议切换策略或排查根因\n"
+            "  • 发现真正异常的模式（磁盘满了、API 错误率飙升、大量记忆被驱逐）\n"
+            "  • 长期沉默后的首次活动 → 可以简要同步状态\n"
+            "  • 用户明确设置了提醒/定时任务即将触发\n\n"
             "★ 诚实性硬规则（最重要）：proposed_message 只是一条**主动提议**，"
             "发出后**没有任何实际动作会被执行**——它只是显示给用户看的一句话。\n"
             "  • **禁止**用第一人称声称你正在做或已经做了任何工作。"

@@ -101,6 +101,14 @@ class LLMRegistry:
     def __contains__(self, profile_id: object) -> bool:
         return profile_id in self.profiles
 
+    def add_profile(self, profile: LLMProfile) -> None:
+        """Hot-add a profile to the registry (no restart needed).
+
+        Called by the model-discovery Apply endpoint to inject
+        discovered models into the in-memory registry immediately.
+        """
+        self.profiles[profile.id] = profile
+
     # ── Sprint 0: tier-based picking ──────────────────────────────
 
     def by_tier(self, tier: str) -> list[LLMProfile]:

@@ -2722,7 +2722,7 @@ def make_lifespan(
                 )
                 if _sweep_interval > 0:
                     _ttl_cfg = _retention_cfg.get("ttl") or {
-                        "working": 86400.0, "long_term": None,
+                        "working": 604800.0, "long_term": None,
                     }
                     _items_cfg = _retention_cfg.get("max_items") or {
                         "working": 20000, "long_term": None,

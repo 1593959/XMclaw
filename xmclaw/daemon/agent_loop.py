@@ -1122,57 +1122,54 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                                 if getattr(m, "role", "") != "system"
                             ]
 
-                            def _n_work(msgs: "list[Message]") -> int:
-                                return sum(
-                                    1 for m in msgs
-                                    if getattr(m, "role", "")
-                                    in ("assistant", "tool")
+                            # 2026-06-12: always save inflight on failure.
+                            # The old _n_work(_progress) > _n_work(history)
+                            # guard was fragile — any in-memory history mutation
+                            # (compression, undo, etc.) could make the condition
+                            # False and silently discard the turn's progress.
+                            _answered = {
+                                m.tool_call_id for m in _progress
+                                if getattr(m, "role", "") == "tool"
+                                and m.tool_call_id
+                            }
+                            _patched: list[Message] = []
+                            for m in _progress:
+                                _patched.append(m)
+                                if (
+                                    getattr(m, "role", "") == "assistant"
+                                    and getattr(m, "tool_calls", ())
+                                ):
+                                    for _tc in m.tool_calls:
+                                        _tc_id = getattr(_tc, "id", None)
+                                        if _tc_id and _tc_id not in _answered:
+                                            _patched.append(Message(
+                                                role="tool",
+                                                content=(
+                                                    "[interrupted] 该工具调用"
+                                                    "未完成（本轮出错/超时），"
+                                                    "没有产生结果。"
+                                                ),
+                                                tool_call_id=_tc_id,
+                                            ))
+                            _patched.append(Message(
+                                role="assistant",
+                                content=(
+                                    "⚠️ 这一轮没能完成（出错或超时），"
+                                    "但中间进度（已执行的工具调用和"
+                                    "结果）已经保存。直接说「继续」，"
+                                    "我会从中断点接着做，不会从头开始。"
+                                ),
+                            ))
+                            try:
+                                await self._persist_history(
+                                    session_id, _patched,
                                 )
-
-                            if _n_work(_progress) > _n_work(history):
-                                _answered = {
-                                    m.tool_call_id for m in _progress
-                                    if getattr(m, "role", "") == "tool"
-                                    and m.tool_call_id
-                                }
-                                _patched: list[Message] = []
-                                for m in _progress:
-                                    _patched.append(m)
-                                    if (
-                                        getattr(m, "role", "") == "assistant"
-                                        and getattr(m, "tool_calls", ())
-                                    ):
-                                        for _tc in m.tool_calls:
-                                            _tc_id = getattr(_tc, "id", None)
-                                            if _tc_id and _tc_id not in _answered:
-                                                _patched.append(Message(
-                                                    role="tool",
-                                                    content=(
-                                                        "[interrupted] 该工具调用"
-                                                        "未完成（本轮出错/超时），"
-                                                        "没有产生结果。"
-                                                    ),
-                                                    tool_call_id=_tc_id,
-                                                ))
-                                _patched.append(Message(
-                                    role="assistant",
-                                    content=(
-                                        "⚠️ 这一轮没能完成（出错或超时），"
-                                        "但中间进度（已执行的工具调用和"
-                                        "结果）已经保存。直接说「继续」，"
-                                        "我会从中断点接着做，不会从头开始。"
-                                    ),
-                                ))
-                                try:
-                                    await self._persist_history(
-                                        session_id, _patched,
-                                    )
-                                    history = self._histories.get(
-                                        session_id, history,
-                                    )
-                                    _saved_inflight = True
-                                except Exception:  # noqa: BLE001
-                                    pass  # fall back to the minimal path
+                                history = self._histories.get(
+                                    session_id, history,
+                                )
+                                _saved_inflight = True
+                            except Exception:  # noqa: BLE001
+                                pass  # fall back to the minimal path
                         if not _saved_inflight:
                             recovered = list(history)
                             _tail = recovered[-1] if recovered else None
@@ -1287,6 +1284,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 "kind": "timeout",
                 "hop": 0,
             })
+            await publish(EventType.LLM_RESPONSE, {
+                "hop": 0, "ok": False,
+                "error": "instant mode LLM call timed out",
+                "latency_ms": (_time.perf_counter() - t0) * 1000.0,
+            }, correlation_id=hop_corr)
             return AgentTurnResult(
                 ok=False, text="",
                 hops=1, tool_calls=[], events=events,
@@ -1298,6 +1300,11 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 "kind": "llm_error",
                 "hop": 0,
             })
+            await publish(EventType.LLM_RESPONSE, {
+                "hop": 0, "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "latency_ms": (_time.perf_counter() - t0) * 1000.0,
+            }, correlation_id=hop_corr)
             return AgentTurnResult(
                 ok=False, text="",
                 hops=1, tool_calls=[], events=events,

@@ -18,12 +18,19 @@ _log = get_logger(__name__)
 class IntentPredictionTrigger(ProactiveTrigger):
     """Query the IntentEngine each tick and surface the top prediction."""
 
+    # Minimum seconds since last user message before we even consider
+    # firing. Without this guard, the trigger fires right after a turn
+    # completes — the user sees a proposal immediately after the agent
+    # just finished responding, which feels like the agent needlessly
+    # butting in ("刚索引完，要不要帮你搜？" spam).
+    _MIN_IDLE_SECONDS: float = 120.0
+
     def __init__(
         self,
         engine: IntentEngine,
         *,
-        cooldown_s: float = 600.0,
-        confidence_threshold: float = 0.6,
+        cooldown_s: float = 1800.0,
+        confidence_threshold: float = 0.7,
     ) -> None:
         self.name = "intent_prediction"
         self.cooldown_s = float(cooldown_s)
@@ -44,6 +51,15 @@ class IntentPredictionTrigger(ProactiveTrigger):
             active = getattr(agent_loop, "_cancel_events", None)
             if active:
                 return False
+        # 2026-06-11: require minimum idle time since last user message.
+        # Without this, the trigger fires immediately after a turn
+        # completes — the user sees "刚索引完，要不要我帮你搜？" right
+        # after the agent finished a task, which feels like needless
+        # butting-in. Proposals should only fire when the user has been
+        # genuinely inactive for a while.
+        last_user_ts = getattr(ctx, "last_user_message_ts", None)
+        if last_user_ts is not None and (ctx.now - last_user_ts) < self._MIN_IDLE_SECONDS:
+            return False
         predictions = self._engine.top_predictions(
             k=1, min_confidence=self._confidence_threshold,
         )

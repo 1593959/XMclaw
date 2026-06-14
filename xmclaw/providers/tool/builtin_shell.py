@@ -108,7 +108,11 @@ class BuiltinToolsShellMixin:
 
     async def _run_shell(
         self, call: ToolCall, t0: float, *, default_timeout: float,
+        cancel_event: "asyncio.Event | None" = None,
     ) -> ToolResult:
+        # 2026-06-12: fast cancel check before spawning a subprocess.
+        if cancel_event is not None and cancel_event.is_set():
+            return _fail(call, t0, "cancelled by user")
         command = call.args.get("command")
         if not isinstance(command, str) or not command.strip():
             return _fail(call, t0, "missing or empty 'command' argument")
@@ -218,7 +222,25 @@ class BuiltinToolsShellMixin:
             return proc.returncode, merged
 
         try:
-            code, merged = await asyncio.to_thread(_run)
+            if cancel_event is not None:
+                # Race subprocess against cancel — whichever wins.
+                run_task = asyncio.ensure_future(asyncio.to_thread(_run))
+                cancel_task = asyncio.ensure_future(cancel_event.wait())
+                done, pending = await asyncio.wait(
+                    [run_task, cancel_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancel_task in done:
+                    run_task.cancel()
+                    for t in pending:
+                        t.cancel()
+                    return _fail(call, t0, "cancelled by user")
+                cancel_task.cancel()
+                for t in pending:
+                    t.cancel()
+                code, merged = run_task.result()
+            else:
+                code, merged = await asyncio.to_thread(_run)
         except subprocess.TimeoutExpired:
             return _fail(call, t0, f"timed out after {timeout}s")
         text = merged.decode("utf-8", errors="replace")
@@ -783,11 +805,16 @@ class BuiltinToolsShellMixin:
         """2026-05-28: fail-fast on DDG so CN-network users hit the
         Bing CN fallback in ~8s instead of hanging 15-30s on a
         connection that's never going to succeed. UA upgraded to real
-        Chrome so the few cases DDG IS reachable don't return CAPTCHA."""
+        Chrome so the few cases DDG IS reachable don't return CAPTCHA.
+
+        2026-06-12: try proxy first, then direct. On machines where the
+        system proxy (clash/v2ray) is slow or down, httpx's default
+        ``trust_env=True`` routes everything through it — if the proxy
+        isn't responding, we get ConnectTimeout even though the target
+        host is reachable. Fall back to a direct connection attempt so
+        at least one path succeeds."""
         import httpx
         url = "https://duckduckgo.com/html/"
-        # Use the same browser-realistic headers as web_fetch so DDG
-        # doesn't 403 / CAPTCHA us on UA fingerprint alone.
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -801,18 +828,26 @@ class BuiltinToolsShellMixin:
             "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
         }
-        # Tight connect timeout — DDG is either reachable in 5s or
-        # not at all (most often "not at all" from CN networks).
         timeout = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=timeout,
-        ) as c:
-            r = await c.post(url, data={"q": query}, headers=headers)
-        if r.status_code != 200:
-            raise _SearchBackendError(
-                f"DDG returned HTTP {r.status_code}"
-            )
-        return _parse_ddg_html(r.text, max_results)
+        # Try proxy first, then direct.
+        for attempt, use_proxy in enumerate(("proxy", "direct")):
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=timeout,
+                    trust_env=(use_proxy == "proxy"),
+                ) as c:
+                    r = await c.post(url, data={"q": query}, headers=headers)
+                if r.status_code != 200:
+                    raise _SearchBackendError(
+                        f"DDG returned HTTP {r.status_code}"
+                    )
+                return _parse_ddg_html(r.text, max_results)
+            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.RemoteProtocolError):
+                if attempt == 0:
+                    continue  # fall through to direct
+                raise _SearchBackendError(
+                    "DDG unreachable (tried proxy + direct)"
+                )
 
     async def _search_bing_cn_html(
         self, query: str, max_results: int,
@@ -824,7 +859,8 @@ class BuiltinToolsShellMixin:
         Endpoint is ``cn.bing.com`` (not ``www.bing.com``) — the CN
         host is friendlier to mainland networks and returns the
         same SERP HTML.
-        """
+
+        2026-06-12: proxy → direct fallback (same reasoning as DDG)."""
         import httpx
         from urllib.parse import quote_plus
         endpoint = (
@@ -844,15 +880,24 @@ class BuiltinToolsShellMixin:
             "Accept-Encoding": "gzip, deflate, br",
         }
         timeout = httpx.Timeout(connect=8.0, read=15.0, write=5.0, pool=5.0)
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=timeout,
-        ) as c:
-            r = await c.get(endpoint, headers=headers)
-        if r.status_code != 200:
-            raise _SearchBackendError(
-                f"Bing CN returned HTTP {r.status_code}"
-            )
-        return _parse_bing_html(r.text, max_results)
+        for attempt, use_proxy in enumerate(("proxy", "direct")):
+            try:
+                async with httpx.AsyncClient(
+                    follow_redirects=True, timeout=timeout,
+                    trust_env=(use_proxy == "proxy"),
+                ) as c:
+                    r = await c.get(endpoint, headers=headers)
+                if r.status_code != 200:
+                    raise _SearchBackendError(
+                        f"Bing CN returned HTTP {r.status_code}"
+                    )
+                return _parse_bing_html(r.text, max_results)
+            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.RemoteProtocolError):
+                if attempt == 0:
+                    continue
+                raise _SearchBackendError(
+                    "Bing CN unreachable (tried proxy + direct)"
+                )
 
     async def _search_bing(
         self, query: str, max_results: int, cfg: dict,
