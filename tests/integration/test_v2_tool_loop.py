@@ -75,8 +75,13 @@ async def test_real_tool_loop_scores_full_side_effect() -> None:
         assert verdict.returned is True
         assert verdict.type_matched is True
         assert verdict.side_effect_observable is True
-        # All four hard checks pass → 1.0 × 0.80 = 0.80 (no LLM opinion)
-        assert verdict.score == pytest.approx(0.80, abs=1e-6)
+        # Sprint-3 multi-signal redesign (verdict.py 52d0f33): deterministic
+        # score is now the weighted pass-fraction of APPLICABLE checks
+        # (ran .40 / returned .20 / type .20 / side_effect .20). All four
+        # pass → 1.0. With no independent signal (history=None) the combined
+        # final_score == deterministic_score. (Old 0.80/0.20 hard-vs-LLM
+        # split is retired — see _legacy_score.)
+        assert verdict.score == pytest.approx(1.0, abs=1e-6)
 
 
 @pytest.mark.asyncio
@@ -118,22 +123,26 @@ async def test_read_after_write_round_trip() -> None:
         )
         r_verdict = await grader.grade(read_event)
         assert r_verdict.side_effect_observable is None  # pure read
-        # ran + returned + type_matched all pass; redistributed weights
-        # give 1.0 × 0.80 for the non-LLM slot.
-        assert r_verdict.score == pytest.approx(0.80, abs=1e-6)
+        # side_effect is N/A for a pure read → dropped from numerator AND
+        # denominator (no free points). Remaining ran+returned+type all
+        # pass → re-normalized to 1.0. (Sprint-3 contract.)
+        assert r_verdict.score == pytest.approx(1.0, abs=1e-6)
 
 
 # ── anti-req #1 counter-case: hallucinated tool call scores badly ─────────
 
 
 @pytest.mark.asyncio
-async def test_hallucinated_tool_call_scores_at_most_llm_cap() -> None:
+async def test_hallucinated_tool_call_scores_zero() -> None:
     """Model said "I ran the tool" but no tool_invocation_finished happened.
 
-    The bus records an anti_req_violation instead. Even if the model
-    rates itself 1.0, the grader caps total score at 0.20 (anti-req #4).
-    This is anti-req #1 end-to-end: the runtime never rewards
-    tool-call claims that didn't actually execute.
+    The bus records an anti_req_violation instead. Sprint-3 multi-signal
+    redesign removed the LLM self-rating from the combined-score path
+    entirely (self-flattery can no longer buy a 0.20 floor — it only
+    enters via CrossJudgeSignal, which treats disagreement as NEGATIVE).
+    So a pure hallucination now scores 0.0, not 0.20 — strictly stronger
+    anti-req #1 enforcement: the runtime never rewards tool-call claims
+    that didn't actually execute.
     """
     grader = HonestGrader()
     violation = make_event(
@@ -142,23 +151,25 @@ async def test_hallucinated_tool_call_scores_at_most_llm_cap() -> None:
         payload={
             "message": "model emitted text describing a tool call, no call fired",
             "llm_judge_opinion": "I definitely wrote the file!",
-            "llm_judge_score": 1.0,
+            "llm_judge_score": 1.0,  # maximum self-flattery — must NOT help
         },
     )
     verdict = await grader.grade(violation)
     assert verdict.ran is False
     assert verdict.returned is False
     assert verdict.type_matched is False
-    # With all hard checks failing and LLM opinion capped at 0.20:
-    assert verdict.score == pytest.approx(0.20, abs=1e-6)
+    # All hard checks fail; LLM self-flattery no longer floors the score.
+    assert verdict.score == pytest.approx(0.0, abs=1e-6)
 
 
 @pytest.mark.asyncio
 async def test_real_call_outscores_hallucination_by_wide_margin() -> None:
     """The separation between REAL-TOOL and TEXT-CLAIMED-TOOL is the
-    numeric embodiment of anti-req #1. This test asserts the gap is
-    ≥ 3x — large enough to drive any reasonable bandit toward the real
-    path and away from hallucination, no matter the signal noise."""
+    numeric embodiment of anti-req #1. Under the Sprint-3 contract a real
+    write scores 1.0 and a pure hallucination scores 0.0 — perfect
+    separation. We assert real ≥ 3× fake, treating fake==0 (the current
+    behavior) as the strongest possible separation rather than dividing
+    by zero."""
     with tempfile.TemporaryDirectory() as tmp:
         tools = BuiltinTools(allowed_dirs=[tmp])
         grader = HonestGrader()
@@ -194,10 +205,13 @@ async def test_real_call_outscores_hallucination_by_wide_margin() -> None:
         )
         fake_score = (await grader.grade(fake_event)).score
 
-        ratio = real_score / fake_score
-        assert ratio >= 3.0, (
+        # fake==0 → perfect separation (real infinitely outscores fake).
+        # Otherwise require ≥3× gap. Either way real must be clearly high.
+        assert real_score >= 0.8, f"real write should score high, got {real_score:.3f}"
+        gap_ok = fake_score == 0.0 or real_score / fake_score >= 3.0
+        assert gap_ok, (
             f"anti-req #1 gap too small: real={real_score:.3f} "
-            f"fake={fake_score:.3f} ratio={ratio:.2f}x (need ≥3×)"
+            f"fake={fake_score:.3f} (need fake==0 or ratio≥3×)"
         )
 
 
@@ -228,11 +242,17 @@ async def test_write_claimed_but_permission_denied() -> None:
         },
     )
     verdict = await grader.grade(finished)
-    # ran: T, returned: T, type_matched: T, side_effect_observable: F
-    # score = 0.30×1 + 0.20×1 + 0.25×1 + 0.25×0 = 0.75 of the hard slot
-    # → total = 0.75 × 0.80 = 0.60
+    # Sprint-3 contract: ran T(.40) + returned T(.20) + type T(.20) +
+    # side_effect F(0) over weight_sum 1.0 → 0.80 (vs 1.0 for a clean
+    # write). The side-effect lie costs exactly its 0.20 weight.
     assert verdict.ran is True
     assert verdict.returned is True
     assert verdict.type_matched is True
     assert verdict.side_effect_observable is False
-    assert verdict.score < 0.65  # a real successful write would score 0.80
+    # The lie is penalized: strictly below a clean write (1.0).
+    assert verdict.score == pytest.approx(0.80, abs=1e-6)
+    assert verdict.score < 1.0
+    # The real honesty gate moved from "low score" to promote-eligibility:
+    # a single-signal verdict (no independent confirmation) can never be
+    # promoted regardless of score (Iron Rule #1).
+    assert verdict.promote_eligible is False
