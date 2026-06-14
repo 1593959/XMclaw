@@ -1,4 +1,4 @@
-// Mission Control — 事件 reducer。语义移植自旧 static/lib/chat_reducer.js
+﻿// Mission Control — 事件 reducer。语义移植自旧 static/lib/chat_reducer.js
 // + chat_reducer_streaming.js（B-89 弃流收尾 / B-232 call_id 键名 /
 // B-267 工具事件乱序竞态 / B-269 取消回合守卫 / seq 去重 / 多 hop 不清
 // pending / 截断 finalText 不覆盖更长流式文本），并新增 Mission Control
@@ -508,7 +508,19 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
     case "plan_completed":
     case "plan_failed": {
       const status = (str(payload.status) || (t === "plan_completed" ? "completed" : "failed")) as PlanState["status"];
-      return { ...chat, plan: { ...chat.plan, active: false, status } };
+      // 把残留 pending/running 步骤翻为最终态（completed → done，failed → failed），
+      // 避免「完成了但还有步骤在转」的怪相；plan.active=false 后步骤列表仍保留可见。
+      const finalStepStatus: PlanState["steps"][number]["status"] =
+        t === "plan_completed" ? "done" : "failed";
+      const finalSteps = chat.plan.steps.map((s) =>
+        s.status === "done" || s.status === "failed"
+          ? s
+          : { ...s, status: finalStepStatus },
+      );
+      return {
+        ...chat,
+        plan: { ...chat.plan, active: false, status, steps: finalSteps },
+      };
     }
 
     // ── 安全事件红条（10.M2.5） ─────────────────────────────────

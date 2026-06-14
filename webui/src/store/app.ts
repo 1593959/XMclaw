@@ -1,8 +1,9 @@
-// Mission Control — 全局 store（zustand）。
+﻿// Mission Control — 全局 store（zustand）。
 // boot 流程移植自旧 app.js：pair token → 选 sid（localStorage）→ WS 连接
 // + 历史水化（B-60）+ pending question 恢复（B-99）。
 
 import { create } from "zustand";
+import { flushSync } from "react-dom";
 import { apiDelete, apiGet, fetchPairingToken, setMediaToken } from "../lib/api";
 import { createWsClient, type WsHandle } from "../lib/ws";
 import {
@@ -228,7 +229,16 @@ export const useApp = create<AppState>((set, get) => {
     wsHandle = createWsClient({
       sessionId: sid,
       token,
-      onEvent: (envelope) => set((s) => ({ chat: applyEvent(s.chat, envelope) })),
+      onEvent: (envelope) => {
+        // tool_call_emitted 和 tool_invocation_finished 之间间隔极短时
+        // React 会把两次更新 batch 成一次，"running" 工具卡看不见。
+        // flushSync 强制创建瞬间立即提交，确保运行中状态有一帧可见。
+        if (envelope.type === "tool_call_emitted") {
+          flushSync(() => set((s) => ({ chat: applyEvent(s.chat, envelope) })));
+        } else {
+          set((s) => ({ chat: applyEvent(s.chat, envelope) }));
+        }
+      },
       onStatus: ({ status, error, attempt }) =>
         set({ connection: { status, lastError: error, attempt } }),
     });
