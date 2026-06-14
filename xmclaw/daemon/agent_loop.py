@@ -881,6 +881,25 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             prof = self._llm_registry.get(llm_profile_id)
             if prof is not None:
                 return prof.llm
+        # Phase 11 capability override: when the caller passes a
+        # `model_capability` (e.g. "image_gen" / "audio_in")
+        # we look for a profile with that explicit capability
+        # before tier routing. Used by the per-tool dispatcher when
+        # an image / video / TTS request lands.
+        capability = getattr(self, "_pending_capability_pick", None)
+        if (
+            isinstance(capability, str) and capability.strip()
+            and self._llm_registry is not None
+        ):
+            try:
+                prof = self._llm_registry.pick_by_capability(
+                    capability,
+                    prefer_tier=("vision", "strong", "balanced", "fast"),
+                )
+                if prof is not None:
+                    return prof.llm
+            except Exception:  # noqa: BLE001
+                pass
         # Wave-27 fix-13b: honour the registry's nominated default
         # BEFORE legacy fallback / tier routing. The frontend
         # explicitly sends profile=None to mean "use whatever the
@@ -1406,6 +1425,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             )
             events.append(event)
             await self._bus.publish(event)
+            # 实时性保障：bus.publish 只 create_task 派发订阅者(WS forward)
+            # 而不 await 它，靠后续自然让出点才 flush。工具循环 Phase A
+            # 连续同步 publish EMITTED/STARTED 后直到 Phase B 的 gather 才
+            # 让出 → 工具卡可能要等执行完才一起到 UI。让出一拍，给 WS
+            # forward 任务机会立即把本事件送达客户端(工具卡调用瞬间即现)。
+            # 不改 bus fan-out 语义(慢订阅者仍不阻塞 agent)，仅 publisher
+            # 让出一次调度。开销可忽略(LLM_CHUNK 本就靠网络 I/O 频繁让出)。
+            await asyncio.sleep(0)
             return event
 
         # Wave-32: UserPromptSubmit hook dispatch. Runs BEFORE we
@@ -3276,6 +3303,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # the ``instant`` mode (single-shot, no tool chain).
         self._active_plan_steps = None
         self._active_plan_completed = set()
+        # Mirror plan-event identifiers so the hop-loop tail can emit
+        # plan_step_completed / plan_completed without recomputing them.
+        self._active_plan_id = None
+        self._active_plan_step_ids = []
         # 2026-05-26 cheap-path: a trivial turn (greeting / ack) has
         # nothing to decompose. Skip the PlanFirst LLM call so the
         # user-perceived latency on "hi" is just the main hop.
@@ -3372,6 +3403,36 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         "user_msg_len": len(user_message),
                         "cached": _cached is not None,
                     })
+
+                    # Emit plan_started so the frontend PlanStrip shows steps
+                    # in real-time (not only after execute_plan path).
+                    _plan_id = f"plan_{turn_uuid}"
+                    _step_ids = [
+                        f"step_{i}_{step[:60]}"
+                        for i, step in enumerate(_steps)
+                    ]
+                    await publish(EventType.PLAN_STARTED, {
+                        "plan_id": _plan_id,
+                        "n_steps": len(_steps),
+                        "step_ids": _step_ids,
+                    })
+                    # Cache plan identifiers so the hop-loop tail can emit
+                    # plan_step_completed / plan_completed without
+                    # re-deriving them at turn end.
+                    self._active_plan_id = _plan_id
+                    self._active_plan_step_ids = list(_step_ids)
+                    # Optimistically flip step 0 to running so the UI
+                    # shows live progress immediately instead of a row
+                    # of pending pills until the very end of the turn.
+                    # Later steps are advanced by hop_loop's tail.
+                    if _step_ids:
+                        await publish(EventType.PLAN_STEP_STARTED, {
+                            "plan_id": _plan_id,
+                            "step_id": _step_ids[0],
+                            "step_index": 0,
+                            "n_steps": len(_steps),
+                            "action_kind": "llm_turn",
+                        })
                     # 2026-05-30: autonomous subagent trigger.
                     # Not every multi-step plan needs subagents — tool
                     # parallelism handles 2-step tasks fine. We upgrade
