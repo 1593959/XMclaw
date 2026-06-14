@@ -99,12 +99,11 @@ export default function Composer() {
         </Chip>
         {profiles.length > 0 && (
           <select
-            value={llmProfileId}
+            value={llmProfileId || profiles[0].id}
             onChange={(e) => setLlmProfile(e.target.value)}
-            title="本会话使用的模型 profile"
+            title="本会话使用的模型"
             className="text-[11px] px-2 py-1 rounded-full border border-mc-border bg-mc-panel text-mc-muted cursor-pointer outline-none hover:border-mc-accent/40 max-w-44"
           >
-            <option value="">默认模型</option>
             {profiles.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label || p.id} · {p.model}

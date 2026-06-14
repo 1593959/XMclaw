@@ -330,8 +330,18 @@ export const useApp = create<AppState>((set, get) => {
       get().refreshHud();
       // 模型 profile 列表（Composer 切换器；失败不致命）。
       try {
-        const data = await apiGet<{ profiles?: LlmProfile[] }>("/api/v2/llm/profiles", auth.token);
-        set({ profiles: Array.isArray(data?.profiles) ? data.profiles : [] });
+        const data = await apiGet<{ profiles?: LlmProfile[]; default_id?: string }>(
+          "/api/v2/llm/profiles",
+          auth.token,
+        );
+        const list = Array.isArray(data?.profiles) ? data.profiles : [];
+        set({ profiles: list });
+        // 去掉"默认模型"抽象：会话始终绑定一个具体模型。未选时落到
+        // daemon 默认或第一个，确保发送的 llm_profile_id 永远非空。
+        if (!get().llmProfileId && list.length > 0) {
+          const def = list.find((p) => p.id === data?.default_id) || list[0];
+          set({ llmProfileId: def.id });
+        }
       } catch {
         /* 列表为空 → 切换器隐藏 */
       }
@@ -357,7 +367,8 @@ export const useApp = create<AppState>((set, get) => {
         // missing = 默认（与后端约定一致），只在非默认时带字段。
         plan_mode: s.planMode || undefined,
         ultrathink: s.ultrathink || undefined,
-        llm_profile_id: s.llmProfileId || undefined,
+        // 永远发具体模型 id（兜底第一个）— 不再依赖 daemon 的默认。
+        llm_profile_id: s.llmProfileId || s.profiles[0]?.id || undefined,
       });
     },
 
@@ -511,8 +522,18 @@ export const useApp = create<AppState>((set, get) => {
       const { token } = get();
       if (!token) return;
       try {
-        const data = await apiGet<{ profiles?: LlmProfile[] }>("/api/v2/llm/profiles", token);
-        set({ profiles: Array.isArray(data?.profiles) ? data.profiles : [] });
+        const data = await apiGet<{ profiles?: LlmProfile[]; default_id?: string }>(
+          "/api/v2/llm/profiles",
+          token,
+        );
+        const list = Array.isArray(data?.profiles) ? data.profiles : [];
+        set({ profiles: list });
+        // 选中的模型若已不存在（如刚删除该渠道）→ 重新落到一个有效的。
+        const cur = get().llmProfileId;
+        if (list.length > 0 && !list.some((p) => p.id === cur)) {
+          const def = list.find((p) => p.id === data?.default_id) || list[0];
+          set({ llmProfileId: def.id });
+        }
       } catch {
         /* non-critical */
       }
