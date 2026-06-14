@@ -1,0 +1,7 @@
+﻿{
+  "name": "xmclaw-echo-server",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": { "xmclaw-echo": "./echo.mjs" },
+  "dependencies": {}
+}

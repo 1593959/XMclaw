@@ -1,0 +1,7 @@
+﻿{
+  "name": "xmclaw-mcp-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": { "xmclaw-mcp-bridge": "./bridge.mjs" },
+  "dependencies": {}
+}

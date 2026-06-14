@@ -1,4 +1,4 @@
-"""XMclaw CLI -- top-level entry point.
+﻿"""XMclaw CLI -- top-level entry point.
 
 Subcommands:
 
@@ -63,6 +63,7 @@ from xmclaw.cli._security_cmds import security_app  # noqa: E402
 from xmclaw.cli._session_cmds import session_app  # noqa: E402
 from xmclaw.cli.skill_marketplace import skill_app  # noqa: E402  B-390
 from xmclaw.cli.eval import eval_app  # noqa: E402  Sprint 4: A/B harness
+from xmclaw.cli._mcp_cmds import mcp_app  # noqa: E402  Proma MCP bridge
 app.add_typer(config_app, name="config")
 app.add_typer(backup_app, name="backup")
 app.add_typer(chat_app, name="chat")  # Jarvis Phase J3
@@ -76,6 +77,7 @@ app.add_typer(session_app, name="session")
 app.add_typer(skill_app, name="skill")  # B-390 (Sprint 2): skill marketplace
 app.add_typer(eval_app, name="eval")  # Sprint 4: A/B benchmark harness
 app.add_typer(acp_app, name="acp")  # Jarvis Phase J3
+app.add_typer(mcp_app, name="mcp")  # Proma MCP bridge
 
 
 # ── Global callback: --json flag + shell completion ──────────────────
