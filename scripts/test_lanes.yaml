@@ -111,6 +111,7 @@ lanes:
       - tests/unit/test_v2_llm_discovery.py
       - tests/unit/test_v2_profile_enabled_toggle.py
       - tests/unit/test_v2_registry_default_selection.py
+      - tests/unit/test_v2_default_tools_full_set.py
       - tests/unit/test_v2_daemon_factory.py
       - tests/unit/test_v2_daemon_lifecycle.py
       - tests/unit/test_v2_memory_retention.py

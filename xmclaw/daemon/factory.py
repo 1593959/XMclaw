@@ -280,6 +280,7 @@ def load_config(
 # profile config. Conservative — when in doubt return "balanced".
 
 _TIER_JSON_PATH = Path(__file__).resolve().parent.parent / "data" / "model_tiers.json"
+_CAPS_JSON_PATH = Path(__file__).resolve().parent.parent / "data" / "model_capabilities.json"
 
 
 @functools.lru_cache(maxsize=1)
@@ -320,6 +321,72 @@ def _load_tier_mappings() -> dict[str, tuple[str, ...]]:
         if tier in ("fast", "strong", "vision") and isinstance(substrings, list)
     }
 
+
+@functools.lru_cache(maxsize=1)
+def _load_capability_rules() -> tuple[tuple[tuple[str, ...], frozenset[str]], ...]:
+    """Load substring -> capabilities rules from `model_capabilities.json`.
+
+    JSON shape: `{"rules": [{"match": [...], "caps": [...]}, ...]}`.
+    Returns a tuple of `(match_substrings_lower, caps_frozenset)` so
+    multiple matches union together (a model name might list both
+    "gpt-4o" and "gpt-4o-realtime" patterns; we want every cap).
+    """
+    try:
+        raw = json.loads(_CAPS_JSON_PATH.read_text(encoding="utf-8"))
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(
+            ErrorSeverity.WARNING, __name__,
+            "_load_capability_rules", _exc,
+        )
+        return ()
+    out: list[tuple[tuple[str, ...], frozenset[str]]] = []
+    for entry in raw.get("rules", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        matches = entry.get("match")
+        caps = entry.get("caps")
+        if not isinstance(matches, list) or not isinstance(caps, list):
+            continue
+        m_tuple = tuple(str(x).lower() for x in matches if isinstance(x, str))
+        c_set = frozenset(str(x).strip().lower() for x in caps if isinstance(x, str))
+        if m_tuple and c_set:
+            out.append((m_tuple, c_set))
+    return tuple(out)
+
+
+def _infer_capabilities_from_model(
+    model: str, *, provider: str = "",
+) -> frozenset[str]:
+    """Best-effort capability detection from the model name.
+
+    Every chat-class LLM gets `"text"` for free. Substring matches
+    in `model_capabilities.json` add modality / feature caps on top.
+    Provider hints fill obvious gaps (e.g. anthropic / openai accept
+    tool calls so add `"tools"` even if the rules file missed it).
+    """
+    m = (model or "").lower().strip()
+    caps: set[str] = set()
+    # Chat models always understand text.
+    if m:
+        caps.add("text")
+    for substrings, mapped in _load_capability_rules():
+        if any(s in m for s in substrings):
+            caps.update(mapped)
+    # Provider-level guarantees: anthropic + openai + openrouter all
+    # support function calling on their main chat models. `tools` is
+    # cheap to set; the actual SDK refuses if the model can't handle
+    # it. Better to over-grant than to hide a capable model from the
+    # picker.
+    p = (provider or "").lower().strip()
+    if p in ("anthropic", "openai", "openrouter") and m and "embedding" not in caps:
+        caps.add("tools")
+    # Multimodal marker: any model that combines vision + audio gets
+    # the umbrella `"multimodal"` cap so callers asking for "any
+    # model that mixes >=2 modalities" can find them.
+    modalities = {"vision", "audio_in", "audio_out"} & caps
+    if len(modalities) >= 2:
+        caps.add("multimodal")
+    return frozenset(caps)
 
 def _infer_tier_from_model(model: str) -> str:
     """Heuristic tier mapping based on common Anthropic / OpenAI /
@@ -650,9 +717,31 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
         # working without change.
         raw_tier = str(entry.get("tier") or "").strip().lower()
         tier = raw_tier if raw_tier in ("fast", "balanced", "strong", "vision") else "balanced"
+        # Phase 11 capability set:
+        #   1. explicit `capabilities` list in profile config wins;
+        #   2. fall back to `_infer_capabilities_from_model` heuristic.
+        # Vision tier always implies vision so old configs without an
+        # explicit capability list still answer image tasks correctly.
+        raw_caps = entry.get("capabilities")
+        if isinstance(raw_caps, list) and raw_caps:
+            caps_set = frozenset(
+                str(c).strip().lower()
+                for c in raw_caps
+                if isinstance(c, str) and c.strip()
+            )
+        else:
+            caps_set = _infer_capabilities_from_model(
+                model, provider=provider_name,
+            )
+        if tier == "vision":
+            caps_set = frozenset(caps_set | {"text", "vision"})
+        elif "text" not in caps_set:
+            caps_set = frozenset(caps_set | {"text"})
+        category = str(entry.get("category") or "").strip().lower()
         out.append(LLMProfile(
             id=pid, label=label, provider_name=provider_name,
             model=model, llm=llm, tier=tier,
+            capabilities=caps_set, category=category,
         ))
         seen.add(pid)
     return out
@@ -702,6 +791,9 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
                 model=legacy_model,
                 llm=legacy,
                 tier=_infer_tier_from_model(legacy_model),
+                capabilities=_infer_capabilities_from_model(
+                    legacy_model, provider=legacy_provider,
+                ),
             )
 
     for prof in named:
@@ -888,14 +980,21 @@ def build_tools_from_config(
     """
     tools_section = cfg.get("tools")
     if tools_section is None:
-        # Default posture: full access, all tool families on.
-        # Must still wire persona_dir_provider so memory_get /
-        # remember / recall_user_preferences work when the user has
-        # not created a tools section.
-        return BuiltinTools(
-            session_store=session_store,
-            persona_dir_provider=_persona_dir_provider(cfg),
-        )
+        # No ``tools`` section → full default posture: every family on
+        # (enable_browser / lsp / computer_use / automation / media all
+        # default True below) with the SAME rich builtin wiring as the
+        # configured path. Fall through with an empty section.
+        #
+        # 2026-06-14 fix: this used to early-return ``BuiltinTools(
+        # session_store, persona_dir_provider)`` only — silently dropping
+        # browser / lsp / computer_use / media AND under-wiring builtins
+        # (no canvas_listener / workspace / undo / stt-tts). On a default
+        # config (no ``tools`` key) the agent saw ~44 builtin tools but
+        # NO browser_* — so error hints suggesting ``browser_open`` led
+        # the LLM to call a tool that didn't exist ("unknown tool").
+        # The comment promised "all tool families on" but the code did
+        # the opposite. Now it genuinely delivers the full set.
+        tools_section = {}
     if not isinstance(tools_section, dict):
         raise ConfigError(
             f"'tools' must be an object, got {type(tools_section).__name__}"
