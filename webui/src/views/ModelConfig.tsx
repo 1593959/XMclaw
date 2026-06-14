@@ -18,6 +18,10 @@ interface DiskProfile {
   base_url: string;
   api_key_redacted: string;
   enabled: boolean;
+  // Phase 11：能力标签 + 分类，影响图标 / 调度路由。
+  capabilities?: string[];
+  category?: string;
+  tier?: string;
 }
 
 export interface ChannelDraft {
@@ -26,7 +30,18 @@ export interface ChannelDraft {
   name: string;
   base_url: string;
   enabled: boolean;
-  models: { modelId: string; label: string; enabled: boolean }[];
+  // 编辑既有渠道时附带 profile id；新建渠道时为空字符串。
+  // 编辑器的 save() 用此判断哪些 profile 被移除，需要 DELETE。
+  models: {
+    profileId: string;
+    modelId: string;
+    label: string;
+    enabled: boolean;
+    // Phase 11：能力 + 分类（覆盖默认推断）。
+    capabilities?: string[];
+    category?: string;
+    tier?: string;
+  }[];
 }
 
 interface Channel {
@@ -120,7 +135,15 @@ export default function ModelConfig() {
       name: c.name,
       base_url: c.base_url,
       enabled: c.enabledCount > 0,
-      models: c.profiles.map((p) => ({ modelId: p.model, label: p.label, enabled: p.enabled })),
+      models: c.profiles.map((p) => ({
+        profileId: p.id,
+        modelId: p.model,
+        label: p.label,
+        enabled: p.enabled,
+        capabilities: p.capabilities || [],
+        category: p.category || "",
+        tier: p.tier || "",
+      })),
     });
   }
 

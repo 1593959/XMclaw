@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { useApp } from "../store/app";
-import { apiPost } from "../lib/api";
+import { apiDelete, apiPost } from "../lib/api";
 import type { ChannelDraft } from "./ModelConfig";
 
 const PROVIDERS = [
@@ -16,6 +16,8 @@ const PROVIDERS = [
 ];
 
 interface ModelRow {
+  // 来自既有渠道的 profile 才有 id；从可用模型新加入的为空。
+  profileId?: string;
   modelId: string;
   label: string;
   enabled: boolean;
@@ -119,6 +121,43 @@ export default function ChannelEditor({
     setAvailable((av) => av.filter((m) => m.id !== mid));
   }
 
+  async function deleteChannel() {
+    if (!editingKey) return;
+    const ids = (draft.models || [])
+      .map((m) => m.profileId)
+      .filter((x): x is string => !!x);
+    if (ids.length === 0) {
+      onClose();
+      return;
+    }
+    const ok = window.confirm(
+      `确定删除这个渠道？将从配置中移除 ${ids.length} 个模型。`,
+    );
+    if (!ok) return;
+    setSaving(true);
+    let failed = 0;
+    try {
+      for (const pid of ids) {
+        try {
+          await apiDelete(
+            `/api/v2/llm/profiles/${encodeURIComponent(pid)}`,
+            token,
+          );
+        } catch {
+          failed += 1;
+        }
+      }
+      if (failed > 0) {
+        showToast(`部分模型删除失败（${failed}/${ids.length}）`, "err");
+      } else {
+        showToast("渠道已删除", "ok");
+      }
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function save() {
     if (models.length === 0) {
       showToast("至少添加一个模型", "err");
@@ -130,10 +169,14 @@ export default function ChannelEditor({
     }
     setSaving(true);
     const namePrefix = slug(name || provider);
-    let okCount = 0;
+    // 编辑模式下：原有 profile 中现已不在列表的，需要 DELETE。
+    const removedProfileIds = (draft.models || [])
+      .map((orig) => orig.profileId)
+      .filter((pid): pid is string => !!pid && !models.some((m) => m.profileId === pid));
     try {
       for (const m of models) {
-        const pid = `${namePrefix}-${slug(m.modelId)}`;
+        // 既有 profile 沿用原 id，新模型派生：<namePrefix>-<modelId>。
+        const pid = m.profileId || `${namePrefix}-${slug(m.modelId)}`;
         const body: Record<string, unknown> = {
           id: pid,
           label: m.label || m.modelId,
@@ -144,22 +187,50 @@ export default function ChannelEditor({
         };
         // api_key 留空时后端保留既有；新建必填已校验。
         if (apiKey.trim()) body.api_key = apiKey.trim();
-        const r = await apiPost<{ ok: boolean; error?: string }>("/api/v2/llm/profiles", body, token);
-        if (r.ok) okCount += 1;
+        const r = await apiPost<{ ok: boolean; error?: string }>(
+          "/api/v2/llm/profiles",
+          body,
+          token,
+        );
+        if (!r.ok) {
+          throw new Error(r.error || `保存模型 ${m.modelId} 失败`);
+        }
       }
-      // 写入成功后热载入内存，新 profile 立即可选（无需重启）。
-      try {
-        const hotProfiles = models.map((m) => ({
-          id: `${namePrefix}-${slug(m.modelId)}`,
-          label: m.label || m.modelId,
-          provider,
-          model: m.modelId,
-          api_key: apiKey.trim(),
-          base_url: baseUrl.trim() || undefined,
-        }));
-        await apiPost("/api/v2/llm/endpoints/hotload", { profiles: hotProfiles }, token);
-      } catch {
-        // hotload 失败不影响配置已持久化，下次重启生效。
+      // 删除被移除的模型：DELETE 端点会同时清磁盘 + in-memory registry。
+      for (const pid of removedProfileIds) {
+        try {
+          await apiDelete(
+            `/api/v2/llm/profiles/${encodeURIComponent(pid)}`,
+            token,
+          );
+        } catch (e) {
+          showToast(
+            `删除 ${pid} 失败：${e instanceof Error ? e.message : String(e)}`,
+            "err",
+          );
+        }
+      }
+      // 新模型走 hotload 把 LLMProvider 注入内存（无需重启）。
+      // 既有 profile 改字段（label/enabled/key）走 POST 已生效，跳过。
+      const newProfiles = models.filter((m) => !m.profileId);
+      if (newProfiles.length > 0) {
+        try {
+          const hotProfiles = newProfiles.map((m) => ({
+            id: `${namePrefix}-${slug(m.modelId)}`,
+            label: m.label || m.modelId,
+            provider,
+            model: m.modelId,
+            api_key: apiKey.trim(),
+            base_url: baseUrl.trim() || undefined,
+          }));
+          await apiPost(
+            "/api/v2/llm/endpoints/hotload",
+            { profiles: hotProfiles },
+            token,
+          );
+        } catch {
+          // hotload 失败不影响配置已持久化，下次重启生效。
+        }
       }
       onSaved();
     } catch (e) {
@@ -338,7 +409,7 @@ export default function ChannelEditor({
         )}
       </div>
 
-      <div className="flex gap-2 pt-2 sticky bottom-0 bg-mc-bg py-3">
+      <div className="flex gap-2 pt-2 sticky bottom-0 bg-mc-bg py-3 items-center">
         <button
           onClick={save}
           disabled={saving}
@@ -352,6 +423,16 @@ export default function ChannelEditor({
         >
           取消
         </button>
+        {editingKey && (
+          <button
+            onClick={deleteChannel}
+            disabled={saving}
+            className="ml-auto px-4 py-2 rounded-md border border-mc-err/40 text-mc-err hover:bg-mc-err/10 cursor-pointer text-sm disabled:opacity-50"
+            title="删除整个渠道（包含下边所有模型）"
+          >
+            删除渠道
+          </button>
+        )}
       </div>
     </div>
   );

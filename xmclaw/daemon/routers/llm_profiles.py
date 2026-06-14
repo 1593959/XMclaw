@@ -95,6 +95,11 @@ async def list_profiles(request: Request) -> JSONResponse:
                 "provider": prof.provider_name,
                 "model": prof.model,
                 "is_default": prof.id == registry.default_id,
+                # Phase 11: surface capability set + tier so the picker
+                # can show the right icons (vision/audio/image/video).
+                "tier": getattr(prof, "tier", "balanced"),
+                "capabilities": sorted(getattr(prof, "capabilities", ()) or ()),
+                "category": getattr(prof, "category", ""),
             })
 
     on_disk: list[dict[str, Any]] = []
@@ -107,6 +112,16 @@ async def list_profiles(request: Request) -> JSONResponse:
                 for entry in raw:
                     if not isinstance(entry, dict):
                         continue
+                    raw_caps = entry.get("capabilities")
+                    caps_list: list[str]
+                    if isinstance(raw_caps, list):
+                        caps_list = sorted({
+                            str(c).strip().lower()
+                            for c in raw_caps
+                            if isinstance(c, str) and c.strip()
+                        })
+                    else:
+                        caps_list = []
                     on_disk.append({
                         "id": str(entry.get("id") or ""),
                         "label": str(entry.get("label") or ""),
@@ -118,6 +133,10 @@ async def list_profiles(request: Request) -> JSONResponse:
                         ),
                         # Phase 10: channel/model enable state (missing = enabled).
                         "enabled": entry.get("enabled") is not False,
+                        # Phase 11: persisted capability list / category.
+                        "tier": str(entry.get("tier") or "").strip().lower(),
+                        "capabilities": caps_list,
+                        "category": str(entry.get("category") or "").strip().lower(),
                     })
 
     return JSONResponse({
@@ -245,6 +264,25 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
     et = payload.get("extended_thinking")
     if isinstance(et, bool):
         new_entry["extended_thinking"] = et
+
+    # Phase 11: tier / capability list / category overrides.
+    raw_tier = payload.get("tier")
+    if isinstance(raw_tier, str):
+        t = raw_tier.strip().lower()
+        if t in ("fast", "balanced", "strong", "vision"):
+            new_entry["tier"] = t
+    raw_caps = payload.get("capabilities")
+    if isinstance(raw_caps, list):
+        cleaned = sorted({
+            str(c).strip().lower()
+            for c in raw_caps
+            if isinstance(c, str) and c.strip()
+        })
+        if cleaned:
+            new_entry["capabilities"] = cleaned
+    raw_cat = payload.get("category")
+    if isinstance(raw_cat, str) and raw_cat.strip():
+        new_entry["category"] = raw_cat.strip().lower()
 
     # Phase 10: Proma-style channel/model enable toggle. ``enabled:false``
     # persists the profile (+ api_key) but the factory skips registry
@@ -395,6 +433,7 @@ async def delete_profile(request: Request, profile_id: str) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
     llm = cfg.get("llm")
+    removed_from_disk = False
     if isinstance(llm, dict):
         profiles = llm.get("profiles")
         if isinstance(profiles, list):
@@ -408,8 +447,38 @@ async def delete_profile(request: Request, profile_id: str) -> JSONResponse:
                         {"ok": False, "error": f"write failed: {exc}"},
                         status_code=500,
                     )
+                removed_from_disk = True
+            # If default_profile_id pointed at the deleted id, clear it
+            # so the daemon doesn't boot into a dangling default.
+            if str(llm.get("default_profile_id") or "") == profile_id:
+                llm.pop("default_profile_id", None)
+                try:
+                    _atomic_write(target, cfg)
+                except OSError:
+                    pass
 
-    return JSONResponse({"ok": True, "id": profile_id, "restart_required": True})
+    # Live-apply: pop from the in-memory registry so the picker / chat
+    # routing forget the profile immediately (no restart). Best-effort:
+    # if anything blows up here the on-disk state is still authoritative.
+    live_applied = False
+    registry = getattr(request.app.state, "llm_registry", None)
+    if registry is not None:
+        try:
+            existed = profile_id in getattr(registry, "profiles", {})
+            if existed:
+                registry.profiles.pop(profile_id, None)
+            if getattr(registry, "default_id", None) == profile_id:
+                registry.default_id = next(iter(registry.profiles), None)
+            live_applied = True
+        except Exception:  # noqa: BLE001 - persistence is the source of truth
+            live_applied = False
+
+    return JSONResponse({
+        "ok": True,
+        "id": profile_id,
+        "removed_from_disk": removed_from_disk,
+        "live_applied": live_applied,
+    })
 
 
 @router.put("/default")

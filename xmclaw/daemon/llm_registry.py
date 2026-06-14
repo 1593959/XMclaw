@@ -23,6 +23,34 @@ from typing import Iterator
 
 from xmclaw.providers.llm.base import LLMProvider
 
+# Vocabulary for `LLMProfile.capabilities`. Open set: callers may pass
+# strings outside this list (e.g. an experimental `stt_realtime`); the
+# registry never gates on membership. Listed here so type checkers /
+# editors can autocomplete the common cases.
+#
+#   text       \u2014 chat / completion (assumed for every LLMProvider)
+#   vision     \u2014 image input (PNG/JPG -> understanding)
+#   audio_in   \u2014 speech / audio input (STT)
+#   audio_out  \u2014 speech / audio output (TTS)
+#   image_gen  \u2014 generates images (text -> image)
+#   video_gen  \u2014 generates video (text -> video)
+#   embedding  \u2014 produces vectors
+#   reasoning  \u2014 long-chain reasoning (o1/Opus/R1 class)
+#   tools      \u2014 native tool/function calling
+#   multimodal \u2014 single model that natively mixes >=2 input modalities
+KNOWN_CAPABILITIES: tuple[str, ...] = (
+    "text",
+    "vision",
+    "audio_in",
+    "audio_out",
+    "image_gen",
+    "video_gen",
+    "embedding",
+    "reasoning",
+    "tools",
+    "multimodal",
+)
+
 
 @dataclass(frozen=True)
 class LLMProfile:
@@ -54,6 +82,15 @@ class LLMProfile:
     model: str
     llm: LLMProvider
     tier: str = "balanced"
+    # Modality / capability set used by routing helpers (see
+    # `KNOWN_CAPABILITIES` above). Always include "text" for chat
+    # models. Concrete factory call sites populate this from explicit
+    # config first, falling back to `_infer_capabilities_from_model`.
+    capabilities: frozenset[str] = field(default_factory=frozenset)
+    # Optional human-friendly category override shown in the picker
+    # ("chat" / "vision" / "tts" / "stt" / "image" / "video" /
+    # "embedding"). When empty, the UI derives it from capabilities.
+    category: str = ""
 
 
 @dataclass
@@ -145,3 +182,57 @@ class LLMRegistry:
             if hits:
                 return hits[0]
         return self.default()
+
+
+    # \u2500\u2500 Capability-based picking (Phase 11): per-task model choice. \u2500\u2500
+
+    def by_capability(
+        self,
+        capability: str,
+        *,
+        require_all: tuple[str, ...] = (),
+    ) -> list[LLMProfile]:
+        """All profiles whose capability set includes `capability`.
+
+        `require_all` lets the caller demand multiple capabilities at
+        once \u2014 e.g. picking a model that does *both* vision and tools.
+        Insertion order preserved so the first hit is the preferred one.
+        """
+        cap = (capability or "").strip().lower()
+        if not cap:
+            return []
+        required = {cap, *(c.strip().lower() for c in require_all if c)}
+        out: list[LLMProfile] = []
+        for prof in self.profiles.values():
+            caps = prof.capabilities or frozenset()
+            if required.issubset(caps):
+                out.append(prof)
+        return out
+
+    def pick_by_capability(
+        self,
+        capability: str,
+        *,
+        require_all: tuple[str, ...] = (),
+        prefer_tier: tuple[str, ...] = (),
+    ) -> LLMProfile | None:
+        """Pick a single profile able to satisfy `capability`.
+
+        Selection order:
+          1. Exact capability match \u2014 highest priority of all.
+          2. Among matches, prefer those whose `tier` appears earlier
+             in `prefer_tier`. Useful when several models can do the
+             job and we want the strong / vision tier first.
+          3. Insertion order as last tiebreaker.
+        Returns `None` when no profile lists the requested capability
+        \u2014 callers fall back to a tier-based pick on their own (we don't
+        silently route a video task to a chat-only model).
+        """
+        hits = self.by_capability(capability, require_all=require_all)
+        if not hits:
+            return None
+        if not prefer_tier:
+            return hits[0]
+        order = {t: i for i, t in enumerate(prefer_tier)}
+        hits.sort(key=lambda p: order.get(p.tier, len(prefer_tier)))
+        return hits[0]

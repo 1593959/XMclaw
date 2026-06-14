@@ -1,4 +1,4 @@
-﻿"""LLM Endpoint Discovery — discover models from OpenAI-compatible endpoints.
+"""LLM Endpoint Discovery — discover models from OpenAI-compatible endpoints.
 
 Mounted at ``/api/v2/llm/endpoints``. Backs the "Discover Models" section
 of the Settings page: the user enters a base_url + api_key, clicks
@@ -452,6 +452,7 @@ async def hotload_profiles(request: Request) -> JSONResponse:
     # Build LLMProvider instances (re-uses factory logic)
     from xmclaw.daemon.factory import (
         _default_model_for,
+        _infer_capabilities_from_model,
         _infer_tier_from_model,
         _instantiate_llm,
     )
@@ -500,6 +501,10 @@ async def hotload_profiles(request: Request) -> JSONResponse:
             failed.append({"id": pid, "error": f"provider {provider} not supported"})
             continue
 
+        # Phase 11: capability inference for hot-loaded profiles.
+        # Discovery / Apply flow doesn't carry an explicit caps list,
+        # so we always derive from the model name + provider.
+        caps = _infer_capabilities_from_model(model, provider=provider)
         profile_obj = LLMProfile(
             id=pid,
             label=label,
@@ -507,6 +512,7 @@ async def hotload_profiles(request: Request) -> JSONResponse:
             model=model,
             llm=llm,
             tier=_infer_tier_from_model(model),
+            capabilities=caps,
         )
 
         # Insert into registry

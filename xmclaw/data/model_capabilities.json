@@ -1,0 +1,29 @@
+{
+  "_comment": "Model name substring -> capability set. Used by _infer_capabilities_from_model() when profiles don't explicitly list capabilities. First-match-wins per substring; final cap set is the union of every matching rule. Capability vocabulary: text, vision, audio_in, audio_out, image_gen, video_gen, embedding, reasoning, tools, multimodal. 'multimodal' is a marker (model accepts mixed inputs natively).",
+  "rules": [
+    { "match": ["sonnet", "opus", "claude-3", "claude-4", "claude-opus", "claude-sonnet"], "caps": ["text", "vision", "tools", "reasoning"] },
+    { "match": ["haiku"], "caps": ["text", "vision", "tools"] },
+    { "match": ["gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-4.5", "gpt-5", "chatgpt-4o"], "caps": ["text", "vision", "tools", "reasoning"] },
+    { "match": ["gpt-4o-realtime", "gpt-4o-audio"], "caps": ["text", "vision", "audio_in", "audio_out", "tools"] },
+    { "match": ["gpt-4o-mini", "gpt-3.5", "gpt-4o-mini-tts"], "caps": ["text", "tools"] },
+    { "match": ["o1", "o3", "o4-mini"], "caps": ["text", "reasoning", "tools"] },
+    { "match": ["whisper", "faster-whisper", "distil-whisper"], "caps": ["audio_in"] },
+    { "match": ["tts-1", "tts-hd", "edge-tts", "elevenlabs", "openai-tts", "azure-tts", "minimax-speech"], "caps": ["audio_out"] },
+    { "match": ["dall-e", "dalle", "stable-diffusion", "sdxl", "flux", "midjourney", "kolors", "wanx", "imagen", "ideogram", "seedream"], "caps": ["image_gen"] },
+    { "match": ["sora", "kling", "runway", "veo", "pika", "minimax-video", "wan-video", "vidu"], "caps": ["video_gen"] },
+    { "match": ["embedding", "embed", "bge-", "text-embedding", "m3e", "voyage"], "caps": ["embedding"] },
+    { "match": ["qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen-omni", "qwen2-omni"], "caps": ["text", "vision", "tools"] },
+    { "match": ["qwen-omni"], "caps": ["audio_in", "audio_out"] },
+    { "match": ["qwen3", "qwen2.5", "qwen-max", "qwen-plus", "qwen-turbo"], "caps": ["text", "tools"] },
+    { "match": ["deepseek-r1", "deepseek-v3", "deepseek-coder"], "caps": ["text", "tools", "reasoning"] },
+    { "match": ["deepseek-v2-lite", "deepseek-chat"], "caps": ["text", "tools"] },
+    { "match": ["kimi-k2", "kimi", "moonshot-v1"], "caps": ["text", "tools"] },
+    { "match": ["gemini-1.5", "gemini-2", "gemini-pro-vision", "gemini-flash"], "caps": ["text", "vision", "tools", "reasoning"] },
+    { "match": ["gemini-pro"], "caps": ["text", "tools"] },
+    { "match": ["llava", "cogvlm", "internvl", "yi-vl", "showui", "ui-tars"], "caps": ["text", "vision"] },
+    { "match": ["llama-3-70b", "llama3-70b", "llama-4", "llama4"], "caps": ["text", "tools"] },
+    { "match": ["llama-3-8b", "llama3-8b", "phi-3", "phi-4", "gemma-7b", "gemma-2b", "tinyllama", "yi-6b"], "caps": ["text"] },
+    { "match": ["mistral-large", "mixtral", "mistral-medium"], "caps": ["text", "tools"] },
+    { "match": ["bge-vl", "bge-m3"], "caps": ["embedding"] }
+  ]
+}
