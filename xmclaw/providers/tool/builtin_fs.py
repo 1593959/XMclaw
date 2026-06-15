@@ -8,6 +8,44 @@ from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool._helpers import _fail as _fail
 
 
+def _ws_tolerant_spans(text: str, old_text: str) -> list[tuple[int, int]]:
+    """Find char-offset spans in ``text`` matching ``old_text`` as a block
+    of WHOLE lines, ignoring per-line trailing whitespace and line-ending
+    style (LF vs CRLF). Returns ``[(start, end), ...]`` — one per
+    non-overlapping match, in file order.
+
+    This is the apply_patch fallback for the common LLM drift where the
+    edit's anchor is right but trailing whitespace / CRLF differs. Exact
+    matching is always tried first; this only runs when that fails.
+    """
+    old_lines = old_text.splitlines()
+    if not old_lines:
+        return []
+    old_norm = [ln.rstrip() for ln in old_lines]
+    n = len(old_norm)
+
+    # File lines WITH endings, so we can map line index → char offset and
+    # extract the real (un-normalised) substring.
+    lines = text.splitlines(keepends=True)
+    if n > len(lines):
+        return []
+    norms = [ln.rstrip() for ln in lines]  # rstrip drops \r\n + trailing ws
+    # Prefix offsets for O(1) span extraction.
+    offs = [0]
+    for ln in lines:
+        offs.append(offs[-1] + len(ln))
+
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i <= len(lines) - n:
+        if norms[i:i + n] == old_norm:
+            spans.append((offs[i], offs[i + n]))
+            i += n  # non-overlapping
+        else:
+            i += 1
+    return spans
+
+
 # 2026-05-18: real-data finding — Kimi K2.6 on this install kept
 # trying to ``file_read`` and ``file_write`` paths like
 # ``C:\Users\<user>\Desktop\AGENTS.md`` and
@@ -332,17 +370,18 @@ class BuiltinToolsFsMixin:
             return _fail(call, t0, "'edits' must be a non-empty list")
 
         # Pre-validate every edit's shape before touching disk.
-        clean: list[tuple[str, str]] = []
+        clean: list[tuple[str, str, bool]] = []
         for i, e in enumerate(edits):
             if not isinstance(e, dict):
                 return _fail(call, t0, f"edits[{i}] must be an object")
             old_text = e.get("old_text")
             new_text = e.get("new_text")
+            replace_all = bool(e.get("replace_all", False))
             if not isinstance(old_text, str) or old_text == "":
                 return _fail(call, t0, f"edits[{i}].old_text must be a non-empty string")
             if not isinstance(new_text, str):
                 return _fail(call, t0, f"edits[{i}].new_text must be a string")
-            clean.append((old_text, new_text))
+            clean.append((old_text, new_text, replace_all))
 
         path = Path(raw_path)
         # 2026-05-18: persona-file misroute redirect, same logic as
@@ -362,30 +401,49 @@ class BuiltinToolsFsMixin:
         # Apply edits sequentially. Each old_text must occur exactly once
         # in the *current* text (after prior edits) — so two edits whose
         # search strings overlap are caught here, not silently mis-applied.
-        for i, (old_text, new_text) in enumerate(clean):
+        for i, (old_text, new_text, replace_all) in enumerate(clean):
             count = text.count(old_text)
-            if count == 0:
-                # B-397 (Sprint 1 stragglers): pre-fix, the error said
-                # "file may have changed; re-read it before patching" —
-                # the right hint, but real-world LLMs ignored it and
-                # repeated the same stale-text edit until max_hops fired
-                # (real example: xmclaw-architecture-redesign.md, 40
-                # hops, all the same edit). Surface the CURRENT file
-                # content + a fuzzy-match suggestion in the error so
-                # the LLM has the fresh state inline and can rebase
-                # without another file_read round-trip.
-                hint = self._stale_match_hint(text, old_text)
+            if count >= 1:
+                if count > 1 and not replace_all:
+                    return _fail(
+                        call, t0,
+                        f"edits[{i}].old_text occurs {count} times in {path}; "
+                        f"include more surrounding context to make it unique, "
+                        f"or set replace_all:true to replace every occurrence",
+                    )
+                text = text.replace(old_text, new_text, -1 if replace_all else 1)
+                continue
+
+            # Exact match failed. 2026-06-15: whitespace-tolerant fallback
+            # — the #1 cause of "old_text not found → repeat the same edit
+            # until max_hops" is trailing-whitespace / CRLF / indentation
+            # drift between the LLM's view and the file. Re-anchor on the
+            # ACTUAL file text (ignoring per-line trailing whitespace +
+            # line-ending style) and apply iff it's unambiguous.
+            spans = _ws_tolerant_spans(text, old_text)
+            if len(spans) == 1 or (spans and replace_all):
+                # Replace from the back so earlier offsets stay valid.
+                for s, ept in reversed(spans if replace_all else spans[:1]):
+                    repl = new_text
+                    if text[s:ept].endswith("\n") and not repl.endswith("\n"):
+                        repl = repl + "\n"
+                    text = text[:s] + repl + text[ept:]
+                continue
+            if len(spans) > 1:
                 return _fail(
                     call, t0,
-                    f"edits[{i}].old_text not found in {path}.\n{hint}",
+                    f"edits[{i}].old_text not found exactly, and the "
+                    f"whitespace-tolerant match is ambiguous ({len(spans)} "
+                    f"blocks) in {path}; add more surrounding context or set "
+                    f"replace_all:true",
                 )
-            if count > 1:
-                return _fail(
-                    call, t0,
-                    f"edits[{i}].old_text occurs {count} times in {path}; "
-                    f"include more surrounding context to make it unique",
-                )
-            text = text.replace(old_text, new_text, 1)
+            # B-397: no match at all — surface CURRENT content + fuzzy hint
+            # inline so the LLM rebases without another file_read round-trip.
+            hint = self._stale_match_hint(text, old_text)
+            return _fail(
+                call, t0,
+                f"edits[{i}].old_text not found in {path}.\n{hint}",
+            )
 
         if text == original:
             return _fail(call, t0, "patch produced no change (every old_text == new_text)")

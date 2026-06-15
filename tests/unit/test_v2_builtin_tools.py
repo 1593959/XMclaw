@@ -844,6 +844,89 @@ async def test_apply_patch_sequential_edits(tmp_path: Path) -> None:
     assert r.content["edits_applied"] == 2
 
 
+# ── apply_patch reliability: whitespace-tolerant + replace_all (2026-06-15) ──
+
+@pytest.mark.asyncio
+async def test_apply_patch_tolerates_trailing_whitespace_drift(tmp_path: Path) -> None:
+    """The #1 cause of edit-retry loops: the LLM's old_text lacks the
+    file's trailing whitespace. Exact match fails → whitespace-tolerant
+    fallback re-anchors on the real lines and applies."""
+    p = tmp_path / "f.py"
+    p.write_text("def f():\n    x = 1   \n    return x\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        # old_text has NO trailing spaces; file line "    x = 1   " has them.
+        "edits": [{"old_text": "    x = 1\n    return x", "new_text": "    x = 2\n    return x"}],
+    }))
+    assert r.ok is True, r.error
+    assert p.read_text(encoding="utf-8") == "def f():\n    x = 2\n    return x\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_tolerates_crlf_drift(tmp_path: Path) -> None:
+    """LLM gives LF old_text; file is CRLF. Fallback still applies."""
+    p = tmp_path / "g.txt"
+    p.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "beta", "new_text": "BETA"}],
+    }))
+    assert r.ok is True, r.error
+    assert "BETA" in p.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_ambiguous_fuzzy_match_aborts(tmp_path: Path) -> None:
+    """When exact fails AND the whitespace-tolerant match hits multiple
+    blocks, abort (don't guess) — unless replace_all is set."""
+    p = tmp_path / "h.txt"
+    p.write_text("x = 1 \nx = 1\n", encoding="utf-8")  # both normalise to "x = 1"
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "x = 1\n", "new_text": "y\n"}],
+    }))
+    # "x = 1\n" exact-matches the 2nd line once → count==1, applies. Use a
+    # form that exact-misses both lines (trailing space variant) to force
+    # the fuzzy path:
+    p.write_text("x = 1 \nx = 1 \n", encoding="utf-8")
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "x = 1", "new_text": "y"}],
+    }))
+    # exact "x = 1" appears 0 times (both have trailing space) → fuzzy → 2 blocks → abort
+    assert r.ok is False
+    assert "ambiguous" in r.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_replace_all(tmp_path: Path) -> None:
+    p = tmp_path / "i.txt"
+    p.write_text("foo\nfoo\nbar\nfoo\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "foo", "new_text": "baz", "replace_all": True}],
+    }))
+    assert r.ok is True, r.error
+    assert p.read_text(encoding="utf-8") == "baz\nbaz\nbar\nbaz\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_multiple_occurrences_without_replace_all_aborts(tmp_path: Path) -> None:
+    p = tmp_path / "j.txt"
+    p.write_text("foo\nfoo\n", encoding="utf-8")
+    tools = BuiltinTools(allowed_dirs=[tmp_path])
+    r = await tools.invoke(_call("apply_patch", {
+        "path": str(p),
+        "edits": [{"old_text": "foo", "new_text": "baz"}],
+    }))
+    assert r.ok is False
+    assert "replace_all" in r.error
+
+
 @pytest.mark.asyncio
 async def test_apply_patch_listed_in_default_roster() -> None:
     names = {t.name for t in BuiltinTools().list_tools()}

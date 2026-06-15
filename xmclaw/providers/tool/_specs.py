@@ -119,8 +119,11 @@ _APPLY_PATCH_SPEC = ToolSpec(
         "patch aborts and nothing is written. Prefer this over file_write "
         "when you only want to change a few lines: it preserves the rest "
         "of the file verbatim and refuses to clobber an unexpected state. "
-        "Use file_read first to grab the exact ``old_text`` (whitespace "
-        "matters)."
+        "Use file_read first to grab the exact ``old_text``. Exact match is "
+        "tried first; if that fails, a whitespace-tolerant match (ignoring "
+        "trailing whitespace + line-ending style) is attempted, so minor "
+        "indentation/CRLF drift still applies cleanly. Set ``replace_all`` "
+        "on an edit to replace every occurrence instead of requiring uniqueness."
     ),
     parameters_schema={
         "type": "object",
@@ -134,11 +137,15 @@ _APPLY_PATCH_SPEC = ToolSpec(
                     "properties": {
                         "old_text": {
                             "type": "string",
-                            "description": "Exact text to find. Must occur exactly once.",
+                            "description": "Text to find. Must occur exactly once (unless replace_all).",
                         },
                         "new_text": {
                             "type": "string",
                             "description": "Replacement text. May be empty to delete.",
+                        },
+                        "replace_all": {
+                            "type": "boolean",
+                            "description": "Replace every occurrence instead of requiring a unique match. Default false.",
                         },
                     },
                     "required": ["old_text", "new_text"],
