@@ -442,6 +442,30 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       };
     }
 
+    case "session_lifecycle": {
+      // 2026-06-15: backend confirms a turn was really interrupted (Stop
+      // or a pre-empting new message). Finalize the pending assistant
+      // bubble + any still-running tool cards so the UI doesn't keep
+      // spinning on a turn the backend already killed. (Stop also marks
+      // this optimistically on click; this is the authoritative backstop,
+      // and the ONLY signal for the 追加指令 / post-refresh cases.)
+      if (str(payload.phase) !== "turn_cancelled") return chat;
+      const pend = chat.pendingAssistantId;
+      const swept = finalizeStaleTools(chat.entries, null);
+      const cancelled = new Set(chat.cancelledTurnIds);
+      if (pend) cancelled.add(pend);
+      return {
+        ...chat,
+        cancelledTurnIds: cancelled,
+        pendingAssistantId: null,
+        entries: swept.map((e) =>
+          pend && e.id === pend && e.status !== "complete"
+            ? { ...e, status: "cancelled" as const, phase: null }
+            : e,
+        ),
+      };
+    }
+
     case "proactive_proposal": {
       const id = `proactive_${payload.trigger || "x"}_${Math.floor(ts * 1000)}`;
       if (chat.entries.some((e) => e.id === id)) return chat;

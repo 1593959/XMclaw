@@ -848,6 +848,18 @@ def create_app(
     # log replay on reconnect already lets the new tab repopulate, so
     # closing the old WS doesn't lose state — just the live socket.
     active_ws_for_session: dict[str, WebSocket] = {}
+    # 2026-06-15: in-flight turn task per session, shared across WS
+    # handlers so ANY connection — including one opened after a page
+    # refresh — can hard-cancel the running turn (not just the tab that
+    # started it). Keyed by session_id; populated by the serial loop,
+    # cleared when the turn finishes.
+    active_turn_tasks: dict[str, Any] = {}
+    # Session ids whose current turn had a cancel requested (Stop / new
+    # message). Lets us emit a single deterministic ``turn_cancelled``
+    # regardless of which path actually interrupted the turn — the
+    # cooperative cancel_event race (tool teardown, returns normally) or
+    # the hard task-cancel (stuck LLM call, raises CancelledError).
+    active_turn_cancelled: set[str] = set()
 
     async def _session_log_subscriber(event: BehavioralEvent) -> None:
         buf = session_logs.setdefault(event.session_id, [])
@@ -2184,6 +2196,49 @@ def create_app(
         import asyncio as _aio
         _frame_q: "_aio.Queue[dict | None]" = _aio.Queue()
         _CONTROL_FRAME_TYPES = ("cancel", "answer_question")
+        # 2026-06-15: the in-flight turn runs as a cancellable task (see the
+        # serial loop below) so Stop / a new message can REALLY interrupt the
+        # backend — not just set a cooperative flag the loop only checks at
+        # hop boundaries (which leaves a long-running tool, e.g. a 300s video
+        # poll or a stuck bash, running until it finishes). The task is
+        # registered in the session-keyed ``active_turn_tasks`` so even a
+        # connection opened after a page refresh can reach + cancel it.
+
+        def _hard_cancel_turn() -> bool:
+            """Interrupt the in-flight turn. Returns True if a turn was
+            running.
+
+            Two-stage so we don't needlessly orphan a running tool:
+              1. Cooperative ``cancel_event`` — the tool invoker races every
+                 tool against it (hop_loop ``_invoke_single_tool``) and the
+                 hop loop bails at the next boundary. This tears the tool
+                 down CLEANLY.
+              2. After a short grace window, if the turn is STILL running
+                 (e.g. stuck in a long LLM call that doesn't honor cancel
+                 mid-stream — the cooperative path can't touch that), hard
+                 task-cancel it. CancelledError then interrupts the await
+                 immediately.
+            """
+            try:
+                if active_agent is not None:
+                    active_agent.cancel_session(session_id)  # stage 1
+            except Exception:  # noqa: BLE001
+                pass
+            _t = active_turn_tasks.get(session_id)
+            if _t is None or _t.done():
+                return False
+            active_turn_cancelled.add(session_id)
+
+            async def _delayed_hard_cancel(t: "Any" = _t) -> None:
+                try:
+                    await _aio.sleep(0.15)
+                except _aio.CancelledError:
+                    return
+                if not t.done():  # stage 2 — still stuck, force it
+                    t.cancel()
+
+            _aio.create_task(_delayed_hard_cancel())
+            return True
 
         async def _handle_control_frame(frame: dict) -> None:
             # B-38: cancel frame — Stop button in Chat sends
@@ -2193,12 +2248,10 @@ def create_app(
             # ask_user_question future so a turn blocked on an
             # unanswered question unwinds immediately.
             if frame.get("type") == "cancel":
-                cancelled = False
-                if active_agent is not None:
-                    try:
-                        cancelled = active_agent.cancel_session(session_id)
-                    except Exception:  # noqa: BLE001
-                        cancelled = False
+                # 2026-06-15: cooperative cancel + grace-then-hard-cancel so
+                # a tool mid-execution OR a stuck LLM call is really stopped,
+                # not just flagged for the next hop boundary.
+                cancelled = _hard_cancel_turn()
                 try:
                     from xmclaw.providers.tool.builtin import (
                         cancel_pending_questions,
@@ -2281,6 +2334,17 @@ def create_app(
                     except Exception:  # noqa: BLE001 — control frame must not kill the socket
                         pass
                     continue
+                # 2026-06-15 (追加指令): a new user message while a turn is
+                # in flight must pre-empt it — otherwise the new frame just
+                # queues behind the inline-awaited turn and the "interrupt"
+                # is purely cosmetic. Hard-cancel the running turn here, the
+                # moment the frame arrives, then queue the new one for the
+                # serial loop (which will start it once the cancelled turn
+                # unwinds).
+                if frame.get("type") == "user":
+                    _t = active_turn_tasks.get(session_id)
+                    if _t is not None and not _t.done():
+                        _hard_cancel_turn()
                 await _frame_q.put(frame)
 
         _reader_task = _aio.create_task(
@@ -2496,50 +2560,66 @@ def create_app(
                         # and this is the primary agent (not a worker
                         # agent), route through it so complex goals get
                         # PlanEngine → WorkerSwarm treatment.
-                        try:
-                            # 打断: when the user sends a new message while a
-                            # turn is in flight, cancel the old turn so the
-                            # new message gets served immediately.
-                            if active_agent is not None:
-                                try:
-                                    active_agent.cancel_session(session_id)
-                                except Exception:  # noqa: BLE001
-                                    pass
-                                await _aio.sleep(0.05)
-
-                            with use_current_agent_id(resolved_agent_id):
+                        # 2026-06-15: run the turn as a cancellable task so
+                        # Stop / a new message can HARD-cancel it (real
+                        # backend interrupt, not a cooperative flag the loop
+                        # only checks between hops). The reader task reaches
+                        # this task via ``_turn_holder`` and calls
+                        # ``.cancel()`` — which interrupts even a tool that's
+                        # mid-await (e.g. a long HTTP/video poll).
+                        async def _run_turn_coro(
+                            _content: str = content,
+                            _corr: "str | None" = user_corr,
+                            _profile: "str | None" = llm_profile_id,
+                            _imgs: "tuple[str, ...] | None" = (
+                                tuple(user_image_paths) if user_image_paths else None
+                            ),
+                            _allow: "Any" = md_tools_allowlist,
+                            _ultra: bool = ultrathink,
+                            _agent_id: str = resolved_agent_id,
+                        ) -> None:
+                            with use_current_agent_id(_agent_id):
                                 jarvis_orch = getattr(
                                     app.state, "jarvis_orchestrator", None,
                                 )
                                 if (
                                     jarvis_orch is not None
-                                    and resolved_agent_id == "main"
+                                    and _agent_id == "main"
                                 ):
                                     await jarvis_orch.handle(
-                                        session_id, content,
-                                        llm_profile_id=llm_profile_id,
-                                        user_correlation_id=user_corr,
-                                        user_images=(
-                                            tuple(user_image_paths)
-                                            if user_image_paths else None
-                                        ),
-                                        # C2: per-turn tool-allowlist
-                                        # from /<command> frontmatter.
-                                        tools_allowlist=md_tools_allowlist,
-                                        ultrathink=ultrathink,
+                                        session_id, _content,
+                                        llm_profile_id=_profile,
+                                        user_correlation_id=_corr,
+                                        user_images=_imgs,
+                                        tools_allowlist=_allow,
+                                        ultrathink=_ultra,
                                     )
                                 else:
                                     await active_agent.run_turn(
-                                        session_id, content,
-                                        user_correlation_id=user_corr,
-                                        llm_profile_id=llm_profile_id,
-                                        user_images=(
-                                            tuple(user_image_paths)
-                                            if user_image_paths else None
-                                        ),
-                                        tools_allowlist=md_tools_allowlist,
-                                        ultrathink=ultrathink,
+                                        session_id, _content,
+                                        user_correlation_id=_corr,
+                                        llm_profile_id=_profile,
+                                        user_images=_imgs,
+                                        tools_allowlist=_allow,
+                                        ultrathink=_ultra,
                                     )
+
+                        active_turn_cancelled.discard(session_id)
+                        _turn_task = _aio.create_task(
+                            _run_turn_coro(),
+                            name=f"xmclaw-turn-{session_id}",
+                        )
+                        active_turn_tasks[session_id] = _turn_task
+                        try:
+                            await _turn_task
+                        except _aio.CancelledError:
+                            if not _turn_task.cancelled():
+                                # The WS handler itself is being cancelled
+                                # (shutdown). Stop the turn and propagate.
+                                _turn_task.cancel()
+                                raise
+                            # else: user-initiated hard cancel — fall through
+                            # to the unified turn_cancelled emit below.
                         except Exception as exc:  # noqa: BLE001
                             # Surface a structured error frame so the
                             # client sees the failure instead of a
@@ -2550,6 +2630,25 @@ def create_app(
                                 payload={
                                     "message": f"agent loop crashed: {type(exc).__name__}: {exc}",
                                 },
+                            ))
+                            await bus.drain()
+                        finally:
+                            if active_turn_tasks.get(session_id) is _turn_task:
+                                del active_turn_tasks[session_id]
+                        # Deterministic cancellation signal: emit exactly one
+                        # ``turn_cancelled`` whenever a cancel was requested
+                        # for this turn — whether it stopped via the
+                        # cooperative cancel_event race (tool returns
+                        # "cancelled by user", turn bails at the next hop
+                        # boundary, returns NORMALLY) or the hard task-cancel
+                        # (CancelledError). The transcript + reconnect replay
+                        # then reliably shows the turn was stopped.
+                        if session_id in active_turn_cancelled:
+                            active_turn_cancelled.discard(session_id)
+                            await bus.publish(make_event(
+                                session_id=session_id, agent_id="daemon",
+                                type=EventType.SESSION_LIFECYCLE,
+                                payload={"phase": "turn_cancelled"},
                             ))
                             await bus.drain()
                         # Wave-32+ MagicDocs: fire any due background

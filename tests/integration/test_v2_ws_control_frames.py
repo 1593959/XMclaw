@@ -14,7 +14,9 @@ is scripted.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
@@ -22,7 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from xmclaw.core.bus import EventType, InProcessEventBus
-from xmclaw.core.ir import ToolCallShape, ToolCall
+from xmclaw.core.ir import ToolCallShape, ToolCall, ToolResult, ToolSpec
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.daemon.app import create_app
 from xmclaw.providers.llm.base import (
@@ -31,6 +33,7 @@ from xmclaw.providers.llm.base import (
     LLMResponse,
     Pricing,
 )
+from xmclaw.providers.tool.base import ToolProvider
 from xmclaw.providers.tool.builtin import BuiltinTools
 
 
@@ -173,3 +176,118 @@ def test_cancel_frame_unblocks_pending_question(bus: InProcessEventBus) -> None:
                 break
         assert saw_cancel_ack, "cancel frame was not acknowledged mid-turn"
         assert saw_final, "turn did not unwind after cancel"
+
+
+# ── 2026-06-15: Stop / new-message must HARD-cancel a running tool ──
+
+
+_SLEEP_SECONDS = 15.0  # long enough that a cooperative-only cancel can't
+                       # interrupt it; bounds regression runtime.
+
+
+class _SleepToolProvider(ToolProvider):
+    """A tool that just sleeps — stands in for any long-running tool
+    (video poll, slow bash, web fetch) that NEVER reaches the hop-loop's
+    cooperative cancel check. Only a hard task-cancel can interrupt it."""
+
+    def list_tools(self) -> list[ToolSpec]:
+        return [ToolSpec(
+            name="sleep_long",
+            description="Sleep for a long time (test fixture).",
+            parameters_schema={"type": "object", "properties": {}},
+            read_only=True,
+        )]
+
+    async def invoke(self, call: ToolCall) -> ToolResult:
+        await asyncio.sleep(_SLEEP_SECONDS)
+        return ToolResult(call_id=call.id, ok=True, content="slept")
+
+
+def _make_sleep_client(bus: InProcessEventBus) -> TestClient:
+    llm = _ScriptedLLM(script=[
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(
+                name="sleep_long", args={},
+                provenance="anthropic", id="tc-sleep-1",
+            ),),
+        ),
+        LLMResponse(content="done after sleeping", tool_calls=()),
+    ])
+    agent = AgentLoop(llm=llm, bus=bus, tools=_SleepToolProvider())
+    return TestClient(create_app(bus=bus, agent=agent))
+
+
+def test_cancel_hard_interrupts_long_running_tool(bus: InProcessEventBus) -> None:
+    """The core fix: Stop must interrupt a tool that's mid-execution —
+    not wait for it to finish. A cooperative-only cancel would leave the
+    15s sleep running; the hard task-cancel unwinds it near-instantly and
+    emits ``turn_cancelled``."""
+    client = _make_sleep_client(bus)
+    with client.websocket_connect("/agent/v2/sess-hard-cancel") as ws:
+        ws.receive_json()  # session_create
+        ws.send_text(json.dumps({"type": "user", "content": "sleep please"}))
+
+        # Wait until the tool has actually started (TOOL_INVOCATION_STARTED
+        # or any event past the LLM response) so the cancel lands mid-tool.
+        for _ in range(30):
+            evt = ws.receive_json()
+            if evt["type"] in (
+                EventType.TOOL_INVOCATION_STARTED.value,
+                EventType.TOOL_CALL_EMITTED.value,
+            ):
+                break
+
+        t0 = time.monotonic()
+        ws.send_text(json.dumps({"type": "cancel"}))
+
+        saw_cancelled = False
+        for _ in range(40):
+            evt = ws.receive_json()
+            if (
+                evt["type"] == EventType.SESSION_LIFECYCLE.value
+                and evt["payload"].get("phase") == "turn_cancelled"
+            ):
+                saw_cancelled = True
+                break
+        elapsed = time.monotonic() - t0
+        assert saw_cancelled, "turn was not hard-cancelled (no turn_cancelled)"
+        assert elapsed < _SLEEP_SECONDS - 3, (
+            f"cancel took {elapsed:.1f}s — the tool was NOT interrupted, "
+            f"the turn ran to completion (cooperative-only regression)"
+        )
+
+
+def test_ws_stays_alive_after_hard_cancel(bus: InProcessEventBus) -> None:
+    """After a hard cancel the WS loop must keep serving — a follow-up
+    message gets a normal response."""
+    client = _make_sleep_client(bus)
+    with client.websocket_connect("/agent/v2/sess-cancel-then-msg") as ws:
+        ws.receive_json()
+        ws.send_text(json.dumps({"type": "user", "content": "sleep please"}))
+        for _ in range(30):
+            evt = ws.receive_json()
+            if evt["type"] in (
+                EventType.TOOL_INVOCATION_STARTED.value,
+                EventType.TOOL_CALL_EMITTED.value,
+            ):
+                break
+        # A NEW user message must pre-empt the running turn (追加指令).
+        ws.send_text(json.dumps({"type": "user", "content": "never mind, hi"}))
+
+        saw_final = False
+        t0 = time.monotonic()
+        for _ in range(60):
+            evt = ws.receive_json()
+            if (
+                evt["type"] == EventType.LLM_RESPONSE.value
+                and not evt["payload"].get("tool_calls")
+            ):
+                saw_final = True
+                break
+        elapsed = time.monotonic() - t0
+        assert saw_final, "follow-up message never produced a response"
+        assert elapsed < _SLEEP_SECONDS - 3, (
+            f"follow-up waited {elapsed:.1f}s — the prior turn's sleep was "
+            f"not pre-empted"
+        )
