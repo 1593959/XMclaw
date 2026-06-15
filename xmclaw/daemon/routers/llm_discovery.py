@@ -167,6 +167,26 @@ async def discover_models(request: Request) -> JSONResponse:
                     ctx = meta.get("context_length")
                     if isinstance(ctx, int) and ctx > 0:
                         entry["context_length"] = ctx
+                # 2026-06-15: vision detection so the UI can pre-light the
+                # 👁 toggle. Standard /v1/models gives NO modality info, so
+                # for most endpoints this falls back to the name heuristic.
+                # OpenRouter is the exception — it returns ``architecture``
+                # with real input modalities, which we read directly.
+                vis: bool | None = None
+                arch = item.get("architecture")
+                if isinstance(arch, dict):
+                    ims = arch.get("input_modalities")
+                    if isinstance(ims, list):
+                        vis = any(str(x).lower() == "image" for x in ims)
+                    elif isinstance(arch.get("modality"), str):
+                        vis = "image" in arch["modality"].lower()
+                if vis is None:
+                    try:
+                        from xmclaw.providers.llm.openai import _model_supports_vision
+                        vis = _model_supports_vision(mid, base_url)
+                    except Exception:  # noqa: BLE001
+                        vis = False
+                entry["vision"] = bool(vis)
                 # Created timestamp (epoch seconds)
                 created = item.get("created")
                 if isinstance(created, int):

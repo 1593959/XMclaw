@@ -10,10 +10,18 @@ import type { ChannelDraft } from "./ModelConfig";
 
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic", preview: "https://api.anthropic.com/v1/messages", base: "https://api.anthropic.com" },
+  { id: "anthropic_compat", label: "Anthropic 兼容格式", preview: "<base_url>/v1/messages", base: "" },
   { id: "openai", label: "OpenAI", preview: "https://api.openai.com/v1/chat/completions", base: "https://api.openai.com/v1" },
   { id: "openrouter", label: "OpenRouter", preview: "https://openrouter.ai/api/v1/chat/completions", base: "https://openrouter.ai/api/v1" },
   { id: "openai_compat", label: "OpenAI 兼容格式", preview: "<base_url>/chat/completions", base: "" },
 ];
+
+// 后端只认 4 个 provider 名；"Anthropic 兼容格式"是 UI 层的别名，
+// 落到后端就是 anthropic（带自定义 base_url）—— anthropic provider
+// 本就支持任意 base_url（配置里 moonshot 接 api.kimi.com 即此用法）。
+function apiProvider(p: string): string {
+  return p === "anthropic_compat" ? "anthropic" : p;
+}
 
 interface ModelRow {
   // 来自既有渠道的 profile 才有 id；从可用模型新加入的为空。
@@ -54,7 +62,7 @@ export default function ChannelEditor({
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
-  const [available, setAvailable] = useState<{ id: string; name: string }[]>([]);
+  const [available, setAvailable] = useState<{ id: string; name: string; vision?: boolean }[]>([]);
   const [saving, setSaving] = useState(false);
 
   const pmeta = PROVIDERS.find((p) => p.id === provider);
@@ -70,7 +78,7 @@ export default function ChannelEditor({
     try {
       const r = await apiPost<{ ok: boolean; connectivity_ok?: boolean; model_count?: number; error?: string }>(
         "/api/v2/llm/endpoints/discover",
-        { base_url: baseUrl.trim(), api_key: apiKey.trim(), provider },
+        { base_url: baseUrl.trim(), api_key: apiKey.trim(), provider: apiProvider(provider) },
         token,
       );
       if (r.ok && r.connectivity_ok !== false) {
@@ -96,9 +104,9 @@ export default function ChannelEditor({
     }
     setFetching(true);
     try {
-      const r = await apiPost<{ ok: boolean; models?: { id: string; name: string }[]; error?: string }>(
+      const r = await apiPost<{ ok: boolean; models?: { id: string; name: string; vision?: boolean }[]; error?: string }>(
         "/api/v2/llm/endpoints/discover",
-        { base_url: baseUrl.trim(), api_key: apiKey.trim(), provider },
+        { base_url: baseUrl.trim(), api_key: apiKey.trim(), provider: apiProvider(provider) },
         token,
       );
       if (r.ok && Array.isArray(r.models)) {
@@ -118,10 +126,15 @@ export default function ChannelEditor({
     }
   }
 
-  function addModel(id: string, label?: string) {
+  function addModel(id: string, label?: string, vision?: boolean) {
     const mid = id.trim();
     if (!mid || models.some((m) => m.modelId === mid)) return;
-    setModels((ms) => [...ms, { modelId: mid, label: (label || "").trim(), enabled: true }]);
+    // vision 由 discover 端点按模态/名字启发式预判 → 预点亮 👁；
+    // 手动输入的（vision === undefined）保持未定，交后端启发式决定。
+    setModels((ms) => [
+      ...ms,
+      { modelId: mid, label: (label || "").trim(), enabled: true, supportsVision: vision },
+    ]);
     setAvailable((av) => av.filter((m) => m.id !== mid));
   }
 
@@ -184,7 +197,7 @@ export default function ChannelEditor({
         const body: Record<string, unknown> = {
           id: pid,
           label: m.label || m.modelId,
-          provider,
+          provider: apiProvider(provider),
           model: m.modelId,
           base_url: baseUrl.trim() || undefined,
           enabled: enabled && m.enabled,
@@ -224,7 +237,7 @@ export default function ChannelEditor({
           const hotProfiles = newProfiles.map((m) => ({
             id: `${namePrefix}-${slug(m.modelId)}`,
             label: m.label || m.modelId,
-            provider,
+            provider: apiProvider(provider),
             model: m.modelId,
             api_key: apiKey.trim(),
             base_url: baseUrl.trim() || undefined,
@@ -420,12 +433,13 @@ export default function ChannelEditor({
             {available.map((m) => (
               <button
                 key={m.id}
-                onClick={() => addModel(m.id, m.name)}
+                onClick={() => addModel(m.id, m.name, m.vision)}
                 className="w-full text-left px-3 py-1.5 hover:bg-mc-panel2 cursor-pointer flex items-center gap-2"
               >
                 <span className="text-mc-accent text-xs">＋</span>
                 <span className="font-mono text-[12px] truncate">{m.id}</span>
                 {m.name && m.name !== m.id && <span className="text-mc-faint text-xs truncate">{m.name}</span>}
+                {m.vision && <span className="ml-auto text-xs shrink-0" title="支持视觉（识别图像）">👁</span>}
               </button>
             ))}
           </div>
