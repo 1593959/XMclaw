@@ -1712,6 +1712,51 @@ def create_app(
             "bus": type(bus).__name__,
         })
 
+    # ── /api/v2/sessions/{sid}/trace — full export + replay (#6) ────
+    # Unlike /api/v2/events (paginated, ≤2000), this pulls the WHOLE
+    # session trace for export/debugging. ``format=jsonl`` (default) is
+    # the portable on-disk format; ``format=timeline`` returns the
+    # reconstructed human-readable run. ``download=1`` sets attachment
+    # headers so a browser saves it as a file.
+    @app.get("/api/v2/sessions/{session_id}/trace")
+    async def session_trace(
+        session_id: str,
+        format: str = "jsonl",
+        download: int = 0,
+    ) -> Any:
+        from starlette.responses import PlainTextResponse, Response
+        from xmclaw.daemon.trace_replay import (
+            events_to_jsonl, reconstruct_timeline,
+        )
+
+        collected: list[BehavioralEvent] = []
+        if isinstance(bus, SqliteEventBus):
+            _off = 0
+            while len(collected) < 50_000:  # hard cap guards against OOM
+                page = bus.query(session_id=session_id, limit=2000, offset=_off)
+                if not page:
+                    break
+                collected.extend(page)
+                if len(page) < 2000:
+                    break
+                _off += 2000
+        else:
+            collected = list(session_logs.get(session_id, []))
+        collected.sort(key=lambda e: e.ts)
+        jsonable = [event_as_jsonable(e) for e in collected]
+
+        if format == "timeline":
+            return PlainTextResponse(reconstruct_timeline(jsonable))
+        body = events_to_jsonl(jsonable)
+        headers: dict[str, str] = {}
+        if download:
+            headers["Content-Disposition"] = (
+                f'attachment; filename="trace-{session_id}.jsonl"'
+            )
+        return Response(
+            content=body, media_type="application/x-ndjson", headers=headers,
+        )
+
     # ── /ui/ static files + root redirect ──
     # Phase 4.6: serve a single-page UI bundled with the package, so
     # users can open `http://127.0.0.1:8766/` in a browser and get a
