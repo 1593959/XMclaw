@@ -427,6 +427,13 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # restarting from scratch (user report 2026-06-11: "整个过程全
         # 没了，发送继续直接就从头开始").
         self._inflight_messages: dict[str, list[Message]] = {}
+        # #1 Steering (2026-06-15): text the user sends WHILE a turn is in
+        # flight, to be injected into that turn at the next hop boundary
+        # (a safe point — tool_calls + their results already paired). The
+        # hop loop drains this; ``enqueue_steering`` appends. Non-
+        # destructive: unlike Stop (which aborts), steering lets the agent
+        # see new guidance and adapt without losing work.
+        self._steer_queue: dict[str, list[str]] = {}
         # Wave-32+: rolling buffer of recently finished runs. Lets
         # ``/api/v2/agent_tasks`` surface DONE entries for autonomous
         # session spawns (GoalGenerator / TaskScheduler / Proactive)
@@ -699,6 +706,20 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         if ev is None:
             return False
         ev.set()
+        return True
+
+    def enqueue_steering(self, session_id: str, content: str) -> bool:
+        """#1 Steering: inject ``content`` as a user message into the
+        in-flight turn for ``session_id``. The hop loop picks it up at the
+        next hop boundary. Returns True iff a turn is actually running
+        (an inflight message list exists) — the caller falls back to
+        starting a fresh turn when False."""
+        text = (content or "").strip()
+        if not text:
+            return False
+        if session_id not in self._inflight_messages:
+            return False  # no live turn — caller should start a normal turn
+        self._steer_queue.setdefault(session_id, []).append(text)
         return True
 
     def set_hook_engine(self, engine: Any | None) -> None:
@@ -1092,6 +1113,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 except Exception:  # noqa: BLE001
                     pass
             self._cancel_events.pop(session_id, None)
+            # #1 Steering: drop any undrained steering for this turn so it
+            # can't bleed into the next one.
+            self._steer_queue.pop(session_id, None)
             # Phase 11 safety-net: never leak a capability pick across turns.
             object.__setattr__(self, "_pending_capability_pick", None)
             # B-1 fix: persist session history after every turn so that

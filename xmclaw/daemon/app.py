@@ -2334,17 +2334,29 @@ def create_app(
                     except Exception:  # noqa: BLE001 — control frame must not kill the socket
                         pass
                     continue
-                # 2026-06-15 (追加指令): a new user message while a turn is
-                # in flight must pre-empt it — otherwise the new frame just
-                # queues behind the inline-awaited turn and the "interrupt"
-                # is purely cosmetic. Hard-cancel the running turn here, the
-                # moment the frame arrives, then queue the new one for the
-                # serial loop (which will start it once the cancelled turn
-                # unwinds).
+                # 2026-06-15 (#1 Steering): a new user message while a turn
+                # is in flight is STEERING — inject it into the running turn
+                # (agent adapts at its next hop boundary) instead of
+                # aborting + restarting. Non-destructive; work so far is
+                # kept. Stop is the explicit abort path. Only when NO turn
+                # is running does the frame start a fresh turn below.
                 if frame.get("type") == "user":
                     _t = active_turn_tasks.get(session_id)
-                    if _t is not None and not _t.done():
-                        _hard_cancel_turn()
+                    if _t is not None and not _t.done() and active_agent is not None:
+                        _txt = str(frame.get("content", ""))
+                        try:
+                            _steered = active_agent.enqueue_steering(session_id, _txt)
+                        except Exception:  # noqa: BLE001
+                            _steered = False
+                        if _steered:
+                            await bus.publish(make_event(
+                                session_id=session_id, agent_id="user",
+                                type=EventType.USER_MESSAGE,
+                                payload={"content": _txt, "channel": "steering"},
+                                correlation_id=frame.get("correlation_id") or None,
+                            ))
+                            await bus.drain()
+                            continue  # injected — do NOT spawn a separate turn
                 await _frame_q.put(frame)
 
         _reader_task = _aio.create_task(

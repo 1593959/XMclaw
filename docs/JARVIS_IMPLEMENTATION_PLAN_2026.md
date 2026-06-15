@@ -2259,6 +2259,11 @@ L3 skills        SkillRegistry (已存在)           — 可执行能力，由 L
 
 ### 10.L 进度日志
 
+- 2026-06-15: **顶级 harness gap 收口批次（用户点名 #1/2/3/6/7）**。对照 Claude Code/Codex/aider/OpenHands 做实证 gap 分析后，逐个补纵深（每项独立 commit + 测试）：
+  - **#3 编辑可靠性**（commit c1438d8）：`apply_patch` 精确匹配失败时加 whitespace 容忍回退（整行匹配忽略尾随空白 + LF/CRLF，重锚到文件真实文本，唯一命中即套用，多块歧义中止）+ per-edit `replace_all`。根治"old_text not found→重复同一 stale 编辑到 max_hops"。`_ws_tolerant_spans` helper，5 新测试。
+  - **#7 子代理嵌套**（commit 7389fab）：`SubagentToolProvider` 由扁平（嵌套硬阻断）改为有界递归——`max_depth`（默认 2），depth 贯穿 _fanout/_run_one/_do_run_one，嵌套走 `_run_nested_fanout`，独立 semaphore 防父子争用死锁；深度 cap + 并发 + wall-clock 三重防跑飞。3 新测试。
+  - #1 Steering / #6 Trace 导出回放 / #2 Checkpoint-rewind：进行中。
+
 - 2026-06-15: **能力路由收口——生成走工具，模型切换只留视觉**（用户对"3 种模式"提问时点出的语义混淆）。澄清+修复一个潜在 bug：`hop_loop._CAPABILITY_BY_TOOL` 和 `SubagentToolProvider._SUBTASK_CAPABILITY_HINTS` 原本把 `generate_image→image_gen`/`generate_video→video_gen`/`speak→audio_out` 也纳入"下一 hop/子代理切换聊天模型"。但生成模型（DALL-E/seedream/seedance）是**生成端点不是聊天模型**——切过去再 `complete()` 会把 chat 请求喂给只做 `images.generate` 的模型，破坏该 hop。修复：两处映射只保留 `vision`（视觉模型仍是聊天模型，截图后切过去解读图像是合法的）；子代理新增 `_NON_CHAT_CAPABILITIES` 守卫，显式 `specialist_models` 传 image_gen/video_gen/audio_out 时**不**切 `.llm`（让子代理用正常聊天模型去 CALL generate_image/video 工具）。生成的唯一真实路径 = 工具调配置后端；模型切换只服务视觉。工具描述同步更正。72 subagent/hop/media/capability 单测通过。
 
 - 2026-06-15: **Stop / 追加指令 真正打断后端**（用户："停止按钮和追加指令只是前端打断，不是真正的后端打断，刷新页面后依旧执行"）。根因：WS 串行循环 `await run_turn` 是**内联**的——① Stop 的 cancel 帧只设协作 `cancel_event`（hop 边界 + 工具 race 才检查），卡在长 LLM 调用时不生效；② 新消息（追加指令）排在 `_frame_q` 里、被内联 run_turn 阻塞，"取消旧回合"代码等旧回合结束后才跑 = 形同虚设；③ 刷新只断前端 socket，后端回合照跑。修复：把回合改成**可取消 task**，注册到 session 级 `active_turn_tasks`（任何连接——含刷新后的新连接——都能够到并取消）。`_hard_cancel_turn` 两段式：先发协作 `cancel_event`（工具 invoker 已 race，干净拆除工具），150ms 宽限后若仍卡住（如不理会 cancel 的 LLM 流）再 `task.cancel()` 硬中断。reader 收到新 user 帧时立即硬取消旧回合（追加指令真抢占）。无论协作正常返回还是硬取消 CancelledError，用 `active_turn_cancelled` 标志确定性发一条 `turn_cancelled`；前端 reducer 新增 `session_lifecycle` 分支据此收尾 pending 气泡 + 残留工具卡。2 个新端到端测试（15s 睡眠工具被 Stop 在 ms 级打断、新消息抢占旧回合）通过；既有 question 类 WS 测试 + cognitive_daemon 测试在本机预先就 hang/fail（stash app.py 验证非本次引入）。

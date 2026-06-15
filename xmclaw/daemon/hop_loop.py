@@ -492,6 +492,26 @@ class HopLoopMixin:
                     events=events,
                     error="cancelled",
                 )
+            # #1 Steering (2026-06-15): drain any mid-turn user guidance
+            # HERE — a hop boundary is the only safe point to splice a new
+            # user message in (all tool_calls from the prior hop already
+            # have their results appended, so we won't orphan a tool_call).
+            # The message lands before this hop's LLM call, so the agent
+            # sees and adapts to it WITHOUT losing the work so far.
+            _steer = getattr(self, "_steer_queue", {}).get(session_id)
+            if _steer:
+                for _txt in _steer:
+                    messages.append(Message(
+                        role="user",
+                        content=f"[用户追加指令 / steering]\n{_txt}",
+                    ))
+                    await publish(EventType.USER_MESSAGE, {
+                        "content": _txt,
+                        "channel": "steering",
+                        "hop": hop,
+                    })
+                self._steer_queue[session_id] = []
+
             # Anti-req #6: check the hard budget cap BEFORE the LLM call.
             # If we've already exceeded, abort with an
             # ANTI_REQ_VIOLATION event — never swallow, never partial.

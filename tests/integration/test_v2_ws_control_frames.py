@@ -53,6 +53,23 @@ class _ScriptedLLM(LLMProvider):
         self._i += 1
         return resp
 
+    async def complete_streaming(  # noqa: ANN001
+        self, messages, tools=None, *, on_chunk=None, on_thinking_chunk=None,
+        on_tool_block=None, on_stream_fallback=None, cancel=None,
+        extended_thinking=None,
+    ):
+        # Real streaming stub: fire a first-token chunk (even for a
+        # tool-call-only response with empty content) so the hop-loop's
+        # first-token guard is satisfied — otherwise it stalls on the
+        # _first_token_timeout for every no-content hop.
+        resp = await self.complete(messages, tools=tools)
+        if on_chunk is not None:
+            await on_chunk(resp.content or " ")
+        if on_tool_block is not None:
+            for tc in (resp.tool_calls or ()):
+                on_tool_block(tc)
+        return resp
+
     @property
     def tool_call_shape(self) -> ToolCallShape:
         return ToolCallShape.ANTHROPIC_NATIVE
@@ -259,8 +276,8 @@ def test_cancel_hard_interrupts_long_running_tool(bus: InProcessEventBus) -> Non
 
 
 def test_ws_stays_alive_after_hard_cancel(bus: InProcessEventBus) -> None:
-    """After a hard cancel the WS loop must keep serving — a follow-up
-    message gets a normal response."""
+    """After a hard cancel (Stop) the WS loop must keep serving — a
+    follow-up message gets a normal response, fast."""
     client = _make_sleep_client(bus)
     with client.websocket_connect("/agent/v2/sess-cancel-then-msg") as ws:
         ws.receive_json()
@@ -272,9 +289,17 @@ def test_ws_stays_alive_after_hard_cancel(bus: InProcessEventBus) -> None:
                 EventType.TOOL_CALL_EMITTED.value,
             ):
                 break
-        # A NEW user message must pre-empt the running turn (追加指令).
-        ws.send_text(json.dumps({"type": "user", "content": "never mind, hi"}))
-
+        # Stop the running turn explicitly, then wait for confirmation.
+        ws.send_text(json.dumps({"type": "cancel"}))
+        for _ in range(40):
+            evt = ws.receive_json()
+            if (
+                evt["type"] == EventType.SESSION_LIFECYCLE.value
+                and evt["payload"].get("phase") == "turn_cancelled"
+            ):
+                break
+        # Now a fresh message must be served quickly.
+        ws.send_text(json.dumps({"type": "user", "content": "hi again"}))
         saw_final = False
         t0 = time.monotonic()
         for _ in range(60):
@@ -286,8 +311,106 @@ def test_ws_stays_alive_after_hard_cancel(bus: InProcessEventBus) -> None:
                 saw_final = True
                 break
         elapsed = time.monotonic() - t0
-        assert saw_final, "follow-up message never produced a response"
+        assert saw_final, "WS did not serve a follow-up after Stop"
         assert elapsed < _SLEEP_SECONDS - 3, (
-            f"follow-up waited {elapsed:.1f}s — the prior turn's sleep was "
-            f"not pre-empted"
+            f"follow-up waited {elapsed:.1f}s — WS loop wedged after Stop"
         )
+
+
+# ── #1 Steering: a mid-turn message injects, doesn't abort ─────────
+
+
+@dataclass
+class _CapturingLLM(_ScriptedLLM):
+    """Records the messages seen on each complete() call so a test can
+    assert that a steering message got spliced into the running turn."""
+
+    seen_user_texts: list[str] = field(default_factory=list)
+
+    async def complete(self, messages, tools=None):  # noqa: ANN001
+        for m in messages:
+            if getattr(m, "role", None) == "user":
+                self.seen_user_texts.append(getattr(m, "content", "") or "")
+        return await super().complete(messages, tools=tools)
+
+
+def test_steering_injects_into_running_turn() -> None:
+    """Core #1: a message sent WHILE a turn runs is injected into that
+    turn (seen at the next hop) and does NOT abort it — driven directly
+    against AgentLoop so it's deterministic (no WS event-timing races)."""
+    bus = InProcessEventBus()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _GatedTool(ToolProvider):
+        """Blocks until the test releases it — a deterministic stand-in
+        for a long-running tool, so the test can inject steering while
+        the turn is provably mid-tool."""
+
+        def list_tools(self) -> list[ToolSpec]:
+            return [ToolSpec(name="gate", description="wait",
+                             parameters_schema={"type": "object", "properties": {}})]
+
+        async def invoke(self, call: ToolCall) -> ToolResult:
+            started.set()
+            await release.wait()
+            return ToolResult(call_id=call.id, ok=True, content="released")
+
+    llm = _CapturingLLM(script=[
+        LLMResponse(content="", tool_calls=(ToolCall(
+            name="gate", args={}, provenance="anthropic", id="tc-g1",
+        ),)),
+        LLMResponse(content="done per steering", tool_calls=()),
+    ])
+    agent = AgentLoop(llm=llm, bus=bus, tools=_GatedTool())
+
+    async def _drive() -> object:
+        turn = asyncio.create_task(agent.run_turn("sess-steer", "start"))
+        await asyncio.wait_for(started.wait(), timeout=5.0)  # turn is mid-tool
+        steered = agent.enqueue_steering("sess-steer", "ACTUALLY do X instead")
+        release.set()  # let the tool finish → hop1 drains steering
+        res = await asyncio.wait_for(turn, timeout=5.0)
+        return steered, res
+
+    steered, res = asyncio.run(_drive())
+    assert steered is True, "enqueue_steering returned False for a live turn"
+    assert res.ok is True
+    assert any("ACTUALLY do X" in t for t in llm.seen_user_texts), (
+        "steering text never reached the LLM — it was not injected"
+    )
+
+
+def test_steering_via_ws_echoes_and_does_not_spawn_second_turn(bus: InProcessEventBus) -> None:
+    """WS boundary: a user frame mid-turn is echoed as channel='steering'
+    and is NOT run as a separate turn (the reader injects it instead)."""
+    llm = _CapturingLLM(script=[
+        LLMResponse(content="", tool_calls=(ToolCall(
+            name="sleep_long", args={}, provenance="anthropic", id="tc-s1",
+        ),)),
+        LLMResponse(content="done", tool_calls=()),
+    ])
+    agent = AgentLoop(llm=llm, bus=bus, tools=_SleepToolProvider())
+    client = TestClient(create_app(bus=bus, agent=agent))
+    with client.websocket_connect("/agent/v2/sess-steer-ws") as ws:
+        ws.receive_json()
+        ws.send_text(json.dumps({"type": "user", "content": "start"}))
+        for _ in range(30):
+            evt = ws.receive_json()
+            if evt["type"] in (
+                EventType.TOOL_INVOCATION_STARTED.value,
+                EventType.TOOL_CALL_EMITTED.value,
+            ):
+                break
+        ws.send_text(json.dumps({"type": "user", "content": "steer me"}))
+        # The very next events must include the steering echo (published
+        # immediately by the reader), well before the 15s tool finishes.
+        saw_steer_echo = False
+        for _ in range(10):
+            evt = ws.receive_json()
+            if (
+                evt["type"] == EventType.USER_MESSAGE.value
+                and evt["payload"].get("channel") == "steering"
+            ):
+                saw_steer_echo = True
+                break
+        assert saw_steer_echo, "steering frame was not echoed as channel=steering"
