@@ -88,8 +88,16 @@ _CRED_RE = re.compile(
         # 密码 / 口令 + value
         (?:密码|口令)\s*[:：=是叫为]?\s*([^\s,，。、!！?？]+)
         |
-        # English: username / user / password / pass
-        \b(?:username|user|account)\s*[:=]?\s*([A-Za-z0-9._@-]+)
+        # English: username / user / account. When an explicit separator
+        # (: or =) is present the value may contain an extension so we can
+        # reject persona files like "USER.md". When only whitespace separates
+        # label and value, require a digit/@ or a known common account and
+        # disallow extension-shaped values so "User shared" is not captured.
+        \b(?:username|user|account)\s*[:=]\s*([A-Za-z0-9._@-]+)
+        |
+        \b(?:username|user|account)\s+(?![Aa]dmin|[Rr]oot|[Uu]ser|[Tt]est|[Dd]emo|[Gg]uest\b)([A-Za-z0-9._@-]*[0-9@][A-Za-z0-9._@-]*)
+        |
+        \b(?:username|user|account)\s+([Aa]dmin|[Rr]oot|[Uu]ser|[Tt]est|[Dd]emo|[Gg]uest)\b
         |
         \b(?:password|passwd|pwd)\s*[:=]?\s*([^\s,;]+)
     )""",
@@ -389,6 +397,130 @@ _ORG_RE = re.compile(
 )
 
 
+# ── Metadata denylist ─────────────────────────────────────────────
+# 2026-06-15: prevent system paths, tool names, persona filenames, and
+# other non-facts from being crystallised into long-term memory.
+
+# Path prefixes / directories that are never user-project facts.
+_PATH_DENY_PREFIXES: tuple[str, ...] = (
+    "c:\\windows",
+    "c:/windows",
+    "\\windows",
+    "c:\\program files",
+    "c:/program files",
+    "\\program files",
+    "\\system32",
+    "/system32",
+    "\\syswow64",
+    "/syswow64",
+    ".xmclaw\\v2\\uploads",
+    ".xmclaw/v2/uploads",
+    "\\temp\\",
+    "/temp/",
+    "\\tmp\\",
+    "/tmp/",
+)
+
+# Tool / function names that are not project facts.
+_TOOL_NAME_DENYLIST: frozenset[str] = frozenset({
+    "file_read", "web_fetch", "list_dir", "remember", "memory_forget",
+    "bash", "python", "code_python", "ask_user_question", "todo_write",
+    "screen_capture", "camera_capture", "image_read", "generate_image",
+    "generate_video",
+})
+
+# Persona / project metadata filenames.
+_PERSONA_FILE_DENYLIST: frozenset[str] = frozenset({
+    "user.md", "agents.md", "memory.md", "tools.md", "identity.md",
+    "learning.md", "soul.md", "readme.md", "contributing.md",
+})
+
+# Common imperative / transient verb prefixes that identity captures should
+# never start with (Chinese and English).
+_IDENTITY_DENY_PREFIXES: tuple[str, ...] = (
+    "让", "给", "帮", "改", "做", "删", "加", "添", "建", "修",
+    "看", "查", "试", "跑", "用", "说", "想", "要",
+    "make", "give", "help", "change", "do", "delete", "add", "build",
+    "fix", "look", "check", "try", "run", "use", "say", "think", "want",
+    "going", "planning", "trying",
+)
+
+
+def _should_reject_text(text: str, pattern_name: str) -> bool:
+    """Return True if ``text`` is clearly metadata, not a durable fact."""
+    lower = text.lower().strip()
+
+    # Never remember raw tool names / persona filenames.
+    if lower in _TOOL_NAME_DENYLIST:
+        return True
+    if any(lower.endswith(" " + f) or lower == f for f in _PERSONA_FILE_DENYLIST):
+        return True
+
+    # Paths: reject system / temp / upload paths; keep project-looking paths.
+    if pattern_name == "path":
+        # The stored text is "路径: <path>"; work with the raw path.
+        path_text = re.sub(r"^路径:\s*", "", text).strip()
+        path_lower = path_text.lower()
+        # Reject if the path starts with, contains, or is a prefix of a
+        # denied system/temp/upload prefix (handles partial matches like
+        # "C:\Program" from "C:\Program Files\...").
+        if path_lower.startswith(_PATH_DENY_PREFIXES):
+            return True
+        if any(p in path_lower for p in _PATH_DENY_PREFIXES):
+            return True
+        if any(path_lower in p for p in _PATH_DENY_PREFIXES):
+            return True
+        # Reject paths that are just a drive letter + system dir.
+        if re.search(r"^[a-z]:[/\\]windows[/\\]?", path_lower, re.IGNORECASE):
+            return True
+        if re.search(r"[/\\](system32|syswow64|temp|tmp)[/\\]?", path_lower, re.IGNORECASE):
+            return True
+        return False
+
+    # Credentials: reject captures that are obviously not accounts.
+    if pattern_name == "credential":
+        # Extract the value after the last label separator (handles
+        # prefixes like "凭据: username: admin").
+        value = re.split(r"[:：=是叫为]\s*", text)[-1].strip()
+        # Reject persona/tool filenames and bare tool names.
+        if value.lower() in _TOOL_NAME_DENYLIST | _PERSONA_FILE_DENYLIST:
+            return True
+        # Reject file-extension-looking values.
+        if re.search(r"\.(md|txt|json|py|js|ts)$", value, re.IGNORECASE):
+            return True
+        # English "user/username/account" branch must contain a digit or @,
+        # or be a known common account, to avoid "user just" / "User shared".
+        if re.search(r"\b(?:username|user|account)\s*[:=]?\s*", text, re.IGNORECASE):
+            if not re.search(r"[0-9@]", value):
+                common_accounts = {"admin", "root", "user", "test", "demo", "guest"}
+                if value.lower() not in common_accounts:
+                    return True
+        return False
+
+    # Identity: reject imperative fragments like "我是让你修改" / "I'm going
+    # to delete ...".
+    if pattern_name == "identity":
+        # Chinese branch.
+        m = re.search(r"我(?:是|叫|名字是|名叫)\s*([^\s,，。、!！?？]{1,40})", text)
+        if m:
+            value = m.group(1).strip()
+            if value.startswith(_IDENTITY_DENY_PREFIXES):
+                return True
+            if len(value) < 2:
+                return True
+        # English branch.
+        m2 = re.search(r"\b(?:I(?:'m| am)|my\s+name\s+is)\s+([A-Za-z一-鿿]{1,40})", text, re.IGNORECASE)
+        if m2:
+            value = m2.group(1).strip()
+            if value.startswith(_IDENTITY_DENY_PREFIXES):
+                return True
+            if len(value) < 2:
+                return True
+        return False
+
+    return False
+
+
 # ── Extractor ────────────────────────────────────────────────────
 
 
@@ -421,6 +553,10 @@ def extract_keys(message: str) -> list[ExtractedKey]:
     ) -> None:
         text = text.strip()
         if len(text) < 2 or len(text) > 500:
+            return
+        # 2026-06-15: reject system paths, tool names, persona filenames,
+        # and other non-facts before they enter the store.
+        if _should_reject_text(text, pattern_name):
             return
         # Skip if this span fully overlaps a previously-recorded span
         # (avoid duplicate facts from nested patterns).

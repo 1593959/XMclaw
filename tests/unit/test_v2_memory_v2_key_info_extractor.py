@@ -497,3 +497,67 @@ def test_mega_realistic_message() -> None:
         f"only matched {len(actual)} of {len(expected)} expected patterns: "
         f"{sorted(actual)}"
     )
+
+
+# ── Metadata denylist — system paths, tool names, persona files ───
+
+
+def test_path_rejects_windows_system_dirs() -> None:
+    keys = extract_keys("文件在 C:\\Windows\\System32\\drivers\\etc\\hosts")
+    assert not any(k.pattern_name == "path" for k in keys)
+
+
+def test_path_rejects_program_files() -> None:
+    keys = extract_keys("安装在 C:\\Program Files\\SomeApp\\app.exe")
+    assert not any(k.pattern_name == "path" for k in keys)
+
+
+def test_path_rejects_temp_and_uploads() -> None:
+    keys = extract_keys(
+        "上传到了 .xmclaw/v2/uploads/avatar.png 和 /tmp/debug.log"
+    )
+    assert not any(k.pattern_name == "path" for k in keys)
+
+
+def test_path_keeps_user_project_paths() -> None:
+    keys = extract_keys("项目在 /home/user/my-project/src/main.py")
+    paths = [k for k in keys if k.pattern_name == "path"]
+    assert len(paths) >= 1
+    assert "/home/user/my-project" in paths[0].text
+
+
+def test_credential_rejects_persona_filenames() -> None:
+    keys = extract_keys("user: USER.md, account: AGENTS.md")
+    creds = [k for k in keys if k.pattern_name == "credential"]
+    assert len(creds) == 0
+
+
+def test_credential_rejects_bare_tool_names() -> None:
+    keys = extract_keys("username: file_read, password: web_fetch")
+    creds = [k for k in keys if k.pattern_name == "credential"]
+    assert len(creds) == 0
+
+
+def test_credential_rejects_file_extension_values() -> None:
+    keys = extract_keys("user: config.json, password: notes.txt")
+    creds = [k for k in keys if k.pattern_name == "credential"]
+    assert len(creds) == 0
+
+
+def test_credential_rejects_low_value_user_phrases() -> None:
+    """"user just" / "User shared" should not crystallise as credentials."""
+    keys = extract_keys("User just shared a file; account is still pending")
+    creds = [k for k in keys if k.pattern_name == "credential"]
+    assert len(creds) == 0
+
+
+def test_identity_rejects_imperative_fragments() -> None:
+    keys = extract_keys("我是让你修改配置")
+    ids = [k for k in keys if k.pattern_name == "identity"]
+    assert len(ids) == 0
+
+
+def test_identity_rejects_english_imperative_fragments() -> None:
+    keys = extract_keys("I'm going to delete the old files")
+    ids = [k for k in keys if k.pattern_name == "identity"]
+    assert len(ids) == 0

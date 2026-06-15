@@ -3667,6 +3667,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             llm_timeout_s=_dynamic_llm_timeout,
             ultrathink=ultrathink,
             _turn_metrics=_turn_metrics,
+            bus=self._bus,
         )
         if _hop_result is not None:
             return _hop_result

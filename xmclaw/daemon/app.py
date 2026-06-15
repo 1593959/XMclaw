@@ -2197,6 +2197,8 @@ def create_app(
             # out to avoid leaking private conversations across sockets.
             if not _is_relevant(event):
                 return
+            nonlocal _last_event_ts
+            _last_event_ts = time.monotonic()
             outbox.append(event)
             try:
                 await ws.send_text(json.dumps({
@@ -2241,6 +2243,12 @@ def create_app(
         import asyncio as _aio
         _frame_q: "_aio.Queue[dict | None]" = _aio.Queue()
         _CONTROL_FRAME_TYPES = ("cancel", "answer_question")
+        # 2026-06-15: steering watchdog state. ``last_event_ts`` is bumped
+        # whenever the WS forwarder sends a business event to the client.
+        # ``steer_watchdogs`` holds in-flight watchdog tasks so we can
+        # cancel them when a turn makes progress.
+        _last_event_ts = time.monotonic()
+        _steer_watchdogs: dict[str, _aio.Task] = {}
         # 2026-06-15: the in-flight turn runs as a cancellable task (see the
         # serial loop below) so Stop / a new message can REALLY interrupt the
         # backend — not just set a cooperative flag the loop only checks at
@@ -2373,6 +2381,10 @@ def create_app(
                     continue
                 if not isinstance(frame, dict):
                     continue
+                # 2026-06-15: drop application-layer pong frames; they only
+                # serve as a keep-alive ack and should not become user frames.
+                if frame.get("type") == "pong":
+                    continue
                 if frame.get("type") in _CONTROL_FRAME_TYPES:
                     try:
                         await _handle_control_frame(frame)
@@ -2385,6 +2397,36 @@ def create_app(
                 # aborting + restarting. Non-destructive; work so far is
                 # kept. Stop is the explicit abort path. Only when NO turn
                 # is running does the frame start a fresh turn below.
+                #
+                # 2026-06-15 fix: if the turn is already stuck (no events for
+                # a long time), steering would queue forever and the user
+                # sees the session die. Start a watchdog: if no progress within
+                # ``STEERING_WATCHDOG_S`` after steering, hard-cancel the turn
+                # and re-queue the user frame as a fresh turn.
+                # 60s balances legitimate long tools (video poll, big bash)
+                # against the need to escape a truly wedged turn.
+                STEERING_WATCHDOG_S = 60.0
+
+                async def _steering_watchdog(
+                    steer_ts: float, queued_frame: dict,
+                ) -> None:
+                    await _aio.sleep(STEERING_WATCHDOG_S)
+                    _t = active_turn_tasks.get(session_id)
+                    if _t is None or _t.done():
+                        return
+                    # Turn still running. If it has produced events since
+                    # steering, it's making progress — leave it alone.
+                    if _last_event_ts > steer_ts:
+                        return
+                    # Stuck: hard-cancel and start a fresh turn from the
+                    # queued user message.
+                    log.warning(
+                        "ws.steering_watchdog.stuck sid=%s — hard cancel + new turn",
+                        session_id[:24],
+                    )
+                    _hard_cancel_turn()
+                    await _frame_q.put(queued_frame)
+
                 if frame.get("type") == "user":
                     _t = active_turn_tasks.get(session_id)
                     if _t is not None and not _t.done() and active_agent is not None:
@@ -2394,6 +2436,7 @@ def create_app(
                         except Exception:  # noqa: BLE001
                             _steered = False
                         if _steered:
+                            _steer_ts = time.monotonic()
                             await bus.publish(make_event(
                                 session_id=session_id, agent_id="user",
                                 type=EventType.USER_MESSAGE,
@@ -2401,11 +2444,38 @@ def create_app(
                                 correlation_id=frame.get("correlation_id") or None,
                             ))
                             await bus.drain()
+                            # Cancel any previous watchdog for this session.
+                            _old = _steer_watchdogs.pop(session_id, None)
+                            if _old is not None:
+                                _old.cancel()
+                            _steer_watchdogs[session_id] = _aio.create_task(
+                                _steering_watchdog(_steer_ts, frame),
+                            )
                             continue  # injected — do NOT spawn a separate turn
                 await _frame_q.put(frame)
 
         _reader_task = _aio.create_task(
             _ws_reader(), name=f"xmclaw-ws-reader-{session_id}",
+        )
+
+        # 2026-06-15: application-layer keep-alive. Browsers reply to
+        # protocol-level pings automatically, but an app-level ping gives
+        # the client a regular frame to reset its "no frame watchdog"
+        # and lets proxies/firewalls see bidirectional traffic.
+        async def _ping_loop() -> None:
+            while True:
+                await _aio.sleep(15.0)
+                try:
+                    await ws.send_text(json.dumps({
+                        "type": "ping",
+                        "payload": {},
+                        "session_id": session_id,
+                    }))
+                except Exception:  # noqa: BLE001 — socket may be closing
+                    return
+
+        _ping_task = _aio.create_task(
+            _ping_loop(), name=f"xmclaw-ws-ping-{session_id}",
         )
         try:
             while True:
@@ -2692,6 +2762,11 @@ def create_app(
                         finally:
                             if active_turn_tasks.get(session_id) is _turn_task:
                                 del active_turn_tasks[session_id]
+                            # Cancel any steering watchdog now that the turn
+                            # has ended (cleanly or via cancel).
+                            _wd = _steer_watchdogs.pop(session_id, None)
+                            if _wd is not None:
+                                _wd.cancel()
                         # Deterministic cancellation signal: emit exactly one
                         # ``turn_cancelled`` whenever a cancel was requested
                         # for this turn — whether it stopped via the
@@ -2768,6 +2843,7 @@ def create_app(
             pass
         finally:
             _reader_task.cancel()
+            _ping_task.cancel()
             sub.cancel()
             # B-348: only deregister if WE are still the registered
             # active WS for this session. If a newer tab already

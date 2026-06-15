@@ -123,6 +123,21 @@ def test_agent_loop_publishes_tool_invocation_finished_with_call_id() -> None:
         )
 
 
+def test_agent_loop_publishes_tool_invocation_progress_with_call_id() -> None:
+    """Progress heartbeats must also carry ``call_id`` so the reducer
+    can attribute them to the right running tool card."""
+    src = _daemon_src()
+    matches = list(re.finditer(r"EventType\.TOOL_INVOCATION_PROGRESS", src))
+    assert matches, "no TOOL_INVOCATION_PROGRESS publish found"
+    for m in matches:
+        window = src[m.start():m.start() + 400]
+        assert "call_id" in window, (
+            f"TOOL_INVOCATION_PROGRESS at offset {m.start()} doesn't "
+            f"mention call_id within 400 chars — drift suspected. "
+            f"Window:\n{window!r}"
+        )
+
+
 def test_reducer_reads_both_payload_keys_for_compat() -> None:
     """The reducer must keep reading BOTH ``call_id`` and
     ``tool_call_id`` (in that order) so:

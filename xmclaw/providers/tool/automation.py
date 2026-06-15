@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 import uuid
@@ -320,6 +321,23 @@ class AutomationTools(ToolProvider):
 
     # ── code_python ──────────────────────────────────────────────
 
+    # 2026-06-15: safety guard around the persistent IPython kernel. A
+    # stuck kernel (infinite C loop / GUI / blocking I/O) can hang the
+    # daemon turn and exhaust the default executor thread pool. The pool
+    # itself now has a hard outer timeout (kernel_pool.py), but we also:
+    #   1. Skip the pool for known interactive / GUI / input patterns.
+    #   2. Allow forcing subprocess via XMC_CODE_PYTHON_FORCE_SUBPROCESS=1.
+    def _persistent_kernel_allowed(self, code: str) -> bool:
+        env = (os.environ.get("XMC_CODE_PYTHON_FORCE_SUBPROCESS") or "").lower()
+        if env in ("1", "true", "yes"):
+            return False
+        dangerous = (
+            "input(", "tkinter", "PyQt", "PySide", "wxPython",
+            "matplotlib.pyplot.show", "plt.show(",
+        )
+        lower = code.lower()
+        return not any(d.lower() in lower for d in dangerous)
+
     async def _code_python(self, call: ToolCall, t0: float) -> ToolResult:
         args = call.args or {}
         code = args.get("code")
@@ -329,53 +347,53 @@ class AutomationTools(ToolProvider):
         reset_ns = bool(args.get("reset", False))
 
         # Wave-27 fix-LAT2 (2026-05-16): prefer the persistent kernel
-        # pool when one is wired + the deps are installed. The pool
-        # keeps a long-lived IPython kernel per session_id so
-        # variables / imports survive across tool calls — eliminates
-        # the "变量丢了，让我把完整代码一次性写好" loop the LLM gets
-        # into when it expects Jupyter-style state. Falls back to the
-        # one-shot subprocess below when:
+        # pool when one is wired + the deps are installed + the code
+        # doesn't look dangerous. The pool keeps a long-lived IPython
+        # kernel per session_id so variables / imports survive across
+        # tool calls. Falls back to the one-shot subprocess below when:
         #   * jupyter_client / ipykernel aren't installed
         #   * the pool isn't wired (CLI mode, tests w/o lifespan)
+        #   * code contains GUI/input/show patterns
         #   * spinning the kernel raised (the FIRST request retries
         #     via subprocess; the second request will retry the kernel
         #     unless the entry got stuck in dead=True, in which case
         #     ``reset=True`` clears it)
-        try:
-            from xmclaw.providers.tool.kernel_pool import (
-                KernelDepsMissing, default_pool,
-            )
-            pool = default_pool()
-            if pool is not None and call.session_id:
-                try:
-                    if reset_ns:
-                        await pool.reset_session(call.session_id)
-                    result = await pool.execute(
-                        call.session_id, code,
-                        timeout_s=float(timeout_s),
-                    )
-                    return _ok(call, t0, json.dumps(
-                        result.as_dict(), ensure_ascii=False,
-                    ))
-                except KernelDepsMissing:
-                    # Deps reported present at module-load but failed at
-                    # call time (e.g. site-packages mutation). Fall
-                    # through to subprocess silently.
-                    pass
-                except Exception as exc:  # noqa: BLE001
-                    # Kernel infra problem — log + fall through. The
-                    # user gets a working tool via subprocess instead of
-                    # a hard error.
-                    from xmclaw.utils.log import get_logger
-                    get_logger(__name__).warning(
-                        "code_python.kernel_failed sid=%s "
-                        "err=%s — falling back to subprocess",
-                        call.session_id[:24], exc,
-                    )
-        except ImportError:
-            # ``kernel_pool`` module itself missing (shouldn't happen
-            # post-install but cheap defense).
-            pass
+        if self._persistent_kernel_allowed(code) and call.session_id:
+            try:
+                from xmclaw.providers.tool.kernel_pool import (
+                    KernelDepsMissing, default_pool,
+                )
+                pool = default_pool()
+                if pool is not None:
+                    try:
+                        if reset_ns:
+                            await pool.reset_session(call.session_id)
+                        result = await pool.execute(
+                            call.session_id, code,
+                            timeout_s=float(timeout_s),
+                        )
+                        return _ok(call, t0, json.dumps(
+                            result.as_dict(), ensure_ascii=False,
+                        ))
+                    except KernelDepsMissing:
+                        # Deps reported present at module-load but failed at
+                        # call time (e.g. site-packages mutation). Fall
+                        # through to subprocess silently.
+                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        # Kernel infra problem — log + fall through. The
+                        # user gets a working tool via subprocess instead of
+                        # a hard error.
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).warning(
+                            "code_python.kernel_failed sid=%s "
+                            "err=%s — falling back to subprocess",
+                            call.session_id[:24], exc,
+                        )
+            except ImportError:
+                # ``kernel_pool`` module itself missing (shouldn't happen
+                # post-install but cheap defense).
+                pass
 
         # Subprocess fallback: same shape as old one-shot path.
         # Use the same Python interpreter the daemon is on so import

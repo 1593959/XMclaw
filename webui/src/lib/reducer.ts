@@ -319,6 +319,9 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
           status: "running",
           result: null,
           ts,
+          // 2026-06-15: keep the running card visible for at least 300ms
+          // so ultra-fast tools don't flash past the user.
+          minVisibleUntilTs: (ts || Date.now() / 1000) + 0.3,
         }),
       };
     }
@@ -329,6 +332,24 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       return {
         ...chat,
         entries: upsertById(chat.entries, callId, (e) => ({ ...e, status: "running" })),
+      };
+    }
+
+    case "tool_invocation_progress": {
+      const callId = str(payload.call_id) || str(payload.id);
+      if (!callId) return chat;
+      return {
+        ...chat,
+        entries: upsertById(chat.entries, callId, (e) => ({
+          ...e,
+          status: e.status === "ok" || e.status === "error" ? e.status : "running",
+          elapsedSeconds:
+            typeof payload.elapsed_seconds === "number"
+              ? payload.elapsed_seconds
+              : e.elapsedSeconds,
+          progressMessage:
+            typeof payload.message === "string" ? payload.message : e.progressMessage,
+        })),
       };
     }
 
@@ -388,18 +409,73 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       const liveShots = images.length
         ? [...images.map((url) => ({ url, tool: toolName, ts })), ...chat.liveShots].slice(0, 12)
         : chat.liveShots;
+
+      // 2026-06-15: if the running card hasn't hit its minimum visible
+      // window yet, park the finish result and keep status "running".
+      // A store-side timer will dispatch __apply_pending_finish later.
+      const pendingFinish = {
+        status,
+        result,
+        error: payload.error ? String(payload.error) : null,
+        ok: payload.ok === true,
+        images,
+        videos,
+        audios,
+        documents,
+        attachments: Array.isArray(payload.attachments) ? payload.attachments : undefined,
+      };
+      const nowTs = ts || Date.now() / 1000;
+      const shouldDefer = (e: Entry) =>
+        e.minVisibleUntilTs != null && e.minVisibleUntilTs > nowTs;
+
       return {
         ...chat,
         liveShots,
-        entries: upsertById(chat.entries, callId, (e) => ({
-          ...e,
-          status,
-          result,
-          images,
-          videos,
-          audios,
-          documents,
-        })),
+        entries: upsertById(chat.entries, callId, (e) =>
+          shouldDefer(e)
+            ? {
+                ...e,
+                status: "running",
+                pendingFinish,
+                elapsedSeconds:
+                  typeof payload.elapsed_seconds === "number"
+                    ? payload.elapsed_seconds
+                    : e.elapsedSeconds,
+              }
+            : {
+                ...e,
+                status,
+                result,
+                images,
+                videos,
+                audios,
+                documents,
+                pendingFinish: null,
+                minVisibleUntilTs: null,
+              },
+        ),
+      };
+    }
+
+    case "__apply_pending_finish": {
+      const callId = str(payload.call_id);
+      if (!callId) return chat;
+      return {
+        ...chat,
+        entries: upsertById(chat.entries, callId, (e) => {
+          if (!e.pendingFinish) return e;
+          return {
+            ...e,
+            status: e.pendingFinish.status,
+            result: e.pendingFinish.result,
+            images: e.pendingFinish.images,
+            videos: e.pendingFinish.videos,
+            audios: e.pendingFinish.audios,
+            documents: e.pendingFinish.documents,
+            pendingFinish: null,
+            minVisibleUntilTs: null,
+          };
+        }),
       };
     }
 

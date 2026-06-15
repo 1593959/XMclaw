@@ -295,6 +295,21 @@ export function applyEvent(chat, envelope) {
       };
     }
 
+    case "tool_invocation_progress": {
+      // 2026-06-15: progress heartbeat for long-running tools. This
+      // legacy static reducer doesn't surface elapsed time, so just
+      // ensure the message stays in "running" state.
+      const callId = payload.call_id || payload.tool_call_id || payload.id;
+      if (!callId) return chat;
+      return {
+        ...chat,
+        messages: upsertById(chat.messages, callId, (m) =>
+          m.kind === "tool_use" && m.status === "running"
+            ? { ...m, status: "running" }
+            : m
+        ),
+      };
+    }
 
     case "tool_call_emitted": {
       // B-220: tool_use is now its OWN top-level sibling message —

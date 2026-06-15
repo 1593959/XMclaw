@@ -238,6 +238,31 @@ export const useApp = create<AppState>((set, get) => {
         } else {
           set((s) => ({ chat: applyEvent(s.chat, envelope) }));
         }
+        // 2026-06-15: if a finish was deferred because the running card
+        // hasn't hit its 300ms minimum-visible window, schedule the flush.
+        if (envelope.type === "tool_invocation_finished") {
+          const { chat } = get();
+          chat.entries.forEach((e) => {
+            if (
+              e.kind === "tool_use" &&
+              e.pendingFinish &&
+              e.minVisibleUntilTs != null
+            ) {
+              const delayMs = Math.max(
+                0,
+                e.minVisibleUntilTs * 1000 - Date.now(),
+              );
+              setTimeout(() => {
+                set((s) => ({
+                  chat: applyEvent(s.chat, {
+                    type: "__apply_pending_finish",
+                    payload: { call_id: e.id },
+                  }),
+                }));
+              }, delayMs);
+            }
+          });
+        }
       },
       onStatus: ({ status, error, attempt }) =>
         set({ connection: { status, lastError: error, attempt } }),

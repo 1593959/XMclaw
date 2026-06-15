@@ -68,6 +68,7 @@ class EventType(str, Enum):
     CONFIG_RELOADED = "config_reloaded"
     TOOL_CALL_EMITTED = "tool_call_emitted"
     TOOL_INVOCATION_STARTED = "tool_invocation_started"
+    TOOL_INVOCATION_PROGRESS = "tool_invocation_progress"
     TOOL_INVOCATION_FINISHED = "tool_invocation_finished"
     # B-341 (audit pass-2 #12): SKILL_EXEC_STARTED / SKILL_EXEC_FINISHED
     # were removed in this commit. They were carry-over from a removed

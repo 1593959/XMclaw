@@ -17,6 +17,23 @@ function StatusDot({ status }: { status: Entry["status"] }) {
   return <span className="text-mc-ok text-xs">✓</span>;
 }
 
+function RunningMeta({ e }: { e: Entry }) {
+  if (e.status !== "running") return null;
+  const parts: string[] = [];
+  if (e.elapsedSeconds != null && e.elapsedSeconds > 0) {
+    parts.push(`${e.elapsedSeconds.toFixed(1)}s`);
+  }
+  if (e.progressMessage) {
+    parts.push(e.progressMessage);
+  }
+  if (!parts.length) return null;
+  return (
+    <span className="text-[10px] text-mc-faint animate-pulse ml-1">
+      {parts.join(" · ")}
+    </span>
+  );
+}
+
 export function DiffBlock({ lines }: { lines: DiffLine[] }) {
   const [expanded, setExpanded] = useState(false);
   const { head, hidden, tail } = useMemo(() => collapseMiddle(lines), [lines]);
@@ -94,6 +111,7 @@ function EditCard({ e }: { e: Entry }) {
     <div className="border border-mc-border rounded-md bg-mc-panel2/60 min-w-0">
       <div className="flex items-center gap-2 px-3 py-1.5">
         <StatusDot status={e.status} />
+        <RunningMeta e={e} />
         <span className="text-xs text-mc-muted shrink-0">✎ 编辑</span>
         <button
           onClick={() => focusFile(path)}
@@ -151,6 +169,7 @@ function TerminalCard({ e }: { e: Entry }) {
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer"
       >
         <StatusDot status={e.status} />
+        <RunningMeta e={e} />
         <span className="font-mono text-xs text-mc-warn shrink-0">$</span>
         <span className="font-mono text-xs text-mc-text truncate flex-1">{cmd}</span>
         <span className="text-mc-faint text-xs">{open ? "▾" : "▸"}</span>
@@ -197,6 +216,7 @@ function SummaryCard({ e }: { e: Entry }) {
     <div className="min-w-0">
       <div className="flex items-center gap-2 max-w-full">
         <StatusDot status={e.status} />
+        <RunningMeta e={e} />
         <span className="text-xs text-mc-muted shrink-0">{label}</span>
         {path ? (
           <button
@@ -245,6 +265,7 @@ function GenericCard({ e }: { e: Entry }) {
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer"
       >
         <StatusDot status={e.status} />
+        <RunningMeta e={e} />
         <span className="font-mono text-xs text-mc-text shrink-0">{e.name}</span>
         <span className="font-mono text-[11px] text-mc-faint truncate flex-1">{argsSummary}</span>
         <span className="text-mc-faint text-xs">{open ? "▾" : "▸"}</span>

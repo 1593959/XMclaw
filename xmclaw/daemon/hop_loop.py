@@ -6,6 +6,7 @@ Contains the LLM ↔ tool hop loop execution logic.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import time
 from collections.abc import Awaitable, Callable
@@ -338,6 +339,7 @@ class HopLoopMixin:
         llm_timeout_s: float = 600.0,
         ultrathink: bool = False,
         _turn_metrics: "dict[str, Any] | None" = None,
+        bus: "Any | None" = None,
     ) -> AgentTurnResult | None:
         """Execute the LLM ↔ tool hop loop.
 
@@ -776,7 +778,9 @@ class HopLoopMixin:
                 # 2026-06-04: first-token timeout = max(total/3, 5s).
                 # If the first chunk doesn't arrive within this window,
                 # we try a fallback profile before giving up.
-                _first_token_timeout = max(_eff_timeout / 3.0, 5.0)
+                # 2026-06-15: cap at 60s so deep-hop timeouts don't leave the
+                # user staring at a silent spinner for minutes.
+                _first_token_timeout = min(max(_eff_timeout / 3.0, 10.0), 60.0)
 
                 async def _call_llm_with_first_token_guard(
                     _llm: Any,
@@ -800,6 +804,29 @@ class HopLoopMixin:
                     async def _wtc(delta: str) -> None:
                         _ft_event.set()
                         await _emit_thinking_chunk(delta)
+
+                    # 2026-06-15: heartbeat so the UI knows the LLM is still
+                    # working during long no-token gaps (deep reasoning,
+                    # overloaded provider). Starts after first token and stops
+                    # when the call completes or times out.
+                    _heartbeat_task: asyncio.Task | None = None
+
+                    async def _llm_heartbeat(start_ts: float) -> None:
+                        tick = 0
+                        while True:
+                            await asyncio.sleep(15.0)
+                            tick += 1
+                            elapsed = round(time.perf_counter() - start_ts, 1)
+                            try:
+                                await publish(EventType.INNER_MONOLOGUE, {
+                                    "kind": "llm_still_working",
+                                    "hop": hop,
+                                    "tick": tick,
+                                    "elapsed_seconds": elapsed,
+                                    "model": getattr(_llm, "model", "") or "",
+                                }, correlation_id=hop_corr)
+                            except Exception:  # noqa: BLE001
+                                pass
 
                     async def _do_call(_llm_instance: Any) -> None:
                         nonlocal _resp, _err
@@ -884,16 +911,40 @@ class HopLoopMixin:
                                 except asyncio.CancelledError:
                                     pass
                                 raise asyncio.TimeoutError("first_token")
-                            # Fallback first token arrived, wait for completion
-                            await asyncio.wait_for(_task, timeout=_eff_timeout)
+                            # Fallback first token arrived, wait for completion.
+                            _heartbeat_task = asyncio.create_task(
+                                _llm_heartbeat(time.perf_counter()),
+                            )
+                            try:
+                                await asyncio.wait_for(_task, timeout=_eff_timeout)
+                            except asyncio.TimeoutError:
+                                raise
+                            finally:
+                                if _heartbeat_task is not None:
+                                    _heartbeat_task.cancel()
+                                    with contextlib.suppress(asyncio.CancelledError):
+                                        await _heartbeat_task
                             if _err is not None:
                                 raise _err
                             return _resp
                         else:
                             raise asyncio.TimeoutError("first_token")
 
-                    # First token arrived from primary, wait for completion
-                    await asyncio.wait_for(_task, timeout=_eff_timeout)
+                    # First token arrived from primary, wait for completion.
+                    # Start the heartbeat so the UI sees progress during long
+                    # gaps; cancel it as soon as the call finishes.
+                    _heartbeat_task = asyncio.create_task(
+                        _llm_heartbeat(time.perf_counter()),
+                    )
+                    try:
+                        await asyncio.wait_for(_task, timeout=_eff_timeout)
+                    except asyncio.TimeoutError:
+                        raise
+                    finally:
+                        if _heartbeat_task is not None:
+                            _heartbeat_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await _heartbeat_task
                     if _err is not None:
                         raise _err
                     return _resp
@@ -1419,7 +1470,10 @@ class HopLoopMixin:
                 # asyncio tasks), Phase B starts, and the WS send races
                 # against tool execution — the frontend gets all events at
                 # once instead of seeing cards appear one by one.
-                await asyncio.sleep(0.05)
+                if bus is not None and hasattr(bus, "drain"):
+                    await bus.drain()
+                else:
+                    await asyncio.sleep(0.05)
 
                 # Phase 11: inspect the tool batch and set a capability
                 # hint so the NEXT hop (or any nested agent / callback
@@ -1454,14 +1508,45 @@ class HopLoopMixin:
                             return str(args[key])
                     return None
 
+                # 2026-06-15: track wall-clock start per call and emit a
+                # progress heartbeat every 2s so long-running tools don't
+                # look frozen. Minimum display time is enforced in Phase C.
+                _invoke_start_ts: dict[str, float] = {}
+
                 async def _invoke_one(call: Any) -> Any:
-                    return await maybe_await_cached(
-                        _spec_cache, call,
-                        lambda c=call: self._invoke_single_tool(
-                            c, effective_tools, session_id,
-                            cancel_event=cancel_event,
-                        ),
-                    )
+                    _invoke_start_ts[call.id] = time.perf_counter()
+
+                    async def _progress_loop() -> None:
+                        while True:
+                            await asyncio.sleep(2.0)
+                            elapsed = round(
+                                time.perf_counter() - _invoke_start_ts[call.id], 1,
+                            )
+                            try:
+                                await publish(
+                                    EventType.TOOL_INVOCATION_PROGRESS, {
+                                        "call_id": call.id,
+                                        "name": call.name,
+                                        "elapsed_seconds": elapsed,
+                                        "message": None,
+                                    },
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+
+                    _progress_task = asyncio.create_task(_progress_loop())
+                    try:
+                        return await maybe_await_cached(
+                            _spec_cache, call,
+                            lambda c=call: self._invoke_single_tool(
+                                c, effective_tools, session_id,
+                                cancel_event=cancel_event,
+                            ),
+                        )
+                    finally:
+                        _progress_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await _progress_task
 
                 async def _serial_writes(
                     _items: list[tuple[int, Any]],
@@ -1544,6 +1629,10 @@ class HopLoopMixin:
                     )
 
                 # Phase C: process results in original order (serial).
+                # 2026-06-15: enforce a minimum visible running state so
+                # very fast tools don't flash past the user. If a tool
+                # finished in < 300ms we pause before publishing FINISHED.
+                _MIN_TOOL_DISPLAY_MS = 300.0
                 _had_success_this_hop = False
                 # B-Vision: collect ``metadata.attach_image`` paths from
                 # any tools that produced screenshots, so we can inject
@@ -1604,6 +1693,14 @@ class HopLoopMixin:
                             return f"/api/v2/media/{dst.name}"
                         except Exception:  # noqa: BLE001
                             return url  # 复制失败退回原 URL，最坏与修前一致
+
+                    _tool_elapsed_ms = (
+                        time.perf_counter()
+                        - _invoke_start_ts.get(call.id, time.perf_counter())
+                    ) * 1000.0
+                    _remaining_ms = _MIN_TOOL_DISPLAY_MS - _tool_elapsed_ms
+                    if _remaining_ms > 0:
+                        await asyncio.sleep(_remaining_ms / 1000.0)
 
                     for att in normalize_attachments(
                         getattr(result, "metadata", None),

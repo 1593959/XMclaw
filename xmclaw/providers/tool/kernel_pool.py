@@ -478,8 +478,40 @@ class KernelPool:
                 result_repr=result_repr[:2000],
             )
 
+        # 2026-06-15 fix: wrap the blocking ZMQ thread in a hard event-loop
+        # timeout. The internal ``_do_execute`` uses ``interrupt_kernel()``
+        # when its own deadline expires, but that doesn't help when user
+        # code is stuck in an uninterruptible C loop / blocking I/O / GUI
+        # main loop. If the outer watchdog fires we mark the kernel dead,
+        # force-kill the process, and return a structured timeout instead
+        # of hanging the daemon turn (and possibly the whole thread pool).
+        # Grace must exceed the internal 5s post-interrupt drain window so
+        # normal timeouts (returncode 124) still keep the kernel alive.
+        _HARD_TIMEOUT_GRACE_S = 12.0
         try:
-            result = await asyncio.to_thread(_do_execute)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_do_execute),
+                timeout=timeout_s + _HARD_TIMEOUT_GRACE_S,
+            )
+        except asyncio.TimeoutError:
+            _log.warning(
+                "kernel_pool.hard_timeout sid=%s timeout=%s — killing kernel",
+                entry.session_id[:24], timeout_s,
+            )
+            entry.dead = True
+            # Force-kill the kernel process in a fire-and-forget task so
+            # this turn unwinds immediately even if shutdown_kernel blocks.
+            asyncio.create_task(self._kill_entry(entry))
+            return ExecutionResult(
+                stdout="",
+                stderr=(
+                    f"[kernel: execution exceeded {timeout_s}s and the "
+                    f"kernel did not respond to interruption — it was "
+                    f"force-killed. Avoid infinite loops, GUI main loops, "
+                    f"or blocking I/O in code_python.]"
+                ),
+                returncode=137,
+            )
         except Exception as exc:  # noqa: BLE001 — kernel died
             _log.warning(
                 "kernel_pool.execute_failed sid=%s err=%s",

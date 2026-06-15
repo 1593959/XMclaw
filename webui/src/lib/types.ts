@@ -73,6 +73,25 @@ export interface Entry {
   errorPreview?: string;
   hops?: number;
   elapsedSeconds?: number | null;
+  // 2026-06-15: long-running tool progress heartbeat
+  progress?: number | null;
+  progressMessage?: string | null;
+  // Minimum wall-clock timestamp until which a "running" tool card
+  // must stay visible, preventing sub-300ms flashes.
+  minVisibleUntilTs?: number | null;
+  // If a FINISHED arrives before minVisibleUntilTs, the finish result
+  // is parked here and applied once the window expires.
+  pendingFinish?: {
+    status: EntryStatus;
+    result: string | null;
+    error: string | null;
+    ok: boolean;
+    images: string[];
+    videos: string[];
+    audios: string[];
+    documents: Array<{ url: string; name: string; mime?: string }>;
+    attachments?: Record<string, unknown>[];
+  } | null;
 }
 
 // canvas_artifact_* 事件驱动的实时产物（右栏预览渲染）。

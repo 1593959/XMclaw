@@ -8,6 +8,9 @@ import type { Envelope, ConnectionStatus } from "./types";
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_JITTER = 0.2;
+// 2026-06-15: if no frame (business event or app-level ping) arrives for
+// 45s, assume the connection is dead and force a reconnect.
+const NO_FRAME_TIMEOUT_MS = 45_000;
 
 function backoff(attempt: number): number {
   const raw = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
@@ -70,6 +73,21 @@ export function createWsClient({
   let status: ConnectionStatus = "disconnected";
   const pendingQueue: unknown[] = [];
   let lastFlushCount = 0;
+  let frameWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+  function resetFrameWatchdog() {
+    if (frameWatchdog) clearTimeout(frameWatchdog);
+    frameWatchdog = setTimeout(() => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        console.warn("[mc/ws] no frame for 45s, reconnecting");
+        try {
+          socket.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    }, NO_FRAME_TIMEOUT_MS);
+  }
 
   function setStatus(next: ConnectionStatus, error?: string) {
     if (next === status && !error) return;
@@ -112,15 +130,23 @@ export function createWsClient({
         }
       }
       lastFlushCount = flushed;
+      resetFrameWatchdog();
       setStatus("connected");
     });
 
     s.addEventListener("message", (msg) => {
+      resetFrameWatchdog();
       let envelope: Envelope;
       try {
         envelope = JSON.parse(msg.data as string);
       } catch (err) {
         console.error("[mc/ws] bad frame", err, msg.data);
+        return;
+      }
+      // 2026-06-15: reply to application-level ping with pong; don't pass
+      // it up to the chat reducer.
+      if (envelope.type === "ping") {
+        send({ type: "pong", payload: {} });
         return;
       }
       try {
@@ -189,6 +215,10 @@ export function createWsClient({
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+    if (frameWatchdog) {
+      clearTimeout(frameWatchdog);
+      frameWatchdog = null;
     }
     if (socket) {
       try {
