@@ -32,6 +32,7 @@ from xmclaw.eval.harness import (
 )
 from xmclaw.eval.longmemeval import LongMemEvalMiniSuite
 from xmclaw.eval.longmemeval_full import LongMemEvalSuite
+from xmclaw.eval.longmemeval_hard import LongMemEvalHardSuite
 from xmclaw.eval.swe_bench_verified import SWEBenchVerifiedSuite
 from xmclaw.eval.terminal_bench import TerminalBenchSuite
 
@@ -40,6 +41,7 @@ from xmclaw.eval.terminal_bench import TerminalBenchSuite
 # Bench adapter later means appending a new entry, not touching the CLI.
 SUITE_REGISTRY: dict[str, type[BenchmarkSuite]] = {
     LongMemEvalMiniSuite.SUITE_ID: LongMemEvalMiniSuite,
+    LongMemEvalHardSuite.SUITE_ID: LongMemEvalHardSuite,
     LongMemEvalSuite.SUITE_ID: LongMemEvalSuite,
     SWEBenchVerifiedSuite.SUITE_ID: SWEBenchVerifiedSuite,
     TerminalBenchSuite.SUITE_ID: TerminalBenchSuite,
@@ -48,6 +50,7 @@ SUITE_REGISTRY: dict[str, type[BenchmarkSuite]] = {
 
 __all__ = [
     "BenchmarkSuite",
+    "LongMemEvalHardSuite",
     "LongMemEvalMiniSuite",
     "LongMemEvalSuite",
     "Runner",
