@@ -434,6 +434,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # destructive: unlike Stop (which aborts), steering lets the agent
         # see new guidance and adapt without losing work.
         self._steer_queue: dict[str, list[str]] = {}
+        # #2 Checkpoint/rewind (2026-06-15): per-session rewind points. Each
+        # captures (history length + wall-clock ts) so a rewind can both
+        # truncate the conversation AND roll back every file mutation made
+        # after that point (via the UndoCabinet, keyed by ts). One is
+        # auto-created at the top of every turn; the user can rewind to any.
+        self._checkpoints: dict[str, list[dict[str, Any]]] = {}
         # Wave-32+: rolling buffer of recently finished runs. Lets
         # ``/api/v2/agent_tasks`` surface DONE entries for autonomous
         # session spawns (GoalGenerator / TaskScheduler / Proactive)
@@ -627,6 +633,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         on SESSION_LIFECYCLE destroy, or by a ``/reset`` user intent."""
         self._histories.pop(session_id, None)
         self._cancel_events.pop(session_id, None)
+        self._checkpoints.pop(session_id, None)
+        self._steer_queue.pop(session_id, None)
         # B-202: reset the once-per-session curriculum hint dedup so a
         # fresh session starts eligible for the hint again.
         self._curriculum_hint_fired.pop(session_id, None)
@@ -721,6 +729,86 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             return False  # no live turn — caller should start a normal turn
         self._steer_queue.setdefault(session_id, []).append(text)
         return True
+
+    # ── #2 Checkpoint / rewind ────────────────────────────────────────
+
+    def create_checkpoint(
+        self, session_id: str, *, label: str = "", kind: str = "turn",
+    ) -> dict[str, Any]:
+        """Snapshot a rewind point: the current history length + ts. File
+        state is captured implicitly — the UndoCabinet already backs up
+        every mutation, so ``rewind_to_checkpoint`` undoes everything after
+        this ts."""
+        import time as _t
+        import uuid as _u
+        hist = self._histories.get(session_id) or []
+        cp = {
+            "id": _u.uuid4().hex[:12],
+            "ts": _t.time(),
+            "label": label,
+            "kind": kind,
+            "history_len": len(hist),
+        }
+        lst = self._checkpoints.setdefault(session_id, [])
+        lst.append(cp)
+        if len(lst) > 50:  # keep the most recent 50
+            del lst[: len(lst) - 50]
+        return cp
+
+    def list_checkpoints(self, session_id: str) -> list[dict[str, Any]]:
+        return list(self._checkpoints.get(session_id, []))
+
+    async def rewind_to_checkpoint(
+        self, session_id: str, checkpoint_id: str,
+    ) -> dict[str, Any]:
+        """Restore the session to ``checkpoint_id``: roll back every file
+        mutation made after it (UndoCabinet) AND truncate the conversation
+        history to that point. Checkpoints after the target are dropped."""
+        cps = self._checkpoints.get(session_id, [])
+        cp = next((c for c in cps if c["id"] == checkpoint_id), None)
+        if cp is None:
+            return {"ok": False, "error": "checkpoint not found"}
+
+        # 1. Roll back file mutations recorded at/after the checkpoint ts.
+        #    recent() returns ts-DESC, so undoing in order restores
+        #    most-recent-first (correct for stacked edits to one file).
+        files_restored: list[str] = []
+        try:
+            cab = getattr(self, "_undo_cabinet", None)
+            if cab is None:
+                from xmclaw.security.undo_cabinet import UndoCabinet
+                cab = UndoCabinet()
+            for rec in cab.recent(within_s=10 ** 9, status="active"):
+                if rec.session_id == session_id and rec.ts >= cp["ts"]:
+                    res = cab.undo(rec.id)
+                    if res.get("applied"):
+                        files_restored.append(res.get("path", ""))
+        except Exception as exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger as _gl
+            _gl(__name__).warning("rewind.file_rollback_failed: %s", exc)
+
+        # 2. Truncate conversation history to the checkpoint.
+        hist = self._histories.get(session_id) or []
+        messages_removed = max(0, len(hist) - int(cp["history_len"]))
+        self._histories[session_id] = hist[: int(cp["history_len"])]
+
+        # 3. Drop checkpoints created after the target.
+        self._checkpoints[session_id] = [c for c in cps if c["ts"] <= cp["ts"]]
+
+        # 4. Persist the truncated history so a reconnect / restart agrees.
+        try:
+            await self._persist_history(session_id, self._histories[session_id])
+        except Exception:  # noqa: BLE001
+            pass
+
+        return {
+            "ok": True,
+            "checkpoint_id": checkpoint_id,
+            "files_restored": files_restored,
+            "files_restored_count": len(files_restored),
+            "messages_removed": messages_removed,
+            "history_len": int(cp["history_len"]),
+        }
 
     def set_hook_engine(self, engine: Any | None) -> None:
         """Wave-32: attach the user-defined HookEngine. Lifecycle
@@ -1061,6 +1149,18 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # loop that's spinning between hops.
         cancel_event = asyncio.Event()
         self._cancel_events[session_id] = cancel_event
+        # #2 Checkpoint/rewind: auto-snapshot a rewind point at the TOP of
+        # the turn (before it appends anything), so the user can rewind to
+        # "before turn N" — restoring both the conversation and any files
+        # this turn is about to mutate.
+        try:
+            _cp_label = (
+                (user_message or "").strip().splitlines()[0][:60]
+                if user_message else ""
+            )
+            self.create_checkpoint(session_id, label=_cp_label, kind="turn")
+        except Exception:  # noqa: BLE001
+            pass
         # Wave-32+: expose the running session id to tools / hooks via
         # the contextvar in core/agent_context.py. fork_session reads
         # this to know which history to clone.

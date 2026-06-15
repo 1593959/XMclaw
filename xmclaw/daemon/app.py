@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
@@ -1756,6 +1756,53 @@ def create_app(
         return Response(
             content=body, media_type="application/x-ndjson", headers=headers,
         )
+
+    # ── /api/v2/sessions/{sid}/checkpoints + rewind (#2) ───────────
+    # Checkpoint/rewind: list the auto-captured rewind points for a
+    # session, and rewind to one (truncate the conversation + roll back
+    # every file mutation made after that point via the UndoCabinet).
+    @app.get("/api/v2/sessions/{session_id}/checkpoints")
+    async def list_checkpoints(session_id: str) -> JSONResponse:
+        _ag = getattr(app.state, "agent", None)
+        if _ag is None or not hasattr(_ag, "list_checkpoints"):
+            return JSONResponse({"checkpoints": []})
+        return JSONResponse({"checkpoints": _ag.list_checkpoints(session_id)})
+
+    @app.post("/api/v2/sessions/{session_id}/rewind")
+    async def rewind_session(session_id: str, request: Request) -> JSONResponse:
+        _ag = getattr(app.state, "agent", None)
+        if _ag is None or not hasattr(_ag, "rewind_to_checkpoint"):
+            return JSONResponse(
+                {"ok": False, "error": "agent does not support rewind"},
+                status_code=400,
+            )
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        cp_id = str((body or {}).get("checkpoint_id") or "").strip()
+        if not cp_id:
+            return JSONResponse(
+                {"ok": False, "error": "checkpoint_id is required"},
+                status_code=400,
+            )
+        result = await _ag.rewind_to_checkpoint(session_id, cp_id)
+        try:
+            await bus.publish(make_event(
+                session_id=session_id, agent_id="daemon",
+                type=EventType.SESSION_LIFECYCLE,
+                payload={
+                    "phase": "rewound",
+                    "checkpoint_id": cp_id,
+                    "ok": bool(result.get("ok")),
+                    "messages_removed": result.get("messages_removed", 0),
+                    "files_restored": result.get("files_restored_count", 0),
+                },
+            ))
+            await bus.drain()
+        except Exception:  # noqa: BLE001
+            pass
+        return JSONResponse(result, status_code=200 if result.get("ok") else 404)
 
     # ── /ui/ static files + root redirect ──
     # Phase 4.6: serve a single-page UI bundled with the package, so
