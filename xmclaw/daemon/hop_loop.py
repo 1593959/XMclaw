@@ -2165,6 +2165,24 @@ class HopLoopMixin:
                 ) or "",
             ))
 
+            # 2026-06-15: when the model returns empty text after tool
+            # calls, don't silently return an empty answer. Nudge once so
+            # the model produces a visible summary for the user.
+            if (
+                not (response.content or "").strip()
+                and tool_calls_made
+                and not cancel_event.is_set()
+            ):
+                messages.append(Message(
+                    role="user",
+                    content=(
+                        "[系统提示] 你刚刚执行了工具调用，但还没有给出"
+                        "可见的最终回复。请根据工具结果向用户给出清晰、"
+                        "简洁的总结或结论。"
+                    ),
+                ))
+                continue  # one more hop
+
             # B-302: honesty guard on terminal text.
             if _b302_corrected < _B302_MAX_CORRECTIONS:
                 _nudge = _check_memory_honesty(
