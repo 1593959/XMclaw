@@ -1092,6 +1092,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 except Exception:  # noqa: BLE001
                     pass
             self._cancel_events.pop(session_id, None)
+            # Phase 11 safety-net: never leak a capability pick across turns.
+            object.__setattr__(self, "_pending_capability_pick", None)
             # B-1 fix: persist session history after every turn so that
             # ``xmclaw chat --resume <id>`` and fresh AgentLoop instances
             # see the full conversation. Runs in finally so even crashed

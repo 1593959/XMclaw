@@ -92,6 +92,26 @@ _ROLE_HINTS = {
     ),
 }
 
+# Phase 11: keyword → capability mapping for auto-routing subtasks to
+# specialist models (image_gen, video_gen, audio_out, vision).
+_SUBTASK_CAPABILITY_HINTS: dict[str, str] = {
+    "image_gen": "image_gen",
+    "画": "image_gen",
+    "生成图片": "image_gen",
+    "generate image": "image_gen",
+    "生成图像": "image_gen",
+    "video_gen": "video_gen",
+    "生成视频": "video_gen",
+    "generate video": "video_gen",
+    "audio_out": "audio_out",
+    "tts": "audio_out",
+    "语音合成": "audio_out",
+    "speak": "audio_out",
+    "vision": "vision",
+    "截图": "vision",
+    "screenshot": "vision",
+}
+
 _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
     name="parallel_subagents",
     description=(
@@ -102,7 +122,10 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
         "\"compare options A/B/C\"). Do NOT use when subtasks depend on "
         "each other — sub-agents share no context with each other. "
         "Sub-agents have a 50-hop cap (raise via max_hops up to 100 if a "
-        "task is heavier) and no further fanout capability."
+        "task is heavier) and no further fanout capability. "
+        "When a subtask involves media generation (image / video / speech), "
+        "the sub-agent automatically routes to the appropriate specialist "
+        "model if one is registered with the matching capability."
     ),
     parameters_schema={
         "type": "object",
@@ -159,6 +182,17 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
                     "one extra LLM round-trip."
                 ),
             },
+            "specialist_models": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional. One specialist capability per subtask "
+                    "(same length as subtasks). When set, the sub-agent "
+                    "uses the registered model with that capability "
+                    "(e.g. 'image_gen', 'video_gen', 'audio_out', 'vision') "
+                    "instead of the default LLM."
+                ),
+            },
         },
         "required": ["subtasks"],
     },
@@ -201,6 +235,7 @@ class SubagentToolProvider(ToolProvider):
         *,
         llm: Any | None = None,
         tools: ToolProvider | None = None,
+        llm_registry: Any | None = None,
         max_hops_per_subagent: int = 50,
         max_concurrency: int = 4,
         # 2026-05-25: both caps bumped to 5 min per user request.
@@ -214,6 +249,7 @@ class SubagentToolProvider(ToolProvider):
     ) -> None:
         self._llm = llm
         self._tools = tools
+        self._llm_registry = llm_registry
         self._max_hops = max(1, int(max_hops_per_subagent))
         self._sem = asyncio.Semaphore(max(1, int(max_concurrency)))
         self._fanout_timeout = max(10.0, float(fanout_timeout_s))
@@ -234,6 +270,12 @@ class SubagentToolProvider(ToolProvider):
         """Late-binding hook so the subagent can share the parent's
         tool catalogue."""
         self._tools = tools
+
+    def set_llm_registry(self, registry: Any | None) -> None:
+        """Late-binding hook so sub-agents can route to specialist
+        models (image_gen / video_gen / audio_out) based on subtask
+        content."""
+        self._llm_registry = registry
 
     def set_bus(self, bus: Any) -> None:
         """Late-binding hook so the fanout can publish per-subagent
@@ -300,10 +342,22 @@ class SubagentToolProvider(ToolProvider):
         else:
             effective_hops = self._max_hops
 
+        # Phase 11: optional per-subtask specialist capability hints.
+        raw_specialists = call.args.get("specialist_models") or []
+        if not isinstance(raw_specialists, list):
+            raw_specialists = []
+        specialists: list[str] = []
+        for i in range(len(subtasks)):
+            s = raw_specialists[i] if i < len(raw_specialists) else ""
+            specialists.append(str(s).strip().lower() if isinstance(s, str) else "")
+
         t0 = time.perf_counter()
         try:
             results = await asyncio.wait_for(
-                self._fanout(subtasks, roles=roles, max_hops=effective_hops),
+                self._fanout(
+                    subtasks, roles=roles, max_hops=effective_hops,
+                    specialists=specialists,
+                ),
                 timeout=self._fanout_timeout,
             )
         except asyncio.TimeoutError:
@@ -355,11 +409,13 @@ class SubagentToolProvider(ToolProvider):
         *,
         roles: list[str],
         max_hops: int,
+        specialists: list[str],
     ) -> list[_SubResult]:
         async def _one(i: int, s: str) -> _SubResult:
             async with self._sem:
                 return await self._run_one(
                     i, s, role=roles[i], max_hops=max_hops,
+                    specialist=specialists[i] if i < len(specialists) else "",
                 )
 
         return await asyncio.gather(
@@ -369,6 +425,7 @@ class SubagentToolProvider(ToolProvider):
     async def _run_one(
         self, index: int, subtask: str,
         *, role: str = "general", max_hops: int | None = None,
+        specialist: str = "",
     ) -> _SubResult:
         """Mini tool-use loop for one sub-agent.
 
@@ -380,12 +437,14 @@ class SubagentToolProvider(ToolProvider):
         await self._publish_subagent_event(
             "subagent_started",
             index=index, subtask=subtask, role=role,
+            specialist=specialist,
         )
         try:
             res = await asyncio.wait_for(
                 self._do_run_one(
                     index, subtask, t0,
                     role=role, max_hops=max_hops or self._max_hops,
+                    specialist=specialist,
                 ),
                 timeout=self._per_timeout,
             )
@@ -450,8 +509,33 @@ class SubagentToolProvider(ToolProvider):
     async def _do_run_one(
         self, index: int, subtask: str, t0: float,
         *, role: str = "general", max_hops: int | None = None,
+        specialist: str = "",
     ) -> _SubResult:
         from xmclaw.providers.llm.base import Message
+
+        # Phase 11: resolve the specialist model for this subtask.
+        # Priority: 1) explicit specialist arg  2) keyword detection
+        # 3) fallback to the default LLM wired at construction.
+        _capability = specialist
+        if not _capability:
+            _text_lower = subtask.lower()
+            for hint, cap in _SUBTASK_CAPABILITY_HINTS.items():
+                if hint in _text_lower:
+                    _capability = cap
+                    break
+
+        _sub_llm = self._llm
+        if _capability and self._llm_registry is not None:
+            try:
+                _prof = self._llm_registry.pick_by_capability(
+                    _capability,
+                    prefer_tier=("vision", "strong", "balanced", "fast"),
+                )
+                if _prof is not None and _prof.llm is not None:
+                    _sub_llm = _prof.llm
+            except Exception:  # noqa: BLE001
+                pass
+
         sys_prompt = (
             "You are an ephemeral sub-agent. You were given ONE small "
             "subtask by a parent agent. Use available tools if needed. "
@@ -471,7 +555,7 @@ class SubagentToolProvider(ToolProvider):
         )
 
         for hop in range(hop_cap):
-            resp = await self._llm.complete(messages, tools=tool_specs)
+            resp = await _sub_llm.complete(messages, tools=tool_specs)
             content = (getattr(resp, "content", "") or "").strip()
             tool_calls = getattr(resp, "tool_calls", None) or []
 

@@ -172,6 +172,14 @@ media = [
   "numpy>=1.24",
   "opencv-python>=4.8",
 ]
+# B-388: voice extras — STT/TTS backends used by BuiltinTools and MediaTools.
+# The [media] extra above is the I/O layer (mic / camera / speakers);
+# these are the AI model backends. voice_listen needs BOTH [media] and
+# one of these. Split so users who only need TTS (no local Whisper)
+# don't pay the ~200 MB faster-whisper download.
+voice-stt = ["faster-whisper>=1.1.0"]
+voice-tts = ["edge-tts>=6.1.0"]
+voice     = ["faster-whisper>=1.1.0", "edge-tts>=6.1.0"]
 # Sprint 4 follow-up: LongMemEval real-corpus adapter pulls
 # ``OpenMOSS/LongMemEval`` from HuggingFace via ``datasets``. Lazy-import
 # inside ``xmclaw.eval.longmemeval_full.LongMemEvalSuite.load_tasks``

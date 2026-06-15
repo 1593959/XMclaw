@@ -970,6 +970,143 @@ def _persona_writeback(app_state_holder: Any) -> Any:
     return _writeback
 
 
+# ── Phase 11: media generation tool wiring ─────────────────────────
+
+
+def _scan_media_profiles(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Find the first enabled profile carrying each media-gen capability.
+
+    Returns ``{capability: {api_key, base_url, model, provider}}`` for
+    ``image_gen`` / ``video_gen``. Capability comes from the profile's
+    explicit ``capabilities`` list, else the name heuristic — so tagging a
+    model 「生图」 in the UI (capability ``image_gen``) is enough to light
+    up the ``generate_image`` tool. Key resolution mirrors
+    :func:`build_llm_profiles_from_config` (inline → secrets → legacy
+    same-provider block)."""
+    from xmclaw.utils.secrets import get_secret
+
+    out: dict[str, dict[str, Any]] = {}
+    llm = cfg.get("llm")
+    if not isinstance(llm, dict):
+        return out
+    profiles = llm.get("profiles")
+    if not isinstance(profiles, list):
+        return out
+
+    for entry in profiles:
+        if not isinstance(entry, dict) or entry.get("enabled") is False:
+            continue
+        provider = str(entry.get("provider") or "").strip().lower()
+        model = str(entry.get("model") or entry.get("default_model") or "").strip()
+        if not model:
+            continue
+        raw_caps = entry.get("capabilities")
+        if isinstance(raw_caps, list) and raw_caps:
+            caps = {
+                str(c).strip().lower()
+                for c in raw_caps
+                if isinstance(c, str) and c.strip()
+            }
+        else:
+            caps = set(_infer_capabilities_from_model(model, provider=provider))
+        wanted = {"image_gen", "video_gen"} & caps
+        if not wanted:
+            continue
+        # Resolve api_key: inline → per-profile secret → legacy block.
+        pid = str(entry.get("id") or "").strip()
+        api_key = entry.get("api_key") if isinstance(entry.get("api_key"), str) else ""
+        if not api_key.strip() and pid:
+            api_key = get_secret(f"llm.profile.{pid}.api_key") or ""
+        if not api_key.strip():
+            legacy = llm.get(provider)
+            if isinstance(legacy, dict) and isinstance(legacy.get("api_key"), str):
+                api_key = legacy["api_key"]
+        if not api_key.strip():
+            continue
+        base_url = entry.get("base_url") if isinstance(entry.get("base_url"), str) else ""
+        for cap in wanted:
+            if cap not in out:
+                out[cap] = {
+                    "api_key": api_key.strip(),
+                    "base_url": base_url.strip() or None,
+                    "model": model,
+                    "provider": provider,
+                }
+    return out
+
+
+def _build_media_tool_providers(cfg: dict[str, Any]) -> list[Any]:
+    """Construct generate_image / generate_video ToolProviders from
+    capability-tagged profiles (+ an optional ``media`` config block for
+    non-OpenAI vendors like Replicate). Returns only the tools whose
+    backend resolved — so a model tagged ``image_gen`` makes
+    ``generate_image`` appear, and nothing clutters the catalogue when no
+    media model is configured."""
+    out: list[Any] = []
+    try:
+        found = _scan_media_profiles(cfg)
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_scan_media_profiles", _exc)
+        found = {}
+
+    # Image: any OpenAI-compatible /images/generations endpoint (OpenAI
+    # DALL-E, or compat endpoints exposing the same shape).
+    img = found.get("image_gen")
+    if img:
+        try:
+            from xmclaw.providers.media.dalle3 import Dalle3Provider
+            from xmclaw.providers.tool.generate_image import (
+                GenerateImageToolProvider,
+            )
+            backend = Dalle3Provider(
+                api_key=img["api_key"],
+                base_url=img["base_url"],
+                model=img["model"],
+            )
+            out.append(GenerateImageToolProvider(provider=backend))
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_build_image_tool", _exc)
+
+    # Video: Replicate (the implemented backend). Resolved from a
+    # video_gen profile pointing at Replicate, or a dedicated
+    # ``media.replicate`` config block (token, not an LLM profile).
+    video_backend = None
+    vid = found.get("video_gen")
+    try:
+        from xmclaw.providers.media.replicate_video import ReplicateVideoProvider
+        if vid and (
+            "replicate" in (vid.get("base_url") or "").lower()
+            or vid.get("provider") == "replicate"
+        ):
+            video_backend = ReplicateVideoProvider(
+                api_token=vid["api_key"], model_version=vid["model"],
+            )
+        if video_backend is None:
+            media_cfg = cfg.get("media")
+            rep = media_cfg.get("replicate") if isinstance(media_cfg, dict) else None
+            if isinstance(rep, dict):
+                tok = rep.get("api_token") or rep.get("api_key")
+                if isinstance(tok, str) and tok.strip():
+                    kwargs: dict[str, Any] = {"api_token": tok.strip()}
+                    mv = rep.get("model") or rep.get("model_version")
+                    if isinstance(mv, str) and mv.strip():
+                        kwargs["model_version"] = mv.strip()
+                    video_backend = ReplicateVideoProvider(**kwargs)
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_build_video_tool", _exc)
+
+    if video_backend is not None:
+        try:
+            from xmclaw.providers.tool.generate_video import (
+                GenerateVideoToolProvider,
+            )
+            out.append(GenerateVideoToolProvider(provider=video_backend))
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_build_video_tool", _exc)
+
+    return out
+
+
 def build_tools_from_config(
     cfg: dict[str, Any],
     *,
@@ -1457,6 +1594,7 @@ def build_tools_from_config(
             subagent_provider = SubagentToolProvider(
                 llm=None,  # plumbed in by build_agent_from_config
                 tools=None,  # plumbed in by build_agent_from_config
+                llm_registry=None,  # plumbed in by build_agent_from_config
                 max_hops_per_subagent=int(
                     subagent_cfg.get("max_hops_per_subagent", 20)
                 ),
@@ -1475,6 +1613,20 @@ def build_tools_from_config(
         except Exception as _exc:  # noqa: BLE001
             get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
             pass
+
+    # Phase 11: media generation tools. When the user configures an
+    # image-gen / video-gen model (a profile tagged image_gen / video_gen,
+    # or a media.replicate block), expose generate_image / generate_video
+    # so the chat model — which can't draw itself — delegates to the
+    # specialist backend. Tools appear only when a backend resolves.
+    try:
+        _media_tools = _build_media_tool_providers(cfg)
+        if _media_tools:
+            from xmclaw.providers.tool.composite import CompositeToolProvider
+            provider = CompositeToolProvider(provider, *_media_tools)
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_media_tools", _exc)
+        pass
 
     # Epic #3: optionally wrap with security guardians
     security_cfg = cfg.get("security", {})
@@ -1981,6 +2133,10 @@ def build_agent_from_config(
             if isinstance(cur, SubagentToolProvider):
                 cur.set_llm(llm)
                 cur.set_tools(tools)
+                # Phase 11: wire the LLM registry so sub-agents can
+                # route to specialist models (image_gen / video_gen
+                # / audio_out) based on subtask content.
+                cur.set_llm_registry(registry)
                 # 2026-05-25: wire the parent bus so per-subagent
                 # lifecycle events can be published onto the parent
                 # session (UI renders them as inline cards).

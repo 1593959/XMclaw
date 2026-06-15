@@ -425,6 +425,20 @@ class HopLoopMixin:
             _session_goal and _session_goal.strip() != user_message.strip()
         )
 
+        # Phase 11: map tool names → LLM capabilities so the hop loop can
+        # route specialised tasks (image/video generation, vision input)
+        # to the right model profile.  Populated once per turn; looked up
+        # before every tool batch and cleared after the batch finishes.
+        _CAPABILITY_BY_TOOL: dict[str, str] = {
+            "generate_image": "image_gen",
+            "generate_video": "video_gen",
+            "voice_synthesize": "audio_out",
+            "speak": "audio_out",
+            "camera_capture": "vision",
+            "screen_capture": "vision",
+            "image_read": "vision",
+        }
+
         for hop in range(self._max_hops):
             hop_corr = f"{turn_uuid}-{hop}"
             # 2026-06-08 动态超时(按 hop 深度,不按开场消息)。
@@ -435,6 +449,26 @@ class HopLoopMixin:
             # eff = min(配置上限, 基线 + hop×步长),只增不减,封顶 llm_timeout_s。
             #   hop0=240s, hop1=360, hop2=480, hop3=600, hop≥3 封顶。
             _eff_timeout = _hop_timeout(hop, llm_timeout_s)
+
+            # Phase 11: if a previous hop (or external caller) set a
+            # pending capability, re-resolve the LLM so this hop uses
+            # the specialised model (e.g. vision-capable for screenshots,
+            # image_gen for generation tasks).
+            _pending_cap = getattr(self, "_pending_capability_pick", None)
+            if (
+                isinstance(_pending_cap, str) and _pending_cap.strip()
+                and getattr(self, "_llm_registry", None) is not None
+            ):
+                try:
+                    _cap_prof = self._llm_registry.pick_by_capability(
+                        _pending_cap,
+                        prefer_tier=("vision", "strong", "balanced", "fast"),
+                    )
+                    if _cap_prof is not None and _cap_prof.llm is not llm:
+                        llm = _cap_prof.llm
+                except Exception:  # noqa: BLE001
+                    pass
+
             # B-38: cancel fence — if the user clicked Stop, bail out
             # cleanly before doing more LLM/tool work. Checked AT
             # HOP BOUNDARIES (cheap, doesn't interrupt in-flight
@@ -1363,6 +1397,19 @@ class HopLoopMixin:
                 # once instead of seeing cards appear one by one.
                 await asyncio.sleep(0.05)
 
+                # Phase 11: inspect the tool batch and set a capability
+                # hint so the NEXT hop (or any nested agent / callback
+                # that reads _resolve_llm) routes to the right model.
+                # We set it here — before Phase B — so that if a tool
+                # internally triggers an LLM call it can see the hint.
+                for _tc in response.tool_calls:
+                    _cap = _CAPABILITY_BY_TOOL.get(_tc.name)
+                    if _cap:
+                        object.__setattr__(
+                            self, "_pending_capability_pick", _cap,
+                        )
+                        break
+
                 # Phase B: invoke tools with read-parallel / write-smart
                 # semantics (B-7).  Read-only tools (file_read, list_dir,
                 # web_search, …) run concurrently; write tools are grouped
@@ -1964,6 +2011,11 @@ class HopLoopMixin:
                             events=events,
                             error="no_progress",
                         )
+
+                # Phase 11: clear the capability hint before the next
+                # hop so we don't permanently lock onto a specialised
+                # model once the media task is done.
+                object.__setattr__(self, "_pending_capability_pick", None)
 
                 # B-302: honesty guard — did the assistant claim to have
                 # remembered without actually calling a memory tool?
