@@ -92,25 +92,26 @@ _ROLE_HINTS = {
     ),
 }
 
-# Phase 11: keyword → capability mapping for auto-routing subtasks to
-# specialist models (image_gen, video_gen, audio_out, vision).
+# Phase 11: keyword → capability mapping for routing a subtask to a
+# specialist CHAT model. 2026-06-15: ONLY vision belongs here — a vision
+# model is still a chat model, so swapping a sub-agent's LLM to one lets
+# it interpret images. Generation (image/video/audio) is NOT a chat
+# capability: a sub-agent generates by CALLING the generate_image /
+# generate_video tool (which delegates to the configured backend), so it
+# keeps its normal chat model. Swapping its LLM to an image-only endpoint
+# would just break its tool-use loop.
 _SUBTASK_CAPABILITY_HINTS: dict[str, str] = {
-    "image_gen": "image_gen",
-    "画": "image_gen",
-    "生成图片": "image_gen",
-    "generate image": "image_gen",
-    "生成图像": "image_gen",
-    "video_gen": "video_gen",
-    "生成视频": "video_gen",
-    "generate video": "video_gen",
-    "audio_out": "audio_out",
-    "tts": "audio_out",
-    "语音合成": "audio_out",
-    "speak": "audio_out",
     "vision": "vision",
     "截图": "vision",
     "screenshot": "vision",
+    "看图": "vision",
+    "识图": "vision",
 }
+
+# Capabilities that are NOT usable as a chat/reasoning model — a sub-agent
+# must never swap its LLM to one of these (it would lose the ability to
+# reason + call tools). Generation goes through tools instead.
+_NON_CHAT_CAPABILITIES = frozenset({"image_gen", "video_gen", "audio_out", "embedding"})
 
 _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
     name="parallel_subagents",
@@ -123,9 +124,10 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
         "each other — sub-agents share no context with each other. "
         "Sub-agents have a 50-hop cap (raise via max_hops up to 100 if a "
         "task is heavier) and no further fanout capability. "
-        "When a subtask involves media generation (image / video / speech), "
-        "the sub-agent automatically routes to the appropriate specialist "
-        "model if one is registered with the matching capability."
+        "A subtask that needs to SEE images can be routed to a vision "
+        "model (see specialist_models). To GENERATE an image/video, a "
+        "sub-agent just calls the generate_image / generate_video tool — "
+        "no special model needed."
     ),
     parameters_schema={
         "type": "object",
@@ -186,11 +188,14 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional. One specialist capability per subtask "
-                    "(same length as subtasks). When set, the sub-agent "
-                    "uses the registered model with that capability "
-                    "(e.g. 'image_gen', 'video_gen', 'audio_out', 'vision') "
-                    "instead of the default LLM."
+                    "Optional. One CHAT-model capability per subtask (same "
+                    "length as subtasks) to route that sub-agent to a "
+                    "registered model with that capability — currently only "
+                    "'vision' is meaningful (a sub-agent that must read an "
+                    "image). Generation capabilities (image_gen / video_gen "
+                    "/ audio_out) are ignored here: to generate, the "
+                    "sub-agent calls the generate_image / generate_video "
+                    "tool, which delegates to the configured backend."
                 ),
             },
         },
@@ -513,7 +518,7 @@ class SubagentToolProvider(ToolProvider):
     ) -> _SubResult:
         from xmclaw.providers.llm.base import Message
 
-        # Phase 11: resolve the specialist model for this subtask.
+        # Phase 11: resolve the specialist CHAT model for this subtask.
         # Priority: 1) explicit specialist arg  2) keyword detection
         # 3) fallback to the default LLM wired at construction.
         _capability = specialist
@@ -524,8 +529,19 @@ class SubagentToolProvider(ToolProvider):
                     _capability = cap
                     break
 
+        # 2026-06-15: only swap the sub-agent's LLM for a CHAT-usable
+        # capability (e.g. vision). Generation capabilities (image_gen /
+        # video_gen / audio_out) are NOT chat models — a sub-agent that
+        # needs to generate keeps its normal chat model and CALLS the
+        # generate_image / generate_video tool (which delegates to the
+        # configured backend). Swapping to an image-only endpoint here
+        # would break the sub-agent's tool-use loop.
         _sub_llm = self._llm
-        if _capability and self._llm_registry is not None:
+        if (
+            _capability
+            and _capability not in _NON_CHAT_CAPABILITIES
+            and self._llm_registry is not None
+        ):
             try:
                 _prof = self._llm_registry.pick_by_capability(
                     _capability,

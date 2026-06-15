@@ -426,14 +426,18 @@ class HopLoopMixin:
         )
 
         # Phase 11: map tool names → LLM capabilities so the hop loop can
-        # route specialised tasks (image/video generation, vision input)
-        # to the right model profile.  Populated once per turn; looked up
-        # before every tool batch and cleared after the batch finishes.
+        # swap the CHAT model for the next hop when the task needs a model
+        # the current one lacks. Populated per turn; cleared after the batch.
+        #
+        # 2026-06-15: ONLY vision belongs here. Generation (image/video/
+        # audio) is done INSIDE the generate_image / generate_video tool,
+        # which calls the configured generation backend directly — you do
+        # NOT chat with DALL-E. Swapping the next chat hop to a generation
+        # endpoint (the old behavior) just fed a chat request to an
+        # image-only model and broke the hop. Vision is different: after a
+        # screenshot we want a chat model that can actually SEE the image,
+        # and a vision model is still a chat model — that swap is valid.
         _CAPABILITY_BY_TOOL: dict[str, str] = {
-            "generate_image": "image_gen",
-            "generate_video": "video_gen",
-            "voice_synthesize": "audio_out",
-            "speak": "audio_out",
             "camera_capture": "vision",
             "screen_capture": "vision",
             "image_read": "vision",
