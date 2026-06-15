@@ -42,6 +42,14 @@ _CACHE_TTL_S = 24 * 3600
 _CACHE_FILENAME = "openrouter_models.json"
 
 
+def _norm_name(s: str) -> str:
+    """Normalize a model id for fuzzy matching: lowercase, drop every
+    non-alphanumeric char. ``Qwen2.5-VL-7B`` and ``qwen2-5-vl-7b`` both
+    collapse to ``qwen25vl7b``."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
 def _cache_path() -> Path:
     p = Path.home() / ".xmclaw" / "cache"
     p.mkdir(parents=True, exist_ok=True)
@@ -99,6 +107,47 @@ class _OpenRouterCache:
             )
         except (ValueError, TypeError):
             return None
+
+    @staticmethod
+    def _entry_vision(entry: dict[str, Any]) -> bool | None:
+        """Read image-input support from an OpenRouter model entry.
+
+        OpenRouter exposes ``architecture.input_modalities: [...]`` (newer)
+        or ``architecture.modality: "text+image->text"`` (older). Returns
+        ``None`` when the entry carries no modality info at all.
+        """
+        arch = entry.get("architecture")
+        if not isinstance(arch, dict):
+            return None
+        ims = arch.get("input_modalities")
+        if isinstance(ims, list):
+            return any(str(x).lower() == "image" for x in ims)
+        m = arch.get("modality")
+        if isinstance(m, str):
+            return "image" in m.lower()
+        return None
+
+    def vision_by_name(self, name: str) -> bool | None:
+        """Look up image-input support by a (possibly prefix-less) model name.
+
+        Third-party endpoints report bare model ids (``gpt-4o``,
+        ``claude-3-5-sonnet``); OpenRouter ids carry a provider prefix
+        (``openai/gpt-4o``). Match on the normalized short id (and full id)
+        so a reseller's ``gpt-4o`` resolves to OpenRouter's authoritative
+        modality. Returns ``None`` when no catalog entry matches.
+        """
+        if not name:
+            return None
+        norm = _norm_name(name)
+        if not norm:
+            return None
+        for mid, entry in self._data.items():
+            short = mid.rsplit("/", 1)[-1]
+            if _norm_name(short) == norm or _norm_name(mid) == norm:
+                v = self._entry_vision(entry)
+                if v is not None:
+                    return v
+        return None
 
     def is_stale(self) -> bool:
         if not self._data:
@@ -240,3 +289,10 @@ def is_cache_stale() -> bool:
 def list_models() -> list[str]:
     """Return the ids of all models currently in the cache."""
     return list(_CACHE._data.keys())
+
+
+def get_vision_by_name(model_name: str) -> bool | None:
+    """Resolve image-input support for a (prefix-less) model name via the
+    OpenRouter catalog. Returns ``None`` when no entry matches — caller
+    should fall back to the name heuristic or a live probe."""
+    return _CACHE.vision_by_name(model_name)

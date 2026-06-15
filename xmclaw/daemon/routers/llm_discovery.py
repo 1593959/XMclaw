@@ -46,6 +46,21 @@ def _endpoint_id(base_url: str, api_key: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
+def _vision_from_entry(item: dict[str, Any]) -> bool | None:
+    """Read image-input support straight from a /v1/models entry's
+    ``architecture`` block (OpenRouter shape). ``None`` when absent."""
+    arch = item.get("architecture")
+    if not isinstance(arch, dict):
+        return None
+    ims = arch.get("input_modalities")
+    if isinstance(ims, list):
+        return any(str(x).lower() == "image" for x in ims)
+    m = arch.get("modality")
+    if isinstance(m, str):
+        return "image" in m.lower()
+    return None
+
+
 def _redact_key(key: str | None) -> str:
     if not key:
         return ""
@@ -148,6 +163,15 @@ async def discover_models(request: Request) -> JSONResponse:
             items = data.get("data", [])
             if not isinstance(items, list):
                 items = []
+            # Warm the OpenRouter catalog (24h disk cache) so name-based
+            # vision lookup below can enrich resellers' models. Off-thread
+            # to avoid blocking the event loop on the first (cold) fetch.
+            try:
+                import asyncio as _asyncio
+                from xmclaw.providers.llm._openrouter_discovery import warm_cache
+                await _asyncio.to_thread(warm_cache)
+            except Exception:  # noqa: BLE001
+                pass
             parsed = []
             for item in items:
                 if not isinstance(item, dict):
@@ -169,17 +193,24 @@ async def discover_models(request: Request) -> JSONResponse:
                         entry["context_length"] = ctx
                 # 2026-06-15: vision detection so the UI can pre-light the
                 # 👁 toggle. Standard /v1/models gives NO modality info, so
-                # for most endpoints this falls back to the name heuristic.
-                # OpenRouter is the exception — it returns ``architecture``
-                # with real input modalities, which we read directly.
-                vis: bool | None = None
-                arch = item.get("architecture")
-                if isinstance(arch, dict):
-                    ims = arch.get("input_modalities")
-                    if isinstance(ims, list):
-                        vis = any(str(x).lower() == "image" for x in ims)
-                    elif isinstance(arch.get("modality"), str):
-                        vis = "image" in arch["modality"].lower()
+                # resolution is layered, most authoritative first:
+                #   1. this endpoint's own ``architecture`` block (OpenRouter
+                #      itself, or any compat shim that copies the shape);
+                #   2. the OpenRouter public catalog matched by model name
+                #      (covers resellers of gpt-4o / claude / qwen-vl / …);
+                #   3. the conservative name heuristic as a last resort.
+                # Models the catalog + heuristic both miss (e.g. agnes-2.0-
+                # flash) come back vision=false; the UI offers a live probe
+                # button for those.
+                vis: bool | None = _vision_from_entry(item)
+                if vis is None:
+                    try:
+                        from xmclaw.providers.llm._openrouter_discovery import (
+                            get_vision_by_name,
+                        )
+                        vis = get_vision_by_name(mid)
+                    except Exception:  # noqa: BLE001
+                        vis = None
                 if vis is None:
                     try:
                         from xmclaw.providers.llm.openai import _model_supports_vision
@@ -259,6 +290,141 @@ async def discover_models(request: Request) -> JSONResponse:
 
     result["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     return JSONResponse(result)
+
+
+# ── Live vision probe ──────────────────────────────────────────────
+
+_PROBE_WORDS = (
+    "VELVET", "CACTUS", "SALMON", "BRONZE", "PRISM",
+    "WALNUT", "ORCHID", "GRANITE", "MARIGOLD", "TANGERINE",
+)
+
+
+def _make_probe_image(word: str) -> str | None:
+    """Render ``word`` as large black text on a white card and return the
+    PNG path. Uses Pillow; returns ``None`` if Pillow is unavailable."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    import tempfile
+    img = Image.new("RGB", (480, 180), "white")
+    draw = ImageDraw.Draw(img)
+    font = None
+    for size in (96, 88, 80):
+        try:
+            font = ImageFont.truetype("arial.ttf", size)
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+    # Center the word.
+    try:
+        bbox = draw.textbbox((0, 0), word, font=font)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        pos = ((480 - w) // 2, (180 - h) // 2 - bbox[1])
+    except Exception:  # noqa: BLE001
+        pos = (40, 50)
+    draw.text(pos, word, fill="black", font=font)
+    fd, path = tempfile.mkstemp(suffix=".png", prefix="xmc_vprobe_")
+    import os as _os
+    _os.close(fd)
+    img.save(path, "PNG")
+    return path
+
+
+@router.post("/probe_vision")
+async def probe_vision(request: Request) -> JSONResponse:
+    """Actively test whether a model can read images.
+
+    Body::
+
+        {"base_url": "...", "api_key": "...", "provider": "...", "model": "..."}
+
+    Renders a card with a random word, sends it to the model with
+    ``supports_vision`` forced ON (so the image is never dropped), and asks
+    what word it sees. If the model echoes the word back, it genuinely has
+    vision — this catches the case the name heuristic / OpenRouter catalog
+    can't resolve (e.g. ``agnes-2.0-flash``). A text-only model either
+    refuses or guesses wrong, so it reads vision=false.
+    """
+    import asyncio
+    import os
+    import random
+
+    payload = await request.json()
+    base_url = str(payload.get("base_url") or "").strip() or None
+    api_key = str(payload.get("api_key") or "").strip()
+    provider = str(payload.get("provider") or "openai_compat").strip().lower()
+    model = str(payload.get("model") or "").strip()
+
+    if not api_key or not model:
+        return JSONResponse(
+            {"ok": False, "error": "api_key and model are required"},
+            status_code=400,
+        )
+
+    word = random.choice(_PROBE_WORDS)
+    img_path = _make_probe_image(word)
+    if img_path is None:
+        return JSONResponse(
+            {"ok": False, "error": "Pillow 不可用，无法生成测试图（pip install pillow）"},
+            status_code=500,
+        )
+
+    try:
+        from xmclaw.core.ir.message import Message
+        from xmclaw.daemon.factory import _instantiate_llm
+
+        # Force vision ON so the image is actually sent regardless of the
+        # name heuristic — the whole point is to see how the model reacts.
+        llm = _instantiate_llm(
+            provider, api_key=api_key, model=model,
+            base_url=base_url, supports_vision=True,
+        )
+        if llm is None:
+            return JSONResponse(
+                {"ok": False, "error": f"provider {provider} 不支持"},
+                status_code=400,
+            )
+        msg = Message(
+            role="user",
+            content=(
+                "What single word is written in this image? "
+                "Reply with ONLY that word, nothing else."
+            ),
+            images=(img_path,),
+        )
+        resp = await asyncio.wait_for(llm.complete([msg]), timeout=45.0)
+        answer = (resp.content or "").strip()
+        seen = word.lower() in answer.lower()
+        return JSONResponse({
+            "ok": True,
+            "model": model,
+            "vision": seen,
+            "probe_word": word,
+            "answer": answer[:200],
+            "detail": (
+                "模型读出了测试词 → 确认支持视觉" if seen
+                else "模型未读出测试词 → 很可能不支持视觉（或视觉质量不可用）"
+            ),
+        })
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            {"ok": False, "error": "探测超时（45s）—— 端点慢或无响应"},
+            status_code=504,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"ok": False, "error": f"探测失败: {str(exc)[:200]}"},
+            status_code=502,
+        )
+    finally:
+        try:
+            os.unlink(img_path)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.post("/apply")

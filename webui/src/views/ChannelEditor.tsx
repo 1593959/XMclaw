@@ -64,6 +64,7 @@ export default function ChannelEditor({
   const [fetching, setFetching] = useState(false);
   const [available, setAvailable] = useState<{ id: string; name: string; vision?: boolean }[]>([]);
   const [saving, setSaving] = useState(false);
+  const [probing, setProbing] = useState<string | null>(null);
 
   const pmeta = PROVIDERS.find((p) => p.id === provider);
   const editingKey = draft.key; // 非空 = 编辑既有渠道
@@ -123,6 +124,34 @@ export default function ChannelEditor({
       showToast(e instanceof Error ? e.message : String(e), "err");
     } finally {
       setFetching(false);
+    }
+  }
+
+  async function probeVision(m: ModelRow) {
+    if (!apiKey.trim()) {
+      showToast("测试视觉需要先填入 API Key（编辑既有渠道时也要重填一次）", "err");
+      return;
+    }
+    if (!m.modelId) return;
+    setProbing(m.modelId);
+    try {
+      const r = await apiPost<{ ok: boolean; vision?: boolean; detail?: string; answer?: string; error?: string }>(
+        "/api/v2/llm/endpoints/probe_vision",
+        { base_url: baseUrl.trim() || undefined, api_key: apiKey.trim(), provider: apiProvider(provider), model: m.modelId },
+        token,
+      );
+      if (r.ok) {
+        setModels((ms) =>
+          ms.map((x) => (x.modelId === m.modelId ? { ...x, supportsVision: !!r.vision } : x)),
+        );
+        showToast(`${m.modelId}：${r.detail || (r.vision ? "支持视觉" : "不支持视觉")}`, r.vision ? "ok" : "info");
+      } else {
+        showToast(r.error || "探测失败", "err");
+      }
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : String(e), "err");
+    } finally {
+      setProbing(null);
     }
   }
 
@@ -378,6 +407,15 @@ export default function ChannelEditor({
                   aria-label="切换视觉能力"
                 >
                   👁
+                </button>
+                <button
+                  onClick={() => probeVision(m)}
+                  disabled={probing === m.modelId}
+                  className="cursor-pointer opacity-50 hover:opacity-100 disabled:opacity-30 disabled:cursor-wait"
+                  title="实测视觉：发一张带字小图，看模型能否读出"
+                  aria-label="测试视觉能力"
+                >
+                  {probing === m.modelId ? "⏳" : "🔬"}
                 </button>
                 <button
                   onClick={() => setModels((ms) => ms.filter((x) => x.modelId !== m.modelId))}
