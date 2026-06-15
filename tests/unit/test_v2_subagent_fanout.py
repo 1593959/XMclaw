@@ -274,8 +274,9 @@ async def test_subagent_invokes_inner_tool():
     assert tools.calls[0].name == "echo"
 
 
-async def test_nested_fanout_blocked():
-    """Subagent can't recursively spawn more subagents."""
+async def test_nested_fanout_blocked_at_max_depth():
+    """With max_depth=1 (flat), a sub-agent's nested parallel_subagents
+    is blocked — the old behaviour, now opt-out via config."""
     nested = ToolCall(
         id="tc-nested", name="parallel_subagents",
         args={"subtasks": ["x", "y"]}, provenance="synthetic",
@@ -285,12 +286,82 @@ async def test_nested_fanout_blocked():
         _LLMResp(content="gave up nesting"),
     ])
     tools = _StubTools()
-    wrap = SubagentToolProvider(llm=llm, tools=tools, max_concurrency=1)
+    wrap = SubagentToolProvider(
+        llm=llm, tools=tools, max_concurrency=1, max_depth=1,
+    )
     r = await wrap.invoke(_make_call({"subtasks": ["A", "B"]}))
     assert r.ok is True
-    # No actual nested fanout happened — the only tool calls
-    # should be empty (echo never called for the nested attempt).
     assert all(c.name != "parallel_subagents" for c in tools.calls)
+
+
+async def test_nested_fanout_allowed_within_depth():
+    """#7 (2026-06-15): with max_depth=2, a depth-1 sub-agent may spawn a
+    nested fanout (depth 2). Verify the nested sub-agents actually run and
+    the synthesised result flows back — and no deadlock at concurrency=1
+    (the parent holds a top-level permit while its children run)."""
+    nested = ToolCall(
+        id="tc-nested", name="parallel_subagents",
+        args={"subtasks": ["x", "y"]}, provenance="synthetic",
+    )
+    # Serialized (concurrency=1) queue order:
+    #  1) subagent A → emits nested call
+    #  2) nested x → leaf
+    #  3) nested y → leaf
+    #  4) subagent A → final text (after nested result)
+    #  5) subagent B → final text
+    llm = _ScriptedLLM(responses=[
+        _LLMResp(content="decomposing A", tool_calls=(nested,)),
+        _LLMResp(content="leaf-x"),
+        _LLMResp(content="leaf-y"),
+        _LLMResp(content="A integrated nested results"),
+        _LLMResp(content="B done"),
+    ])
+    tools = _StubTools()
+    wrap = SubagentToolProvider(
+        llm=llm, tools=tools, max_concurrency=1, max_depth=2,
+    )
+    r = await asyncio.wait_for(
+        wrap.invoke(_make_call({"subtasks": ["A", "B"]})), timeout=5.0,
+    )
+    assert r.ok is True
+    summary = json.loads(r.content)
+    assert summary["completed"] == 2
+    # 5 LLM calls total = the nested fanout really ran (2 extra leaves).
+    assert llm.calls == 5
+
+
+async def test_nested_fanout_blocked_beyond_max_depth():
+    """A depth-2 sub-agent (under max_depth=2) cannot go a 3rd level."""
+    deep = ToolCall(
+        id="tc-deep", name="parallel_subagents",
+        args={"subtasks": ["p", "q"]}, provenance="synthetic",
+    )
+    nested = ToolCall(
+        id="tc-nested", name="parallel_subagents",
+        args={"subtasks": ["x", "y"]}, provenance="synthetic",
+    )
+    # A(d1) → nested; x(d2) → tries deeper (blocked) → gives up;
+    # y(d2) → leaf; A → final; B → final.
+    llm = _ScriptedLLM(responses=[
+        _LLMResp(content="A decomposes", tool_calls=(nested,)),
+        _LLMResp(content="x tries deeper", tool_calls=(deep,)),
+        _LLMResp(content="x gave up after block"),
+        _LLMResp(content="leaf-y"),
+        _LLMResp(content="A done"),
+        _LLMResp(content="B done"),
+    ])
+    tools = _StubTools()
+    wrap = SubagentToolProvider(
+        llm=llm, tools=tools, max_concurrency=1, max_depth=2,
+    )
+    r = await asyncio.wait_for(
+        wrap.invoke(_make_call({"subtasks": ["A", "B"]})), timeout=5.0,
+    )
+    assert r.ok is True
+    # The depth-3 attempt produced NO extra fanout (p/q never ran): the
+    # block message came back and x reasoned to a stop.
+    summary = json.loads(r.content)
+    assert summary["completed"] == 2
 
 
 async def test_subagent_hop_cap():

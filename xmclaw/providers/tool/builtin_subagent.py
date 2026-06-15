@@ -45,8 +45,11 @@ Safety
 * Wall-clock timeout (default 90s for the whole fanout).
 * Subagent failures don't poison the result — they're rolled up as
   ``[subagent N error: ...]`` so partial progress is visible.
-* No nested fanout: subagent tools don't include this provider
-  (caller's responsibility to compose).
+* Bounded nested fanout (2026-06-15): a sub-agent MAY call
+  parallel_subagents itself, up to ``max_depth`` levels (default 2;
+  top-level sub-agents are depth 1). Beyond that it's blocked. The
+  depth cap + concurrency semaphore + wall-clock keep a decomposition
+  tree from running away.
 """
 from __future__ import annotations
 
@@ -123,7 +126,9 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
         "\"compare options A/B/C\"). Do NOT use when subtasks depend on "
         "each other — sub-agents share no context with each other. "
         "Sub-agents have a 50-hop cap (raise via max_hops up to 100 if a "
-        "task is heavier) and no further fanout capability. "
+        "task is heavier). A sub-agent may itself decompose via a nested "
+        "parallel_subagents call, but only a couple levels deep (a deeper "
+        "tree is blocked). "
         "A subtask that needs to SEE images can be routed to a vision "
         "model (see specialist_models). To GENERATE an image/video, a "
         "sub-agent just calls the generate_image / generate_video tool — "
@@ -249,6 +254,12 @@ class SubagentToolProvider(ToolProvider):
         # where individual leaves legitimately needed more than 120s.
         fanout_timeout_s: float = 300.0,
         per_subagent_timeout_s: float = 300.0,
+        # 2026-06-15 (#7): allow bounded NESTED fanout. A sub-agent may
+        # itself call parallel_subagents up to this depth (1 = the old
+        # flat behaviour, no nesting; 2 = sub-agents may spawn one more
+        # level; etc.). Bounded by max_concurrency + the wall-clock so a
+        # tree can't runaway. Top-level sub-agents are depth 1.
+        max_depth: int = 2,
         enabled: bool = True,
         bus: Any | None = None,
     ) -> None:
@@ -256,7 +267,9 @@ class SubagentToolProvider(ToolProvider):
         self._tools = tools
         self._llm_registry = llm_registry
         self._max_hops = max(1, int(max_hops_per_subagent))
-        self._sem = asyncio.Semaphore(max(1, int(max_concurrency)))
+        self._max_depth = max(1, int(max_depth))
+        self._max_concurrency = max(1, int(max_concurrency))
+        self._sem = asyncio.Semaphore(self._max_concurrency)
         self._fanout_timeout = max(10.0, float(fanout_timeout_s))
         self._per_timeout = max(5.0, float(per_subagent_timeout_s))
         self._enabled = bool(enabled)
@@ -361,7 +374,7 @@ class SubagentToolProvider(ToolProvider):
             results = await asyncio.wait_for(
                 self._fanout(
                     subtasks, roles=roles, max_hops=effective_hops,
-                    specialists=specialists,
+                    specialists=specialists, depth=1,
                 ),
                 timeout=self._fanout_timeout,
             )
@@ -415,22 +428,68 @@ class SubagentToolProvider(ToolProvider):
         roles: list[str],
         max_hops: int,
         specialists: list[str],
+        depth: int = 1,
+        sem: "asyncio.Semaphore | None" = None,
     ) -> list[_SubResult]:
+        # Nested fanouts get their OWN semaphore (passed by
+        # _run_nested_fanout): the parent sub-agent already holds a permit
+        # on the top-level ``self._sem`` while it waits for its children,
+        # so reusing it would deadlock at low concurrency.
+        _sem = sem or self._sem
+
         async def _one(i: int, s: str) -> _SubResult:
-            async with self._sem:
+            async with _sem:
                 return await self._run_one(
                     i, s, role=roles[i], max_hops=max_hops,
                     specialist=specialists[i] if i < len(specialists) else "",
+                    depth=depth,
                 )
 
         return await asyncio.gather(
             *(_one(i, s) for i, s in enumerate(subtasks)),
         )
 
+    async def _run_nested_fanout(self, args: dict[str, Any], *, depth: int) -> str:
+        """Run a parallel_subagents call issued from INSIDE a sub-agent.
+        Returns a synthesised string for the parent sub-agent's tool result.
+        Lenient: bad args come back as an error string, never raise (a
+        nested decomposition failing must not crash the parent)."""
+        raw_subtasks = args.get("subtasks")
+        if not isinstance(raw_subtasks, list):
+            return "(nested fanout error: 'subtasks' must be a list)"
+        subtasks = [str(s) for s in raw_subtasks if isinstance(s, str) and s.strip()]
+        if len(subtasks) < 2:
+            return "(nested fanout error: need at least 2 subtasks)"
+        subtasks = subtasks[:8]  # same hard cap as the top level
+        raw_roles = args.get("roles") if isinstance(args.get("roles"), list) else []
+        roles = [
+            str(raw_roles[i]).strip().lower() if i < len(raw_roles) and isinstance(raw_roles[i], str) else "general"
+            for i in range(len(subtasks))
+        ]
+        raw_spec = args.get("specialist_models") if isinstance(args.get("specialist_models"), list) else []
+        specialists = [
+            str(raw_spec[i]).strip().lower() if i < len(raw_spec) and isinstance(raw_spec[i], str) else ""
+            for i in range(len(subtasks))
+        ]
+        try:
+            results = await asyncio.wait_for(
+                self._fanout(
+                    subtasks, roles=roles, max_hops=self._max_hops,
+                    specialists=specialists, depth=depth,
+                    sem=asyncio.Semaphore(self._max_concurrency),
+                ),
+                timeout=self._fanout_timeout,
+            )
+        except asyncio.TimeoutError:
+            return f"(nested fanout timed out after {self._fanout_timeout}s)"
+        goal = str(args.get("goal") or "")
+        synthesis = str(args.get("synthesis") or "concat")
+        return await self._synthesise(results, goal=goal, mode=synthesis)
+
     async def _run_one(
         self, index: int, subtask: str,
         *, role: str = "general", max_hops: int | None = None,
-        specialist: str = "",
+        specialist: str = "", depth: int = 1,
     ) -> _SubResult:
         """Mini tool-use loop for one sub-agent.
 
@@ -449,7 +508,7 @@ class SubagentToolProvider(ToolProvider):
                 self._do_run_one(
                     index, subtask, t0,
                     role=role, max_hops=max_hops or self._max_hops,
-                    specialist=specialist,
+                    specialist=specialist, depth=depth,
                 ),
                 timeout=self._per_timeout,
             )
@@ -514,7 +573,7 @@ class SubagentToolProvider(ToolProvider):
     async def _do_run_one(
         self, index: int, subtask: str, t0: float,
         *, role: str = "general", max_hops: int | None = None,
-        specialist: str = "",
+        specialist: str = "", depth: int = 1,
     ) -> _SubResult:
         from xmclaw.providers.llm.base import Message
 
@@ -603,15 +662,27 @@ class SubagentToolProvider(ToolProvider):
                 call_id = getattr(tc, "id", "") or f"sub-{index}-h{hop}"
                 if not name:
                     continue
-                # Block recursive fanout from inside a sub-agent.
+                # 2026-06-15 (#7): bounded nested fanout. A sub-agent may
+                # itself decompose, up to self._max_depth. Beyond that we
+                # block (a tree this deep is almost always a model going in
+                # circles, and the depth cap is the runaway guard).
                 if name == "parallel_subagents":
-                    messages.append(
-                        Message(
+                    if depth + 1 > self._max_depth:
+                        messages.append(Message(
                             role="tool",
-                            content="(nested parallel_subagents blocked)",
+                            content=(
+                                f"(nested parallel_subagents blocked — max "
+                                f"depth {self._max_depth} reached; do this "
+                                f"subtask directly instead of decomposing "
+                                f"further)"
+                            ),
                             tool_call_id=call_id,
-                        ),
-                    )
+                        ))
+                        continue
+                    nested = await self._run_nested_fanout(args, depth=depth + 1)
+                    messages.append(Message(
+                        role="tool", content=nested, tool_call_id=call_id,
+                    ))
                     continue
                 sub_call = ToolCall(
                     id=call_id, name=name, args=dict(args),

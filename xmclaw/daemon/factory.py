@@ -1601,6 +1601,9 @@ def build_tools_from_config(
                 max_concurrency=int(
                     subagent_cfg.get("max_concurrency", 4)
                 ),
+                max_depth=int(
+                    subagent_cfg.get("max_depth", 2)
+                ),
                 fanout_timeout_s=float(
                     subagent_cfg.get("fanout_timeout_s", 300.0)
                 ),
