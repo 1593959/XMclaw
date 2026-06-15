@@ -676,6 +676,7 @@ class AnthropicLLM(LLMProvider):
         on_tool_block: Any | None = None,  # Wave-32+ Speculation
         on_stream_fallback: Any | None = None,  # 2026-05-30
         cancel: asyncio.Event | None = None,
+        extended_thinking: bool | None = None,  # 2026-06-14: 按回合覆盖
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import anthropic_native as translator
         # Wave-32+ Speculation: per-stream cache of partial tool_use
@@ -697,14 +698,22 @@ class AnthropicLLM(LLMProvider):
         tool_defs = self._tools_to_anthropic(tools)
         if tool_defs:
             kwargs["tools"] = tool_defs
-        # B-216: optionally request extended thinking (audit 2026-06-11:
-        # was dead code; _extended_thinking is now initialised in __init__).
-        if self._extended_thinking:
-            kwargs["max_tokens"] = max(int(kwargs.get("max_tokens", 4096)), 8192)
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": 5000,
-            }
+        # B-216: optionally request extended thinking. 2026-06-14: a per-call
+        # ``extended_thinking`` override wins over the profile-static
+        # ``self._extended_thinking`` — this is how the UI 深思 (ultrathink)
+        # toggle dynamically enables extended thinking for one turn, instead
+        # of merely appending a prompt block (the prior behavior). None =
+        # fall back to the profile default.
+        _use_thinking = (
+            self._extended_thinking if extended_thinking is None else extended_thinking
+        )
+        if _use_thinking:
+            # 深思模式给更高思考预算（普通 extended_thinking 5000）。
+            _budget = 10000 if extended_thinking else 5000
+            # Anthropic 约束: max_tokens 必须 > budget_tokens，否则 400。
+            # 给思考预算之外再留至少 4096 的可见输出空间。
+            kwargs["max_tokens"] = max(int(kwargs.get("max_tokens", 4096)), _budget + 4096)
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": _budget}
 
         text_parts: list[str] = []
         cancelled = False

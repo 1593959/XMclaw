@@ -137,6 +137,16 @@ async def list_profiles(request: Request) -> JSONResponse:
                         "tier": str(entry.get("tier") or "").strip().lower(),
                         "capabilities": caps_list,
                         "category": str(entry.get("category") or "").strip().lower(),
+                        # 2026-06-15: effective vision state for the editor
+                        # toggle — explicit field wins, else a "vision"
+                        # capability tag / tier implies it (matches the
+                        # factory's unification).
+                        "supports_vision": (
+                            bool(entry.get("supports_vision"))
+                            if isinstance(entry.get("supports_vision"), bool)
+                            else ("vision" in caps_list
+                                  or str(entry.get("tier") or "").strip().lower() == "vision")
+                        ),
                     })
 
     return JSONResponse({
@@ -163,6 +173,7 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
           "context_length": 200000,           optional
           "prompt_cache_enabled": true,       optional
           "extended_thinking": false,         optional
+          "supports_vision": true,            optional
         }
 
     The reserved id ``"default"`` is rejected — that block is owned by
@@ -264,6 +275,15 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
     et = payload.get("extended_thinking")
     if isinstance(et, bool):
         new_entry["extended_thinking"] = et
+
+    # 2026-06-15: vision override. When set, wins over the OpenAI
+    # translator's allow-list heuristic (which can't know every
+    # 3rd-party portal/model slug). Lets the user declare "this
+    # endpoint accepts image_url blocks" for models the heuristic
+    # doesn't recognise (e.g. agnes-2.0-flash).
+    sv = payload.get("supports_vision")
+    if isinstance(sv, bool):
+        new_entry["supports_vision"] = sv
 
     # Phase 11: tier / capability list / category overrides.
     raw_tier = payload.get("tier")

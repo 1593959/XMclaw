@@ -343,6 +343,13 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       const images = mediaList(payload.images);
       const videos = mediaList(payload.videos);
       const audios = mediaList(payload.audios);
+      const documents = Array.isArray(payload.documents)
+        ? (payload.documents as Array<Record<string, unknown>>).map((d) => ({
+            url: resolveMediaUrl(str(d.url)),
+            name: str(d.name) || str(d.url).split("/").pop() || "file",
+            mime: str(d.mime) || undefined,
+          }))
+        : [];
       if (!chat.entries.some((e) => e.kind === "tool_use" && e.id === callId)) {
         // B-267: finished 先于 emitted 到达 → 直接合成终态卡，
         // 之后 emitted 到达时走上面的补元数据路径，零数据丢失。
@@ -371,6 +378,7 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
             images,
             videos,
             audios,
+            documents,
             ts,
           }),
         };
@@ -390,6 +398,7 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
           images,
           videos,
           audios,
+          documents,
         })),
       };
     }

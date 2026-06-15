@@ -270,7 +270,8 @@ function BrokenMedia({ name }: { name: string }) {
 function MediaStrip({ e }: { e: Entry }) {
   const openLightbox = useApp((s) => s.openLightbox);
   const [broken, setBroken] = useState<Record<string, boolean>>({});
-  if (!e.images?.length && !e.videos?.length && !e.audios?.length) return null;
+  if (!e.images?.length && !e.videos?.length && !e.audios?.length && !e.documents?.length)
+    return null;
   return (
     <div className="flex gap-2 flex-wrap mt-1.5 items-start">
       {(e.images || []).map((src) =>
@@ -307,8 +308,33 @@ function MediaStrip({ e }: { e: Entry }) {
       {(e.audios || []).map((src) => (
         <audio key={src} src={src} controls preload="metadata" className="h-9" />
       ))}
+      {(e.documents || []).map((d) => (
+        <a
+          key={d.url}
+          href={d.url}
+          download={d.name}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-2 px-3 py-2 rounded-md border border-mc-border bg-mc-panel2 hover:border-mc-accent/50 cursor-pointer max-w-xs"
+          title={`下载 ${d.name}`}
+        >
+          <span className="text-lg shrink-0">{docIcon(d.mime, d.name)}</span>
+          <span className="text-[12px] truncate flex-1">{d.name}</span>
+          <span className="text-[10px] text-mc-faint shrink-0">↓</span>
+        </a>
+      ))}
     </div>
   );
+}
+
+function docIcon(mime?: string, name?: string): string {
+  const ext = (name || "").split(".").pop()?.toLowerCase() || "";
+  if (mime?.includes("sheet") || ext === "xlsx" || ext === "xls" || ext === "csv") return "📊";
+  if (mime?.includes("word") || ext === "docx" || ext === "doc") return "📝";
+  if (mime?.includes("presentation") || ext === "pptx") return "📑";
+  if (mime === "application/pdf" || ext === "pdf") return "📕";
+  if (mime?.includes("zip") || ext === "zip") return "🗜";
+  return "📄";
 }
 
 // ── worker / subagent 执行组（对位 Claude Code 的 Agent 折叠组） ──

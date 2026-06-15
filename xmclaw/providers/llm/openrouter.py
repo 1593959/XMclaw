@@ -117,6 +117,7 @@ class OpenRouterLLM(OpenAILLM):
         *,
         prompt_cache_enabled: bool | None = None,
         context_length: int | None = None,
+        supports_vision: bool | None = None,
         http_referer: str = DEFAULT_HTTP_REFERER,
         x_title: str = DEFAULT_X_TITLE,
     ) -> None:
@@ -135,6 +136,7 @@ class OpenRouterLLM(OpenAILLM):
             pricing=pricing,
             prompt_cache_enabled=prompt_cache_enabled,
             context_length=context_length,
+            supports_vision=supports_vision,
         )
         self._http_referer = http_referer
         self._x_title = x_title

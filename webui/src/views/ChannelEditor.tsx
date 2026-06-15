@@ -21,6 +21,10 @@ interface ModelRow {
   modelId: string;
   label: string;
   enabled: boolean;
+  // 视觉能力：模型能否接收图像。决定后端是否把截图/上传图编码成
+  // image_url 块发给模型。第三方端点的模型名内置启发式认不出
+  // （如 agnes-2.0-flash），需手动开。
+  supportsVision?: boolean;
 }
 
 function slug(s: string): string {
@@ -185,6 +189,8 @@ export default function ChannelEditor({
           base_url: baseUrl.trim() || undefined,
           enabled: enabled && m.enabled,
         };
+        // 视觉开关：仅在显式设置时下发（undefined 时后端走启发式）。
+        if (typeof m.supportsVision === "boolean") body.supports_vision = m.supportsVision;
         // api_key 留空时后端保留既有；新建必填已校验。
         if (apiKey.trim()) body.api_key = apiKey.trim();
         const r = await apiPost<{ ok: boolean; error?: string }>(
@@ -343,6 +349,23 @@ export default function ChannelEditor({
               >
                 <span className="font-mono">{m.modelId}</span>
                 {m.label && <span className="text-mc-faint">· {m.label}</span>}
+                <button
+                  onClick={() =>
+                    setModels((ms) =>
+                      ms.map((x) =>
+                        x.modelId === m.modelId ? { ...x, supportsVision: !x.supportsVision } : x,
+                      ),
+                    )
+                  }
+                  className={
+                    "cursor-pointer transition-opacity " +
+                    (m.supportsVision ? "opacity-100" : "opacity-30 hover:opacity-60")
+                  }
+                  title={m.supportsVision ? "视觉已开启 — 模型可接收图像" : "视觉关闭 — 点击开启（模型支持读图时）"}
+                  aria-label="切换视觉能力"
+                >
+                  👁
+                </button>
                 <button
                   onClick={() => setModels((ms) => ms.filter((x) => x.modelId !== m.modelId))}
                   className="text-mc-faint hover:text-mc-err cursor-pointer"

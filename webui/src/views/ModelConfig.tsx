@@ -22,6 +22,8 @@ interface DiskProfile {
   capabilities?: string[];
   category?: string;
   tier?: string;
+  // 视觉开关（显式覆盖；undefined = 后端走启发式）。
+  supports_vision?: boolean;
 }
 
 export interface ChannelDraft {
@@ -41,6 +43,8 @@ export interface ChannelDraft {
     capabilities?: string[];
     category?: string;
     tier?: string;
+    // 视觉开关（显式覆盖）。
+    supportsVision?: boolean;
   }[];
 }
 
@@ -143,6 +147,7 @@ export default function ModelConfig() {
         capabilities: p.capabilities || [],
         category: p.category || "",
         tier: p.tier || "",
+        supportsVision: p.supports_vision,
       })),
     });
   }

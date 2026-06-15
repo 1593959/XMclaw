@@ -2766,17 +2766,31 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         if _recall_for_system:
             _user_dynamic_blocks.append(_recall_for_system)
 
-        # Ultrathink: inject step-by-step reasoning directive into the
-        # system prompt so the model thinks deeply without polluting the
-        # user-visible message content.
+        # Ultrathink: when the user toggles 「深思」, force the agent to
+        # actually exercise its thinking surface before acting — not just
+        # whisper "think step-by-step" in the prompt and call it a day.
+        # Three reinforcements stack together:
+        #   1. MUST call ``think`` tool first (auditable in session log).
+        #   2. Provider extended_thinking is enabled this turn when
+        #      supported (handled in LLM provider via ``ultrathink``).
+        #   3. Strong directive that any tool call before the first
+        #      ``think`` is a violation.
         if ultrathink:
             _parts.append(
-                "## Deep reasoning mode (Ultrathink)\n\n"
-                "Before answering, think step-by-step. Enumerate the "
-                "subproblems, consider alternatives, evaluate trade-offs, "
-                "and only then give your final answer. Show your reasoning "
-                "process explicitly in the thinking block if the provider "
-                "supports it; otherwise include it in the response."
+                "## 深思模式 (Ultrathink) — 强制要求\n\n"
+                "本回合用户开启了深思模式。**第一个工具调用必须是 "
+                "``think``**, 用来逐项展开:\n"
+                "  1. 任务可拆成哪些子问题?\n"
+                "  2. 每个子问题有哪些可行方案 + 各自的取舍?\n"
+                "  3. 风险点在哪? 哪一步最容易出错?\n"
+                "  4. 最优行动序列是什么?\n\n"
+                "在 think 完成前禁止调用任何写工具(file_write / bash / "
+                "apply_patch / send_media 等)。Read 类(file_read / "
+                "list_dir / memory_search)允许在 think 之前用来收集事实, "
+                "但 think 后必须再做一次 think 整合, 而不是直接行动.\n\n"
+                "供应商如果支持 extended thinking, 也会同时启用 — "
+                "两条思考通道并行不冲突, think 工具用来记录可审计的"
+                "结构化推理, 内置 thinking 通道则承载流式直觉."
             )
 
         # Working Context — agent-managed editable prompt section.
@@ -3625,6 +3639,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             tool_calls_made=tool_calls_made,
             turn_uuid=turn_uuid,
             llm_timeout_s=_dynamic_llm_timeout,
+            ultrathink=ultrathink,
             _turn_metrics=_turn_metrics,
         )
         if _hop_result is not None:

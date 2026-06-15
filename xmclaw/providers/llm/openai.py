@@ -165,10 +165,18 @@ class OpenAILLM(LLMProvider):
         *,
         prompt_cache_enabled: bool | None = None,
         context_length: int | None = None,
+        supports_vision: bool | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
+        # 2026-06-15: config-level vision override. ``_model_supports_vision``
+        # is a conservative allow-list heuristic that can't possibly know
+        # every 3rd-party portal/model slug (e.g. ``agnes-2.0-flash``). When
+        # the profile config explicitly sets ``supports_vision``, that wins —
+        # so a user who knows their endpoint takes image_url blocks can turn
+        # it on without us guessing. None = fall back to the heuristic.
+        self._supports_vision_override: bool | None = supports_vision
         # B-341 (audit pass-2 #13): explicit override wins; the
         # ``.pricing`` property otherwise delegates to
         # ``xmclaw.utils.cost.lookup_pricing`` so XMclaw has one
@@ -209,6 +217,7 @@ class OpenAILLM(LLMProvider):
         prompt_cache_enabled: bool = False,
         model: str | None = None,
         base_url: str | None = None,
+        supports_vision_override: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Convert internal Messages to OpenAI chat-completions shape.
 
@@ -301,7 +310,12 @@ class OpenAILLM(LLMProvider):
             # — one stale image block poisoned every subsequent request.
             # When the model can't see images, degrade them to a text
             # placeholder so history stays valid instead of exploding.
-            _vision_ok = _model_supports_vision(model, base_url)
+            # Config override wins over the heuristic allow-list.
+            _vision_ok = (
+                supports_vision_override
+                if supports_vision_override is not None
+                else _model_supports_vision(model, base_url)
+            )
             if m.role == "user" and m.images and _vision_ok:
                 content_blocks: list[dict[str, Any]] = []
                 if m.content:
@@ -350,7 +364,7 @@ class OpenAILLM(LLMProvider):
             # substitute a placeholder so the message isn't empty (some
             # endpoints reject empty user content) and the model has a
             # hint that an image was present but isn't visible to it.
-            if m.role == "user" and m.images and not _model_supports_vision(model, base_url):
+            if m.role == "user" and m.images and not _vision_ok:
                 _n = len(m.images)
                 _placeholder = f"[图片 ×{_n}（当前模型不支持图像，未传入）]" if _n else ""
                 content_str = (content_str + ("\n" if content_str else "") + _placeholder).strip()
@@ -505,6 +519,7 @@ class OpenAILLM(LLMProvider):
                 prompt_cache_enabled=self._prompt_cache_enabled,
                 model=self.model,
                 base_url=self.base_url,
+                supports_vision_override=self._supports_vision_override,
             ),
             "stream": True,
         }
@@ -546,6 +561,7 @@ class OpenAILLM(LLMProvider):
                 prompt_cache_enabled=self._prompt_cache_enabled,
                 model=self.model,
                 base_url=self.base_url,
+                supports_vision_override=self._supports_vision_override,
             ),
         }
         tool_defs = self._tools_to_openai(
@@ -650,6 +666,11 @@ class OpenAILLM(LLMProvider):
         # for signature parity and left unused.
         on_stream_fallback: Any | None = None,
         cancel: asyncio.Event | None = None,
+        # 2026-06-14: per-call thinking override (anthropic uses it). OpenAI
+        # shape has no equivalent stream-time budget knob — accepted for
+        # signature parity, left unused. (Reasoning-effort wiring is a
+        # separate future hook.)
+        extended_thinking: bool | None = None,
     ) -> LLMResponse:
         from xmclaw.providers.llm.translators import openai_tool_shape as translator
 
@@ -661,6 +682,7 @@ class OpenAILLM(LLMProvider):
                 prompt_cache_enabled=self._prompt_cache_enabled,
                 model=self.model,
                 base_url=self.base_url,
+                supports_vision_override=self._supports_vision_override,
             ),
             "stream": True,
             "stream_options": {"include_usage": True},

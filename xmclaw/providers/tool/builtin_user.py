@@ -200,15 +200,37 @@ class BuiltinToolsUserMixin:
             ".mkv": "video/x-matroska",
             ".avi": "video/x-msvideo",
             ".m4v": "video/mp4",
+            # 文档类（2026-06-14）：之前缺这些 → mime=None + kind 误判 image
+            # → 前端当图渲染 "<img src=xlsx>" 必裂（用户报"商品定价利润率表
+            # .xlsx 加载失败"）。补 mime + 归类 document，前端给文件卡。
+            ".pdf": "application/pdf",
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xls": "application/vnd.ms-excel",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".doc": "application/msword",
+            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".csv": "text/csv",
+            ".txt": "text/plain",
+            ".md": "text/markdown",
+            ".json": "application/json",
+            ".zip": "application/zip",
         }
         mime = mime_map.get(ext)
 
-        # Determine kind for the attachment metadata.
-        kind = "image"
-        if ext in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"):
+        # Determine kind for the attachment metadata. Default is now
+        # "document" (not "image") — an unknown extension is far more
+        # likely a file than an image, and a wrong "image" kind makes the
+        # UI render a broken <img>. Only the explicit media extensions
+        # below get image/video/audio.
+        _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg")
+        if ext in _IMAGE_EXTS:
+            kind = "image"
+        elif ext in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"):
             kind = "video"
         elif ext in (".mp3", ".wav", ".ogg", ".m4a"):
             kind = "audio"
+        else:
+            kind = "document"
 
         return ToolResult(
             call_id=call.id, ok=True,

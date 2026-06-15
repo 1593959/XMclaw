@@ -162,8 +162,14 @@ class LLMProvider(abc.ABC):
         on_tool_block: "OnToolBlockCallback | None" = None,
         on_stream_fallback: OnStreamFallbackCallback | None = None,
         cancel: asyncio.Event | None = None,
+        extended_thinking: bool | None = None,
     ) -> LLMResponse:
         """Stream text deltas to ``on_chunk`` while collecting the final response.
+
+        ``extended_thinking`` (2026-06-14): per-call override for providers
+        with a reasoning/thinking budget (e.g. Anthropic). None = use the
+        provider's profile-static default. Providers without a thinking
+        surface accept and ignore it.
 
         Default impl falls back to non-streaming ``complete()`` and fires
         ``on_chunk`` once with the full text — providers that don't support

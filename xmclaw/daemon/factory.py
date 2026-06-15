@@ -492,6 +492,11 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
             max_tokens_override = raw_max
         elif isinstance(raw_max, str) and raw_max.strip().isdigit():
             max_tokens_override = int(raw_max.strip())
+        # 2026-06-15: legacy-block vision override (parity with profiles).
+        raw_sv_legacy = pcfg.get("supports_vision")
+        supports_vision_legacy: bool | None = (
+            bool(raw_sv_legacy) if isinstance(raw_sv_legacy, bool) else None
+        )
         if provider_name == "anthropic":
             return AnthropicLLM(
                 api_key=api_key, model=model, base_url=base_url or None,
@@ -503,6 +508,7 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
                 api_key=api_key, model=model, base_url=base_url or None,
                 prompt_cache_enabled=prompt_cache_enabled,
                 context_length=ctx_len_override,
+                supports_vision=supports_vision_legacy,
             )
         if provider_name == "openrouter":
             # B-386: OpenRouterLLM injects HTTP-Referer + X-Title
@@ -513,6 +519,7 @@ def build_llm_from_config(cfg: dict[str, Any]) -> LLMProvider | None:
                 api_key=api_key, model=model, base_url=base_url or None,
                 prompt_cache_enabled=prompt_cache_enabled,
                 context_length=ctx_len_override,
+                supports_vision=supports_vision_legacy,
             )
 
     return None
@@ -538,6 +545,7 @@ def _instantiate_llm(
     prompt_cache_enabled: bool | None = None,
     max_tokens: int | None = None,
     extended_thinking: bool = False,
+    supports_vision: bool | None = None,
 ) -> LLMProvider | None:
     """Construct one LLMProvider from already-resolved config values.
 
@@ -565,6 +573,7 @@ def _instantiate_llm(
         return OpenAILLM(
             api_key=api_key, model=model, base_url=base_url or None,
             prompt_cache_enabled=prompt_cache_enabled,
+            supports_vision=supports_vision,
         )
     if provider_name == "openrouter":
         # B-386: same shape as openai but with OpenRouter's base URL
@@ -572,6 +581,7 @@ def _instantiate_llm(
         return OpenRouterLLM(
             api_key=api_key, model=model, base_url=base_url or None,
             prompt_cache_enabled=prompt_cache_enabled,
+            supports_vision=supports_vision,
         )
     # B-XXX: openai_compat — generic OpenAI-compatible shim.
     # Same shape as openai but the user provides the base_url explicitly.
@@ -579,6 +589,7 @@ def _instantiate_llm(
         return OpenAILLM(
             api_key=api_key, model=model, base_url=base_url or None,
             prompt_cache_enabled=prompt_cache_enabled,
+            supports_vision=supports_vision,
         )
     return None
 
@@ -701,17 +712,6 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
         extended_thinking = (
             bool(raw_et) if isinstance(raw_et, bool) else False
         )
-        llm = _instantiate_llm(
-            provider_name, api_key=api_key, model=model,
-            base_url=base_url_str,
-            prompt_cache_enabled=prompt_cache_enabled,
-            max_tokens=max_tokens,
-            extended_thinking=extended_thinking,
-        )
-        if llm is None:
-            continue
-
-        label = str(entry.get("label") or "").strip() or pid
         # Sprint 0 multi-model routing: pull the explicit tier from
         # config; default to "balanced" so existing configs keep
         # working without change.
@@ -737,6 +737,36 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
             caps_set = frozenset(caps_set | {"text", "vision"})
         elif "text" not in caps_set:
             caps_set = frozenset(caps_set | {"text"})
+
+        # 2026-06-15: unify the two "vision" notions. ``caps_set`` /
+        # ``tier`` drive scheduler routing; ``supports_vision`` drives the
+        # OpenAI translator's image-block gate (``_model_supports_vision``
+        # is a conservative allow-list that can't know every 3rd-party
+        # portal slug like ``agnes-2.0-flash``). Precedence:
+        #   1. explicit per-profile ``supports_vision`` (true/false) wins;
+        #   2. else a "vision" capability tag / tier implies True — so the
+        #      EXISTING Phase 11 capability-tagging UI doubles as the vision
+        #      switch (tag a model 视觉 → it actually receives images);
+        #   3. else None → fall back to the translator heuristic.
+        raw_sv = entry.get("supports_vision")
+        if isinstance(raw_sv, bool):
+            supports_vision: bool | None = raw_sv
+        elif "vision" in caps_set:
+            supports_vision = True
+        else:
+            supports_vision = None
+        llm = _instantiate_llm(
+            provider_name, api_key=api_key, model=model,
+            base_url=base_url_str,
+            prompt_cache_enabled=prompt_cache_enabled,
+            max_tokens=max_tokens,
+            extended_thinking=extended_thinking,
+            supports_vision=supports_vision,
+        )
+        if llm is None:
+            continue
+
+        label = str(entry.get("label") or "").strip() or pid
         category = str(entry.get("category") or "").strip().lower()
         out.append(LLMProfile(
             id=pid, label=label, provider_name=provider_name,

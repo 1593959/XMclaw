@@ -56,6 +56,7 @@ export interface Entry {
   images?: string[];
   videos?: string[];
   audios?: string[];
+  documents?: Array<{ url: string; name: string; mime?: string }>;
   // question
   question?: Question;
   answer?: unknown;

@@ -336,6 +336,7 @@ class HopLoopMixin:
         tool_calls_made: list[dict[str, Any]],
         turn_uuid: str,
         llm_timeout_s: float = 600.0,
+        ultrathink: bool = False,
         _turn_metrics: "dict[str, Any] | None" = None,
     ) -> AgentTurnResult | None:
         """Execute the LLM ↔ tool hop loop.
@@ -752,6 +753,10 @@ class HopLoopMixin:
                                 on_tool_block=_on_tool_block,
                                 on_stream_fallback=_on_stream_fallback,
                                 cancel=cancel_event,
+                                # 2026-06-14: 深思/ultrathink toggle → 真实开启
+                                # provider extended_thinking（仅本回合）。None
+                                # 时回落到 profile 静态默认。
+                                extended_thinking=ultrathink or None,
                             )
                         except Exception as exc:
                             _err = exc
@@ -1498,6 +1503,9 @@ class HopLoopMixin:
                     _image_urls: list[str] = []
                     _video_urls: list[str] = []
                     _audio_urls: list[str] = []
+                    # 文档类附件（xlsx/pdf/doc/…）：单独成列，前端渲染可下载
+                    # 文件卡而非 <img>（2026-06-14 修"xlsx 加载失败"）。
+                    _doc_dicts: list[dict[str, Any]] = []
                     _media_dicts: list[dict[str, Any]] = []
 
                     def _ensure_servable(att: Any) -> str:
@@ -1536,6 +1544,17 @@ class HopLoopMixin:
                             _video_urls.append(url)
                         elif att.kind == "audio":
                             _audio_urls.append(url)
+                        else:
+                            # document / unknown → 文件卡（带文件名 + 下载 url）
+                            from pathlib import Path as _PP
+                            _att_name = getattr(att, "name", None) or _PP(
+                                str(getattr(att, "path", "") or "")
+                            ).name
+                            _doc_dicts.append({
+                                "url": url,
+                                "name": _att_name,
+                                "mime": getattr(att, "mime", None),
+                            })
                         _media_dicts.append({
                             **att.to_dict(),
                             "url": url,
@@ -1552,6 +1571,7 @@ class HopLoopMixin:
                             "images": _image_urls,
                             "videos": _video_urls,
                             "audios": _audio_urls,
+                            "documents": _doc_dicts,
                             # Wave 26: full attachment list for clients
                             # that want dimensions / duration / mime
                             # alongside the URL.
