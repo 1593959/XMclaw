@@ -263,6 +263,23 @@ class SqliteEventBus(InProcessEventBus):
                 pass
         return deleted
 
+    def delete_session(self, session_id: str) -> int:
+        """Delete every event for ``session_id`` from the durable log.
+
+        Used when the user deletes a session — otherwise the events
+        survive and the task list re-surfaces the session from the log
+        (the "deleted but it came back" bug). Returns rows deleted. FTS5
+        stays in sync the same way ``prune_older_than`` relies on.
+        """
+        sid = (session_id or "").strip()
+        if not sid:
+            return 0
+        with self._txn():
+            cur = self._conn.execute(
+                "DELETE FROM events WHERE session_id = ?;", (sid,),
+            )
+            return cur.rowcount
+
     def vacuum_full(self) -> None:
         """One-shot full VACUUM — only run from doctor --fix or
         manual maintenance. Locks the database for the duration; OK

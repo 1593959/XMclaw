@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 
 from xmclaw.daemon.session_store import (
@@ -184,12 +184,39 @@ async def get_session(session_id: str) -> JSONResponse:
 
 
 @router.delete("/{session_id}")
-async def delete_session(session_id: str) -> JSONResponse:
+async def delete_session(session_id: str, request: Request) -> JSONResponse:
+    """Delete a session EVERYWHERE so it can't be re-surfaced.
+
+    Must purge all three stores or the session "comes back": the
+    session_store row, the DURABLE event log (the task list reconstructs
+    from it — leaving events means the session reappears after delete),
+    and the live in-memory state (agent history + the WS replay buffer).
+    """
     store = _store()
-    if store is None:
-        return JSONResponse({"error": "session_store unavailable"}, status_code=500)
-    try:
-        store.delete(session_id)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse({"ok": True, "session_id": session_id})
+    errors: list[str] = []
+    # 1. session_store (persisted message list).
+    if store is not None:
+        try:
+            store.delete(session_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"store: {exc}")
+    # 2. durable event log — otherwise /api/v2/tasks re-lists it.
+    bus = getattr(request.app.state, "bus", None)
+    if bus is not None and hasattr(bus, "delete_session"):
+        try:
+            bus.delete_session(session_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"events: {exc}")
+    # 3. live in-memory state: agent history + WS replay buffer.
+    agent = getattr(request.app.state, "agent", None)
+    if agent is not None and hasattr(agent, "clear_session"):
+        try:
+            await agent.clear_session(session_id)
+        except Exception:  # noqa: BLE001
+            pass
+    logs = getattr(request.app.state, "session_logs", None)
+    if isinstance(logs, dict):
+        logs.pop(session_id, None)
+    if errors and store is None:
+        return JSONResponse({"error": "; ".join(errors)}, status_code=500)
+    return JSONResponse({"ok": True, "session_id": session_id, "errors": errors})
