@@ -37,8 +37,10 @@ export default function TaskRail({ width }: { width?: number }) {
   const resumeSession = useApp((s) => s.resumeSession);
   const startNewSession = useApp((s) => s.startNewSession);
   const deleteSession = useApp((s) => s.deleteSession);
+  const clearSessions = useApp((s) => s.clearSessions);
   const [query, setQuery] = useState("");
   const [confirmSid, setConfirmSid] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // /api/v2/tasks 不可用（旧 daemon）时退化为本地 sid 列表。
   const all: TaskSnapshot[] =
@@ -63,13 +65,48 @@ export default function TaskRail({ width }: { width?: number }) {
     >
       <div className="flex items-center justify-between px-3 pt-3 pb-2">
         <span className="text-xs text-mc-faint uppercase tracking-wider">任务</span>
-        <button
-          onClick={startNewSession}
-          className="text-xs px-2 py-0.5 rounded border border-mc-border text-mc-muted hover:text-mc-text hover:border-mc-accent/50 cursor-pointer"
-          title="新任务 / 新会话"
-        >
-          + 新建
-        </button>
+        <div className="flex items-center gap-1 relative">
+          {/* 批量清除：一键删已结束 / 全部，不用逐个 hover×。 */}
+          <button
+            onClick={() => setMenuOpen((v) => !v)}
+            className="text-xs px-1.5 py-0.5 rounded border border-mc-border text-mc-faint hover:text-mc-err hover:border-mc-err/50 cursor-pointer"
+            title="批量清除会话"
+            aria-label="批量清除会话"
+          >
+            🧹
+          </button>
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+              <div className="absolute right-0 top-7 z-20 w-40 rounded-md border border-mc-border bg-mc-panel2 shadow-lg py-1 text-[12px]">
+                <button
+                  onClick={() => { clearSessions("finished"); setMenuOpen(false); }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-mc-panel cursor-pointer"
+                >
+                  清除已结束会话
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm("删除除当前会话外的所有会话？不可恢复。")) {
+                      clearSessions("all");
+                    }
+                    setMenuOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-1.5 text-mc-err hover:bg-mc-panel cursor-pointer"
+                >
+                  全部删除（保留当前）
+                </button>
+              </div>
+            </>
+          )}
+          <button
+            onClick={startNewSession}
+            className="text-xs px-2 py-0.5 rounded border border-mc-border text-mc-muted hover:text-mc-text hover:border-mc-accent/50 cursor-pointer"
+            title="新任务 / 新会话"
+          >
+            + 新建
+          </button>
+        </div>
       </div>
       {all.length > 6 && (
         <div className="px-2 pb-2">

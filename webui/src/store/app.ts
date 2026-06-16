@@ -121,6 +121,7 @@ interface AppState {
   startNewSession(): void;
   resumeSession(sid: string): void;
   deleteSession(sid: string): Promise<void>;
+  clearSessions(mode: "finished" | "all"): Promise<void>;
   // power-user 动作（slash 命令 + 消息操作）
   retryLast(): void;
   undoLast(): void;
@@ -531,11 +532,55 @@ export const useApp = create<AppState>((set, get) => {
       get().refreshTasks();
     },
 
+    async clearSessions(mode: "finished" | "all") {
+      const s = get();
+      // Build the delete set from the task list (falls back to local sids).
+      const rows = s.tasks.length > 0
+        ? s.tasks
+        : s.sids.map((sid) => ({ sid, status: "chat" as const }));
+      const keep = (status: string) =>
+        mode === "finished" ? (status === "running" || status === "awaiting_input") : false;
+      const targets = rows
+        .map((t) => t.sid)
+        .filter((sid) => sid !== s.sid)  // never delete the active session
+        .filter((sid) => {
+          const st = rows.find((r) => r.sid === sid)?.status || "chat";
+          return !keep(st);
+        });
+      if (targets.length === 0) {
+        get().showToast(mode === "finished" ? "没有可清除的已结束会话" : "没有其他会话可清除", "info");
+        return;
+      }
+      // Optimistic removal from both lists.
+      set({
+        sids: s.sids.filter((x) => !targets.includes(x)),
+        tasks: s.tasks.filter((t) => !targets.includes(t.sid)),
+      });
+      let ok = 0;
+      for (const sid of targets) {
+        try {
+          await apiDelete(`/api/v2/sessions/${encodeURIComponent(sid)}`, s.token);
+          ok += 1;
+        } catch {
+          /* keep going — one failure shouldn't abort the batch */
+        }
+      }
+      get().showToast(
+        ok === targets.length
+          ? `已清除 ${ok} 个会话`
+          : `清除 ${ok}/${targets.length} 个会话（部分失败）`,
+        ok > 0 ? "ok" : "err",
+      );
+      get().refreshTasks();
+    },
+
     async refreshTasks() {
       const { token } = get();
       if (!token) return;
       try {
-        const data = await apiGet<{ tasks: TaskSnapshot[] }>("/api/v2/tasks", token);
+        // limit=100: the rail used to show only the 30 most-recent — old
+        // sessions were unreachable for cleanup. Pull the daemon's max.
+        const data = await apiGet<{ tasks: TaskSnapshot[] }>("/api/v2/tasks?limit=100", token);
         set({ tasks: Array.isArray(data?.tasks) ? data.tasks : [] });
       } catch {
         /* daemon 老版本无此端点 → 任务栏退化为 session 列表 */
