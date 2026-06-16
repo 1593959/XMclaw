@@ -46,6 +46,24 @@ from xmclaw.utils.log import get_logger
 _log = get_logger(__name__)
 
 
+# A fact is a "contact number" if it mentions a contact channel AND
+# carries a 7+ digit run — these get dropped from the LLM path (see the
+# 2026-06-16 note in ``_parse``). Real user phones go through the regex
+# KeyInfoExtractor instead.
+_CONTACT_KEYWORDS = (
+    "电话", "号码", "手机", "座机", "联系方式", "联系电话", "传真",
+    "phone", "tel", "fax", "mobile", "微信", "wechat", "qq",
+)
+_DIGIT_RUN_RE = re.compile(r"\d(?:[\s-]?\d){6,}")
+
+
+def _is_contact_number_fact(text: str) -> bool:
+    low = text.lower()
+    if not any(kw in low for kw in _CONTACT_KEYWORDS):
+        return False
+    return bool(_DIGIT_RUN_RE.search(text))
+
+
 # ── Prompt ───────────────────────────────────────────────────────
 
 
@@ -318,6 +336,20 @@ class LLMFactExtractor:
             text = text.strip()
             if len(text) > 500:
                 text = text[:500]
+            # 2026-06-16: drop contact-NUMBER facts from the LLM path. It
+            # runs over the user message AND the assistant response, so it
+            # kept mining placeholder phone numbers out of content the AGENT
+            # generated (e.g. "联系电话 178…" in a promo poster) and storing
+            # them as "用户电话号码为 X" — the user reported these reappearing.
+            # Legit user-stated phones are handled deterministically by the
+            # regex KeyInfoExtractor (valid CN mobile / +intl / labelled), so
+            # the LLM path mining numbers is pure noise.
+            if _is_contact_number_fact(text):
+                self._log.info(
+                    "llm_fact_extractor.dropped_contact_number text=%r",
+                    text[:80],
+                )
+                continue
             if kind not in _VALID_KINDS:
                 continue
             if scope not in _VALID_SCOPES:
