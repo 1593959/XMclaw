@@ -43,8 +43,12 @@ export default function PlanStrip() {
   }
 
   // 2. todo 待办列表
+  // todo_write 工具用 "done" 作终态（builtin_memory._VALID_TODO_STATUSES）；
+  // 历史代码这里数的是 "completed"，两者对不上 → 标完了进度条永远 0/N。
+  // 同时认 done/completed，彻底堵住状态名漂移。
+  const isDone = (s: string | undefined) => s === "done" || s === "completed";
   if (todos && todos.items.length > 0) {
-    const done = todos.items.filter((t) => t.status === "completed").length;
+    const done = todos.items.filter((t) => isDone(t.status)).length;
     return (
       <div className="px-4 py-2 border-b border-mc-border flex items-center gap-1.5 flex-wrap shrink-0">
         <span className="text-xs text-mc-faint mr-1">
@@ -55,7 +59,7 @@ export default function PlanStrip() {
             key={i}
             className={
               "text-[11px] px-2 py-0.5 rounded-full border max-w-44 truncate " +
-              (t.status === "completed"
+              (isDone(t.status)
                 ? STEP_CLS.done
                 : t.status === "in_progress"
                   ? STEP_CLS.running

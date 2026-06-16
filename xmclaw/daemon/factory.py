@@ -2059,13 +2059,13 @@ def build_agent_from_config(
         agent_cfg = cfg.get("agent")
         if isinstance(agent_cfg, Mapping):
             try:
-                max_hops = int(agent_cfg.get("max_hops", 40))
+                max_hops = int(agent_cfg.get("max_hops", 100))
             except (TypeError, ValueError):
-                max_hops = 40
+                max_hops = 100
         else:
-            max_hops = 40
+            max_hops = 100
         if max_hops < 1:
-            max_hops = 40
+            max_hops = 100
     # Persistent conversation history — create early so it can be wired
     # into BuiltinTools (read_conversation_history tool).
     # Default path — build early so it can be wired into BuiltinTools

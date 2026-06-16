@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import re
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -133,31 +132,13 @@ def _model_supports_vision(model: str | None, base_url: str | None) -> bool:
     return False
 
 
-_THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
-
-
-def _split_inline_think(text: str) -> tuple[str, str]:
-    """Separate inline ``<think>…</think>`` reasoning from visible content.
-
-    2026-06-16: some OpenAI-compat models (Kimi k2.6, DeepSeek-R1, …) emit
-    reasoning INLINE in the content as ``<think>…</think>`` rather than in a
-    separate ``reasoning_content`` field. Unstripped, the tag leaks into the
-    chat bubble (user saw ``…创建看板页面。</think>现在我了解了…``). Returns
-    ``(visible_content, thinking)``. Handles three shapes: balanced blocks,
-    a leaked CLOSING tag with no opener (everything before the last
-    ``</think>`` is reasoning), and a stray opener.
-    """
-    if "<think>" not in text and "</think>" not in text:
-        return text, ""
-    thinks = _THINK_BLOCK_RE.findall(text)  # inner reasoning of balanced blocks
-    clean = _THINK_BLOCK_RE.sub("", text)
-    if "</think>" in clean:  # leaked close (no opener): split at the last one
-        idx = clean.rfind("</think>")
-        thinks.append(clean[:idx])
-        clean = clean[idx + len("</think>"):]
-    clean = clean.replace("<think>", "").replace("</think>", "")
-    extracted = "\n".join(t.strip() for t in thinks if t and t.strip())
-    return clean.strip(), extracted
+# Inline-think stripping now lives in streaming_utils so anthropic.py (Kimi
+# over its /coding endpoint) shares the exact same logic. Re-exported under
+# the old private name to keep call sites here unchanged.
+from xmclaw.providers.llm.streaming_utils import (  # noqa: E402
+    InlineThinkStreamFilter,
+    split_inline_think as _split_inline_think,
+)
 
 
 class OpenAILLM(LLMProvider):
@@ -730,6 +711,10 @@ class OpenAILLM(LLMProvider):
         # the on_thinking_chunk callback — DeepSeek V4 thinking mode
         # then 400'd on the next hop ("thinking must be passed back").
         thinking_parts: list[str] = []
+        # Strip inline <think>…</think> live (DeepSeek-R1 / Kimi-style models
+        # that fold reasoning into the content stream); keeps the visible
+        # bubble clean despite the webui "keep longer text" reducer rule.
+        _think_filter = InlineThinkStreamFilter()
         # Tool-call assembly: deltas arrive index-by-index, accumulate by index.
         tool_acc: dict[int, dict[str, Any]] = {}
         prompt_tokens = 0
@@ -859,9 +844,12 @@ class OpenAILLM(LLMProvider):
                                 break
                     content = getattr(delta, "content", None)
                     if content:
-                        text_parts.append(content)
-                        if on_chunk is not None:
-                            await on_chunk(content)
+                        text_parts.append(content)  # raw — final split re-strips
+                        vis, thk = _think_filter.feed(content)
+                        if vis and on_chunk is not None:
+                            await on_chunk(vis)
+                        if thk and on_thinking_chunk is not None:
+                            await on_thinking_chunk(thk)
                     raw_tcs = getattr(delta, "tool_calls", None) or []
                     for tc in raw_tcs:
                         idx = getattr(tc, "index", 0) or 0

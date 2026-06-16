@@ -6,12 +6,128 @@ in cancel-watchdog and stream-lifecycle patterns.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from xmclaw.utils.log import get_logger
 
 log = get_logger(__name__)
+
+
+_THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+
+
+def split_inline_think(text: str) -> tuple[str, str]:
+    """Separate inline ``<think>…</think>`` reasoning from visible content.
+
+    2026-06-16: some models emit reasoning INLINE in the content as
+    ``<think>…</think>`` rather than in a separate reasoning field. This is
+    true for both OpenAI-compat models (DeepSeek-R1, …) AND Kimi k2.6 over
+    its Anthropic-compat ``/coding`` endpoint — so both providers must strip
+    it. Unstripped, the tag leaks into the chat bubble (user saw
+    ``…创建看板页面。</think>现在我了解了…``). Returns ``(visible, thinking)``.
+    Handles three shapes: balanced blocks, a leaked CLOSING tag with no
+    opener (everything before the last ``</think>`` is reasoning), and a
+    stray opener.
+    """
+    if "<think>" not in text and "</think>" not in text:
+        return text, ""
+    thinks = _THINK_BLOCK_RE.findall(text)  # inner reasoning of balanced blocks
+    clean = _THINK_BLOCK_RE.sub("", text)
+    if "</think>" in clean:  # leaked close (no opener): split at the last one
+        idx = clean.rfind("</think>")
+        thinks.append(clean[:idx])
+        clean = clean[idx + len("</think>"):]
+    clean = clean.replace("<think>", "").replace("</think>", "")
+    extracted = "\n".join(t.strip() for t in thinks if t and t.strip())
+    return clean.strip(), extracted
+
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _longest_partial_tag_suffix(buf: str) -> int:
+    """Length of the longest suffix of ``buf`` that is a prefix of either
+    think tag — i.e. a tag possibly split across the chunk boundary, which
+    must be held back rather than forwarded as visible text."""
+    best = 0
+    for tag in (_THINK_OPEN, _THINK_CLOSE):
+        # try the longest prefix of `tag` first
+        for n in range(min(len(tag) - 1, len(buf)), 0, -1):
+            if buf.endswith(tag[:n]):
+                best = max(best, n)
+                break
+    return best
+
+
+class InlineThinkStreamFilter:
+    """Stateful splitter that strips inline ``<think>…</think>`` from a
+    *streaming* text channel, chunk by chunk, so the reasoning never reaches
+    the visible bubble live (the final-content re-strip alone is defeated by
+    the webui reducer's "keep the longer of streamed/final" heuristic).
+
+    ``feed(chunk)`` returns ``(visible, thinking)`` deltas to forward now.
+    A short tail is buffered so a tag split across chunks (``"<thi"`` |
+    ``"nk>"``) is still recognised. ``flush()`` drains any held tail at end
+    of stream.
+    """
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._buf = ""
+
+    def feed(self, text: str) -> tuple[str, str]:
+        self._buf += text
+        vis: list[str] = []
+        think: list[str] = []
+        while self._buf:
+            if not self._in_think:
+                i = self._buf.find(_THINK_OPEN)
+                if i != -1:
+                    vis.append(self._buf[:i])
+                    self._buf = self._buf[i + len(_THINK_OPEN):]
+                    self._in_think = True
+                    continue
+                # no full open tag — emit all but a possible partial-tag tail
+                hold = _longest_partial_tag_suffix(self._buf)
+                if hold:
+                    vis.append(self._buf[:-hold])
+                    self._buf = self._buf[-hold:]
+                else:
+                    vis.append(self._buf)
+                    self._buf = ""
+                break
+            else:
+                i = self._buf.find(_THINK_CLOSE)
+                if i != -1:
+                    think.append(self._buf[:i])
+                    self._buf = self._buf[i + len(_THINK_CLOSE):]
+                    self._in_think = False
+                    continue
+                hold = _longest_partial_tag_suffix(self._buf)
+                if hold:
+                    think.append(self._buf[:-hold])
+                    self._buf = self._buf[-hold:]
+                else:
+                    think.append(self._buf)
+                    self._buf = ""
+                break
+        return "".join(vis), "".join(think)
+
+    def flush(self) -> tuple[str, str]:
+        """Drain the tail. Anything still buffered while inside a think block
+        is reasoning; otherwise it's visible (a dangling partial open tag is
+        dropped as noise)."""
+        tail = self._buf
+        self._buf = ""
+        if self._in_think:
+            return "", tail
+        # a leftover that's a partial open-tag prefix is an incomplete tag — drop it
+        if tail and _THINK_OPEN.startswith(tail):
+            return "", ""
+        return tail, ""
 
 
 async def _watch_cancel(

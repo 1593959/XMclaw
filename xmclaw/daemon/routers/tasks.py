@@ -126,9 +126,11 @@ def _derive(events: list[Any], now: float) -> dict[str, Any]:
             items = payload.get("items") or []
             if isinstance(items, list):
                 todo_total = len(items)
+                # todo_write 用 "done" 作终态（builtin_memory._VALID_TODO_STATUSES）；
+                # 旧代码只数 "completed"，永远是 0 → 任务卡死在"未完成"。两者都认。
                 todo_done = sum(
                     1 for it in items
-                    if isinstance(it, dict) and it.get("status") == "completed"
+                    if isinstance(it, dict) and it.get("status") in ("done", "completed")
                 )
         elif t == "llm_response":
             last_resp_ok = payload.get("ok") is not False

@@ -32,6 +32,10 @@ from xmclaw.providers.llm.base import (
     OnThinkingChunkCallback,
     Pricing,
 )
+from xmclaw.providers.llm.streaming_utils import (
+    InlineThinkStreamFilter,
+    split_inline_think,
+)
 from xmclaw.utils.log import get_logger
 
 _log = get_logger(__name__)
@@ -650,8 +654,12 @@ class AnthropicLLM(LLMProvider):
             )
 
         usage = getattr(response, "usage", None)
+        # Kimi k2.6 over its Anthropic-compat /coding endpoint emits reasoning
+        # INLINE as <think>…</think> in the text block (not via thinking
+        # blocks), leaking the tag into the chat bubble. Strip it here.
+        _clean, _ = split_inline_think("".join(text_parts))
         return LLMResponse(
-            content="".join(text_parts),
+            content=_clean,
             tool_calls=tuple(tool_calls),
             prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
             completion_tokens=getattr(usage, "output_tokens", 0) or 0,
@@ -718,6 +726,10 @@ class AnthropicLLM(LLMProvider):
         text_parts: list[str] = []
         cancelled = False
         t0 = time.perf_counter()
+        # Kimi /coding emits reasoning inline as <think>…</think> in the text
+        # stream; strip it live so it never reaches the visible bubble (the
+        # final re-strip alone loses to the webui "keep longer text" rule).
+        _think_filter = InlineThinkStreamFilter()
 
         # B-270 (reverted 2026-05-24): the prefix-based heuristic
         # separator was too fragile — any LLM reply opening with
@@ -840,9 +852,12 @@ class AnthropicLLM(LLMProvider):
                         text = getattr(delta_obj, "text", "") or ""
                         if not text:
                             continue
-                        text_parts.append(text)
-                        if on_chunk is not None:
-                            await on_chunk(text)
+                        text_parts.append(text)  # raw — final split re-strips
+                        vis, thk = _think_filter.feed(text)
+                        if vis and on_chunk is not None:
+                            await on_chunk(vis)
+                        if thk and on_thinking_chunk is not None:
+                            await on_thinking_chunk(thk)
                     elif delta_type == "input_json_delta" and on_tool_block is not None:
                         # Append to the per-block JSON buffer; the
                         # finalise step on content_block_stop parses it.
@@ -965,8 +980,17 @@ class AnthropicLLM(LLMProvider):
             )
 
         usage = getattr(final, "usage", None)
+        # Strip inline <think>…</think> (Kimi /coding endpoint) from the
+        # authoritative final content — the live on_chunk stream may have
+        # flashed it, but the persisted/rendered message must be clean.
+        _clean_final, _inline_think = split_inline_think("".join(text_parts))
+        if _inline_think and on_thinking_chunk is not None:
+            try:
+                await on_thinking_chunk(_inline_think)
+            except Exception:  # noqa: BLE001
+                pass
         return LLMResponse(
-            content="".join(text_parts),
+            content=_clean_final,
             tool_calls=tuple(tool_calls),
             prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
             completion_tokens=getattr(usage, "output_tokens", 0) or 0,
