@@ -2144,47 +2144,43 @@ def create_app(
         # repopulates. Each replayed frame carries ``replayed: true``
         # so the UI can suppress the thinking spinner and avoid
         # double-counting tokens.
-        prior_events = list(session_logs.get(session_id, []))
-        # 2026-06-07: disk fallback. ``session_logs`` is an in-memory
-        # per-session ring buffer — it's EMPTY after a daemon restart, and
-        # a turn still in flight hasn't been flushed to session_history
-        # yet. Pre-fix, reconnecting in that window (or after any restart)
-        # showed an empty/stale transcript — the user's in-progress
-        # message "vanished" even though it was durably in events.db.
-        # When the memory buffer has nothing, replay from the persisted
-        # event log so the chat repopulates from disk.
-        if not prior_events and hasattr(bus, "query"):
-            # Only SqliteEventBus (the production durable bus) exposes
-            # query(); a pure in-memory bus has nothing on disk to recover.
+        # 2026-06-16: ALWAYS prefer the durable on-disk log — it is the
+        # COMPLETE record. Pre-fix we only hit disk when the in-memory ring
+        # buffer was empty (daemon restart). But ``session_logs`` caps at
+        # ``_SESSION_LOG_CAP`` (400) and silently drops the OLDEST events;
+        # for a long live session (hundreds of tool calls) a refresh replayed
+        # only the truncated tail, so the user "lost" the middle hundreds of
+        # steps + several turns even though events.db still had everything.
+        # We also EXCLUDE the high-volume streaming deltas (llm_chunk /
+        # llm_thinking_chunk): the assistant bubble rebuilds from the terminal
+        # ``llm_response`` (final content), so the deltas are pure noise on
+        # replay and a single chatty turn of them would blow the cap.
+        _REPLAY_CAP = 3000  # renderable events; ~hundreds of tool steps + turns
+        prior_events = []
+        if isinstance(bus, SqliteEventBus):
             try:
-                # B-XXX: bus.query defaults to ``ORDER BY ts ASC LIMIT N``,
-                # which returns the *oldest* N events. For a long session
-                # ( > 400 events) this replays stale ancient events and
-                # drops the latest terminal frames (llm_response etc),
-                # leaving the client with abandoned "thinking" bubbles
-                # that tick forever ("正在回复 · 19058s"). We must skip
-                # the early tail and recover the *recent* window — same
-                # semantics as the in-memory ring buffer.
-                offset = 0
-                if isinstance(bus, SqliteEventBus):
-                    import sqlite3
-                    try:
-                        with bus._read_lock:
-                            row = bus._conn.execute(
-                                "SELECT event_count FROM sessions WHERE session_id = ?",
-                                (session_id,),
-                            ).fetchone()
-                            total = row[0] if row else 0
-                            offset = max(0, total - _SESSION_LOG_CAP)
-                    except sqlite3.Error:
-                        pass
-                disk_events = bus.query(
-                    session_id=session_id,
-                    limit=_SESSION_LOG_CAP,
-                    offset=offset,
-                )
-                prior_events = list(disk_events)
+                from xmclaw.core.bus.sqlite import _row_to_event
+                with bus._read_lock:
+                    rows = bus._conn.execute(
+                        "SELECT id, ts, session_id, agent_id, type, payload, "
+                        "correlation_id, parent_id, schema_version FROM events "
+                        "WHERE session_id = ? "
+                        "AND type NOT IN ('llm_chunk','llm_thinking_chunk') "
+                        "ORDER BY ts DESC, rowid DESC LIMIT ?",
+                        (session_id, _REPLAY_CAP),
+                    ).fetchall()
+                # newest-first query → reverse to chronological for replay
+                prior_events = [_row_to_event(r) for r in reversed(rows)]
             except Exception:  # noqa: BLE001 — replay is best-effort
+                prior_events = []
+        # Non-durable bus (tests / pure in-memory): only the ring buffer
+        # exists. Fall back to it, then to query() if exposed.
+        if not prior_events:
+            prior_events = list(session_logs.get(session_id, []))
+        if not prior_events and hasattr(bus, "query"):
+            try:
+                prior_events = list(bus.query(session_id=session_id, limit=_REPLAY_CAP))
+            except Exception:  # noqa: BLE001
                 prior_events = []
         if prior_events:
             # Bracket the replay with marker frames so the client knows
