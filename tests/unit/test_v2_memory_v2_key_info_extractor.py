@@ -561,3 +561,35 @@ def test_identity_rejects_english_imperative_fragments() -> None:
     keys = extract_keys("I'm going to delete the old files")
     ids = [k for k in keys if k.pattern_name == "identity"]
     assert len(ids) == 0
+
+
+# ── Phone false-positive fix (2026-06-16) ──────────────────────────
+# The old _PHONE_RE matched any bare 10-16 digit run → order ids,
+# timestamps, and agent-generated placeholder numbers got force-written
+# to memory as "电话: <number>" and kept reappearing after deletion.
+
+def _phones(msg: str) -> list[str]:
+    return [k.text for k in extract_keys(msg) if k.pattern_name == "phone"]
+
+
+@pytest.mark.parametrize("msg", [
+    "1781590376",                       # the user's phantom number
+    "1781591687",
+    "订单号 20231590376 已发货",          # order id
+    "本图生成于 1781590376 毫秒",          # millisecond timestamp
+    "联系 1781590376 看图",               # bare number near unrelated word
+])
+def test_bare_number_is_not_a_phone(msg: str) -> None:
+    assert _phones(msg) == [], f"falsely extracted phone from: {msg}"
+
+
+@pytest.mark.parametrize("msg,expect", [
+    ("我的手机是 13800138000", "13800138000"),      # CN mobile
+    ("+86 178 1234 5678", "+86 178 1234 5678"),    # international (+ required)
+    ("联系电话 010-12345678", "010-12345678"),       # labelled landline
+    ("客服热线 400-800-1234", "400-800-1234"),       # vanity hotline
+])
+def test_real_phone_still_extracted(msg: str, expect: str) -> None:
+    phones = _phones(msg)
+    assert phones, f"missed a real phone in: {msg}"
+    assert expect in phones[0]

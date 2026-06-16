@@ -229,15 +229,32 @@ _EMAIL_RE = re.compile(
 # Phone numbers — accept 11-digit Mainland mobiles (1[3-9]xxxxxxxx),
 # +-country-prefixed international (+86 / +1 / etc), and 800/400
 # vanity numbers. Hyphens / spaces tolerated.
+# 2026-06-16 FALSE-POSITIVE FIX. The old first branch was
+# ``\+?\d{1,3}[\s-]?\d{3,4}...`` with the ``+`` OPTIONAL and NO label
+# required — so it matched ANY bare run of 10-16 digits: order ids
+# (``20231590376``), millisecond timestamps (``1781590376``), even the
+# placeholder phone in an agent-generated promo HTML. Those got
+# force-written to memory as "电话: <number>" and kept reappearing after
+# the user deleted them (the extractor re-fires on every message that
+# contains the digits — including the user's own complaint about them).
+# A number is only a phone if it's a valid CN mobile / vanity hotline /
+# ``+``-prefixed international / OR explicitly LABELLED (电话/手机/tel…).
 _PHONE_RE = re.compile(
     r"""(
-        \+?\d{1,3}[\s-]?\d{3,4}[\s-]?\d{3,4}[\s-]?\d{3,5}
-        |
         \b1[3-9]\d{9}\b                # 11-digit CN mobile
         |
-        \b(?:400|800)[\s-]?\d{3,4}[\s-]?\d{3,4}\b
+        \b(?:400|800)[\s-]?\d{3,4}[\s-]?\d{3,4}\b   # vanity hotline
+        |
+        # International — REQUIRE the leading + (kills bare digit runs).
+        \+\d{1,3}[\s-]?\d{2,4}[\s-]?\d{3,4}[\s-]?\d{2,5}
+        |
+        # Explicitly labelled phone (catches landlines like 010-1234 5678);
+        # the label is mandatory so a bare number is never grabbed.
+        (?:电话|手机|座机|联系电话|联系方式|tel(?:ephone)?|phone)
+        \s*[:：=]?\s*
+        (?P<labelled>\+?\d[\d\s-]{6,14}\d)
     )""",
-    re.VERBOSE,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 # Social / IM handles — WeChat / QQ / Telegram / Github / Twitter
@@ -715,7 +732,9 @@ def extract_keys(message: str) -> list[ExtractedKey]:
 
     # ── Phone numbers ──
     for m in _PHONE_RE.finditer(message):
-        num = m.group(0).strip()
+        # When the labelled branch matched, store just the number (not the
+        # "电话:" label prefix); otherwise the whole match IS the number.
+        num = (m.groupdict().get("labelled") or m.group(0)).strip()
         # Skip ambiguous short matches that look like price/ID rather
         # than a phone — require ≥ 7 effective digits.
         digits = "".join(ch for ch in num if ch.isdigit())
