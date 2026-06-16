@@ -535,15 +535,16 @@ def test_build_agent_uses_configured_agent_id() -> None:
     assert agent._agent_id == "my-custom-agent"
 
 
-def test_build_agent_default_max_hops_is_40() -> None:
-    """B-190: bumped default from 20 → 40. Audit-style work calling
-    many list_dir/file_read used to hit the cap silently."""
+def test_build_agent_default_max_hops_is_100() -> None:
+    """B-190: bumped default 20 → 40 → 100 (valid range [1, 100]).
+    Audit-style work calling many list_dir/file_read used to hit the cap
+    silently."""
     bus = InProcessEventBus()
     agent = build_agent_from_config({
         "llm": {"anthropic": {"api_key": "k"}},
     }, bus)
     assert agent is not None
-    assert agent._max_hops == 40
+    assert agent._max_hops == 100
 
 
 def test_build_agent_reads_max_hops_from_agent_block() -> None:
@@ -573,7 +574,7 @@ def test_build_agent_max_hops_kwarg_wins_over_config() -> None:
 
 
 def test_build_agent_max_hops_invalid_falls_back_to_default() -> None:
-    """Garbage values (negative, non-numeric) silently default to 40
+    """Garbage values (negative, non-numeric) silently default to 100
     so a hand-edited config can't brick the agent."""
     bus = InProcessEventBus()
     for bad in [-1, 0, "lots", None]:
@@ -582,7 +583,7 @@ def test_build_agent_max_hops_invalid_falls_back_to_default() -> None:
             "agent": {"max_hops": bad},
         }, bus)
         assert agent is not None
-        assert agent._max_hops == 40, f"bad value {bad!r} should fall back"
+        assert agent._max_hops == 100, f"bad value {bad!r} should fall back"
 
 
 # ── build_tools_from_config ──────────────────────────────────────────────

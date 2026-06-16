@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 
@@ -247,7 +248,12 @@ async def test_tool_call_without_provider_raises_anti_req_violation() -> None:
         ),
     ])
     agent = AgentLoop(llm=llm, bus=bus, tools=None)
-    result = await agent.run_turn("sess", "hi")
+    # Force the agentic hop loop: the "no ToolProvider wired" guard lives
+    # there. Without this, a trivial message routes to instant mode, which
+    # just drops the stray tool calls (a different, valid path) and the
+    # violation under test never fires.
+    agent._mode_instant_enabled = False  # noqa: SLF001
+    result = await agent.run_turn("sess", "phantom tool please")
     await bus.drain()
 
     assert result.ok is False
@@ -536,7 +542,7 @@ class _HangingLLM(LLMProvider):
     async def complete_streaming(  # noqa: D401, ANN001
         self, messages, tools=None, *, on_chunk=None,
         on_thinking_chunk=None, on_tool_block=None,
-        on_stream_fallback=None, cancel=None,
+        on_stream_fallback=None, cancel=None, **kwargs,
     ):
         await asyncio.Event().wait()  # blocks until cancelled
 
@@ -598,6 +604,59 @@ async def test_llm_timeout_min_floor() -> None:
     # Internal value clamped to 5.0 — we don't want to wait that long
     # in a test, so just verify the field directly.
     assert agent._llm_timeout_s >= 5.0  # noqa: SLF001 — pin the floor
+
+
+class _StallAfterFirstTokenLLM(LLMProvider):
+    """Emits one token, then the stream goes silent forever — the case
+    the stall-guard exists for. A live-but-slow stream must NOT be killed
+    on total wall-clock; only a *stalled* one (no tokens for STALL s)."""
+
+    model: str = "staller"
+
+    async def stream(self, messages, tools=None, *, cancel=None):  # noqa: D401, ANN001
+        if False:
+            yield  # type: ignore[unreachable]
+
+    async def complete_streaming(  # noqa: D401, ANN001
+        self, messages, tools=None, *, on_chunk=None,
+        on_thinking_chunk=None, on_tool_block=None,
+        on_stream_fallback=None, cancel=None, **kwargs,
+    ):
+        if on_chunk is not None:
+            await on_chunk("partial...")  # first token arrives
+        await asyncio.Event().wait()      # then silence forever
+
+    async def complete(self, messages, tools=None):  # noqa: D401, ANN001
+        await asyncio.Event().wait()
+
+    @property
+    def tool_call_shape(self) -> ToolCallShape:
+        return ToolCallShape.ANTHROPIC_NATIVE
+
+    @property
+    def pricing(self) -> Pricing:
+        return Pricing()
+
+
+@pytest.mark.asyncio
+async def test_stream_stall_after_first_token_aborts(monkeypatch) -> None:
+    """2026-06-16: once the first token has arrived, completion is gated on
+    *stall* (no further tokens for STALL s), not total wall-clock — so a
+    big-but-streaming reply isn't killed. A truly stalled stream still
+    aborts with a clear 'timed out' error."""
+    import xmclaw.daemon.hop_loop as hl
+    monkeypatch.setattr(hl, "_STREAM_STALL_TIMEOUT_S", 1.0)
+
+    bus = InProcessEventBus()
+    agent = AgentLoop(
+        llm=_StallAfterFirstTokenLLM(), bus=bus,
+        llm_timeout_s=600.0,  # generous total bound — stall must fire first
+    )
+    out = await agent.run_turn("sess-stall", "write something long")
+    await bus.drain()
+
+    assert out.ok is False
+    assert "timed out" in (out.error or "").lower()
 
 
 # ── B-202: curriculum-edit hint passive trigger ──────────────────────────

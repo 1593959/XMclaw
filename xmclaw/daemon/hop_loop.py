@@ -40,6 +40,14 @@ _MEMORY_TOOLS: frozenset[str] = frozenset({"remember", "learn_about_user"})
 _HOP_BASE_TIMEOUT_S = 240.0
 _HOP_STEP_TIMEOUT_S = 120.0
 
+# 2026-06-16 流式完成超时改成「停顿/空闲」语义,而不是总时长硬上限。
+# 旧 bug:模型在正常逐 token 吐一个大文件(如整页 HTML)时,整体超过
+# _eff_timeout(封顶 600s)就被一刀切——一个正在推进的调用被误杀。
+# 现在:只要还在吐 token 就重置计时,只有连续 STALL 秒没有任何 token
+# 才判定 provider 卡死并中止;HARD_CAP 是防病态无限流的绝对兜底。
+_STREAM_STALL_TIMEOUT_S = 120.0
+_STREAM_HARD_CAP_S = 1800.0
+
 
 def _hop_timeout(hop: int, bound: float) -> float:
     """Per-call wall-clock for a given hop depth, capped at ``bound``.
@@ -827,14 +835,46 @@ class HopLoopMixin:
                     _done_event = asyncio.Event()
                     _resp: Any = None
                     _err: Exception | None = None
+                    # Last time any token (text or thinking) arrived. Drives
+                    # the stall-based completion guard below so a long-but-
+                    # live stream isn't killed for merely taking a while.
+                    _last_activity = [time.perf_counter()]
 
                     async def _wc(delta: str) -> None:
                         _ft_event.set()
+                        _last_activity[0] = time.perf_counter()
                         await _emit_chunk(delta)
 
                     async def _wtc(delta: str) -> None:
                         _ft_event.set()
+                        _last_activity[0] = time.perf_counter()
                         await _emit_thinking_chunk(delta)
+
+                    async def _await_stream(_t: "asyncio.Task") -> None:
+                        """Wait for ``_t`` to finish, aborting only if the
+                        stream stalls (no token for STALL seconds) or blows
+                        the absolute HARD_CAP. Cancels ``_t`` before raising
+                        TimeoutError so the provider call doesn't leak."""
+                        _start = time.perf_counter()
+                        try:
+                            while not _done_event.is_set():
+                                now = time.perf_counter()
+                                if now - _last_activity[0] > _STREAM_STALL_TIMEOUT_S:
+                                    raise asyncio.TimeoutError("stream_stall")
+                                if now - _start > _STREAM_HARD_CAP_S:
+                                    raise asyncio.TimeoutError("stream_hard_cap")
+                                try:
+                                    await asyncio.wait_for(
+                                        _done_event.wait(), timeout=2.0,
+                                    )
+                                except asyncio.TimeoutError:
+                                    continue  # tick: re-check stall/cap
+                        except asyncio.TimeoutError:
+                            _t.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await _t
+                            raise
+                        await _t  # propagate result / provider exception
 
                     # 2026-06-15: heartbeat so the UI knows the LLM is still
                     # working during long no-token gaps (deep reasoning,
@@ -879,12 +919,32 @@ class HopLoopMixin:
                         finally:
                             _done_event.set()
 
+                    async def _await_first_token() -> None:
+                        """Wake on the first token OR call completion —
+                        whichever is first — within the first-token window.
+                        Raises TimeoutError if neither happens. Racing
+                        ``_done_event`` matters for tool-only replies (no
+                        text delta): the call returns fast but ``_ft_event``
+                        never fires, so waiting on it alone stalled the full
+                        window for nothing."""
+                        ft = asyncio.ensure_future(_ft_event.wait())
+                        dn = asyncio.ensure_future(_done_event.wait())
+                        try:
+                            done, _pending = await asyncio.wait(
+                                {ft, dn},
+                                timeout=_first_token_timeout,
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if not done:
+                                raise asyncio.TimeoutError
+                        finally:
+                            for _f in (ft, dn):
+                                if not _f.done():
+                                    _f.cancel()
+
                     _task = asyncio.create_task(_do_call(_llm))
                     try:
-                        await asyncio.wait_for(
-                            _ft_event.wait(),
-                            timeout=_first_token_timeout,
-                        )
+                        await _await_first_token()
                     except asyncio.TimeoutError:
                         if _done_event.is_set():
                             # Completed without chunks (non-streaming fallback)
@@ -927,10 +987,7 @@ class HopLoopMixin:
                             _err = None
                             _task = asyncio.create_task(_do_call(_fallback))
                             try:
-                                await asyncio.wait_for(
-                                    _ft_event.wait(),
-                                    timeout=_first_token_timeout,
-                                )
+                                await _await_first_token()
                             except asyncio.TimeoutError:
                                 if _done_event.is_set():
                                     if _err is not None:
@@ -947,9 +1004,7 @@ class HopLoopMixin:
                                 _llm_heartbeat(time.perf_counter()),
                             )
                             try:
-                                await asyncio.wait_for(_task, timeout=_eff_timeout)
-                            except asyncio.TimeoutError:
-                                raise
+                                await _await_stream(_task)
                             finally:
                                 if _heartbeat_task is not None:
                                     _heartbeat_task.cancel()
@@ -968,9 +1023,7 @@ class HopLoopMixin:
                         _llm_heartbeat(time.perf_counter()),
                     )
                     try:
-                        await asyncio.wait_for(_task, timeout=_eff_timeout)
-                    except asyncio.TimeoutError:
-                        raise
+                        await _await_stream(_task)
                     finally:
                         if _heartbeat_task is not None:
                             _heartbeat_task.cancel()
@@ -1244,19 +1297,22 @@ class HopLoopMixin:
                 # Tell the bus + the user clearly. The ANTI_REQ event
                 # surfaces in events.db / Trace; the LLM_RESPONSE
                 # carries the visible error text the chat UI renders.
+                _stalled_s = round((time.perf_counter() - t0), 0)
                 await publish(EventType.ANTI_REQ_VIOLATION, {
                     "message": (
-                        f"LLM provider call exceeded "
-                        f"{_eff_timeout:.0f}s wall-clock at hop {hop} "
-                        "— aborting turn rather than blocking forever."
+                        f"LLM call timed out at hop {hop} after "
+                        f"{_stalled_s:.0f}s — no token progress for "
+                        f"{_STREAM_STALL_TIMEOUT_S:.0f}s, aborting turn "
+                        "rather than blocking forever."
                     ),
                     "hop": hop,
                     "category": "llm_timeout",
                 })
                 err = (
-                    f"LLM call timed out after {_eff_timeout:.0f}s "
-                    "(hop {hop}). Provider may be overloaded or stuck."
-                ).format(hop=hop)
+                    f"LLM call timed out at hop {hop} (stream stalled — "
+                    f"no progress for {_STREAM_STALL_TIMEOUT_S:.0f}s). "
+                    "Provider may be overloaded or stuck."
+                )
                 await publish(EventType.LLM_RESPONSE, {
                     "hop": hop, "ok": False, "error": err,
                     "latency_ms": latency_ms,
