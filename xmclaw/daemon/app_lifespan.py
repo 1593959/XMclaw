@@ -914,6 +914,55 @@ def make_lifespan(
             _app.state.dream_compactor = None
             _app.state.dream_cron = None
 
+        # 2026-06-16: SessionReflector cron — every N minutes, scan sessions
+        # with NEW activity since last run and distil lessons (errors / fixes /
+        # decisions) into long-term memory. Mirrors the DreamCron pattern.
+        # Gated by ``cognition.memory_v2.reflection.enabled`` (default true).
+        _app.state.reflector_cron = None
+        try:
+            agent = getattr(_app.state, "agent", None)
+            llm = getattr(agent, "_llm", None) if agent is not None else None
+            mem_svc = getattr(agent, "_memory_service", None) if agent is not None else None
+            refl_section = (
+                (((config or {}).get("cognition") or {}).get("memory_v2") or {})
+                .get("reflection") or {}
+            )
+            refl_enabled = refl_section.get("enabled", True)
+            if llm is not None and mem_svc is not None and refl_enabled:
+                from xmclaw.daemon.session_reflector import (
+                    ReflectorCron, SessionReflector,
+                )
+                reflector = SessionReflector(
+                    llm=llm,
+                    memory_service=mem_svc,
+                    bus=bus,
+                    max_sessions_per_tick=int(
+                        refl_section.get("max_sessions_per_tick", 20)
+                    ),
+                    lookback_days=float(refl_section.get("lookback_days", 14.0)),
+                )
+                refl_cron = ReflectorCron(
+                    reflector=reflector,
+                    interval_minutes=float(refl_section.get("interval_minutes", 30.0)),
+                )
+                await refl_cron.start()
+                _app.state.session_reflector = reflector
+                _app.state.reflector_cron = refl_cron
+                from xmclaw.utils.log import get_logger
+                get_logger(__name__).info(
+                    "reflector_cron.started interval=%smin",
+                    refl_section.get("interval_minutes", 30.0),
+                )
+            else:
+                _app.state.session_reflector = None
+        except Exception as exc:  # noqa: BLE001
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "reflector_cron.start_failed err=%s", exc,
+            )
+            _app.state.session_reflector = None
+            _app.state.reflector_cron = None
+
         try:
             await agents_manager.load_from_disk()
         except Exception:  # noqa: BLE001 — bad preset file must not block boot
@@ -3686,6 +3735,12 @@ def make_lifespan(
             if _dream_cron is not None:
                 try:
                     await _dream_cron.stop()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
+            _refl_cron = getattr(_app.state, "reflector_cron", None)
+            if _refl_cron is not None:
+                try:
+                    await _refl_cron.stop()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
             # B-109: stop the config-file watcher.
