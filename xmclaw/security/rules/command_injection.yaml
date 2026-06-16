@@ -9,6 +9,12 @@
 - id: COMMAND_INJECTION_EVAL
   category: command_injection
   severity: CRITICAL
+  # 2026-06-16: scope to tools that actually EXECUTE code. Pre-fix this
+  # fired on file_write/apply_patch too, so writing a normal HTML/JS file
+  # that merely contains eval() (e.g. a user-requested dashboard) was
+  # hard-DENY'd ("安全阈值卡太死"). Writing eval into a file is inert; only
+  # running it (code_python / bash) is dangerous, so the guard belongs there.
+  tools: [bash, code_python]
   patterns:
     - "(?<!['\\\"])\\beval\\s*\\("
     - "(?<!['\\\"\\.])\\bexec\\s*\\("
@@ -27,6 +33,9 @@
 - id: COMMAND_INJECTION_OS_SYSTEM
   category: command_injection
   severity: CRITICAL
+  # 2026-06-16: Python executes via code_python (or bash); scope there so
+  # authoring a .py file containing os.system(f"...") isn't hard-blocked.
+  tools: [bash, code_python]
   patterns:
     - "os\\.system\\s*\\([^)]*[f\"'].*\\{.*\\}"
     - "subprocess\\.(?:call|run|Popen)\\s*\\([^)]*[f\"'].*\\{.*\\}"
@@ -169,6 +178,9 @@
 - id: COMMAND_INJECTION_JS_CHILD_PROCESS
   category: command_injection
   severity: CRITICAL
+  # 2026-06-16: JS only EXECUTES via browser_eval here; scope there so
+  # authoring an .html/.js file (file_write/apply_patch) isn't hard-blocked.
+  tools: [browser_eval]
   patterns:
     - "require\\s*\\(\\s*['\"]child_process['\"]\\s*\\)"
     - "from\\s+['\"]child_process['\"]"
@@ -186,6 +198,9 @@
 - id: COMMAND_INJECTION_JS_FUNCTION_CONSTRUCTOR
   category: command_injection
   severity: CRITICAL
+  # 2026-06-16: scope to the JS-execution tool; don't hard-block authoring
+  # HTML/JS files that merely contain new Function / string setInterval.
+  tools: [browser_eval]
   patterns:
     - "new\\s+Function\\s*\\("
     - "(?<!\\.)Function\\s*\\(\\s*['\"]"
