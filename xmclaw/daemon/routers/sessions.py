@@ -113,6 +113,44 @@ async def search_sessions(
     return JSONResponse({"sessions": rows, "query": q})
 
 
+def _reconstruct_from_events(session_id: str) -> list[dict[str, Any]]:
+    """2026-06-16 recovery: rebuild a session's visible message list from
+    the DURABLE event log when ``session_store`` has nothing.
+
+    ``session_store`` only persists at turn-END. If the user refreshes
+    mid-turn (an in-progress task), the session isn't in the store yet, so
+    ``store.load`` returns []  and the conversation looks LOST — even
+    though every message is durable in events.db. This reads those events
+    and reconstructs ``user`` + ``assistant`` (with tool_calls) messages so
+    a refresh restores the conversation instead of dropping it."""
+    try:
+        from xmclaw.core.bus.sqlite import SqliteEventBus, default_events_db_path
+        bus = SqliteEventBus(default_events_db_path())
+        try:
+            evs = bus.query(session_id=session_id, limit=5000)
+        finally:
+            bus.close()
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict[str, Any]] = []
+    for e in sorted(evs, key=lambda x: getattr(x, "ts", 0) or 0):
+        t = e.type.value if hasattr(e.type, "value") else str(e.type)
+        p = getattr(e, "payload", {}) or {}
+        if t == "user_message":
+            c = p.get("content")
+            if isinstance(c, str) and c.strip():
+                out.append({"role": "user", "content": c, "tool_call_id": None, "tool_calls": []})
+        elif t == "llm_response":
+            txt = p.get("text") or p.get("content") or ""
+            tcs = [
+                {"id": tc.get("id"), "name": tc.get("name"), "args": tc.get("args") or {}}
+                for tc in (p.get("tool_calls") or []) if isinstance(tc, dict)
+            ]
+            if (isinstance(txt, str) and txt.strip()) or tcs:
+                out.append({"role": "assistant", "content": txt or "", "tool_call_id": None, "tool_calls": tcs})
+    return out
+
+
 @router.get("/{session_id}")
 async def get_session(session_id: str) -> JSONResponse:
     """Return the full message list (system prompt excluded)."""
@@ -134,7 +172,15 @@ async def get_session(session_id: str) -> JSONResponse:
                 for tc in m.tool_calls
             ],
         })
-    return JSONResponse({"session_id": session_id, "messages": out})
+    # Recovery fallback: store empty (e.g. refreshed mid-turn) → rebuild
+    # from the durable event log so the conversation isn't lost.
+    recovered = False
+    if not out:
+        out = _reconstruct_from_events(session_id)
+        recovered = bool(out)
+    return JSONResponse({
+        "session_id": session_id, "messages": out, "recovered_from_events": recovered,
+    })
 
 
 @router.delete("/{session_id}")
