@@ -223,3 +223,37 @@ async def test_process_kill_unknown_pid() -> None:
     }))
     assert r.ok is False
     assert "no process" in (r.error or "")
+
+
+# ── code_python Playwright guardrail (2026-06-16) ──────────────────
+
+@pytest.mark.asyncio
+async def test_code_python_blocks_playwright_sync() -> None:
+    """Playwright can't run in the code_python kernel; the tool must
+    short-circuit with a redirect to the browser_* tools rather than
+    letting it run and fail (which burned several agent hops)."""
+    r = await AutomationTools().invoke(_call("code_python", {
+        "code": "from playwright.sync_api import sync_playwright\nprint(1)",
+    }))
+    assert r.ok is False
+    assert "browser_open" in (r.error or "")
+    assert "browser_screenshot" in (r.error or "")
+
+
+@pytest.mark.asyncio
+async def test_code_python_blocks_playwright_async() -> None:
+    r = await AutomationTools().invoke(_call("code_python", {
+        "code": "import asyncio\nfrom playwright.async_api import async_playwright\n",
+    }))
+    assert r.ok is False
+    assert "browser_open" in (r.error or "")
+
+
+@pytest.mark.asyncio
+async def test_code_python_runs_normal_code() -> None:
+    """The guardrail must not over-match — ordinary code still runs."""
+    r = await AutomationTools().invoke(_call("code_python", {
+        "code": "print('hello world')",
+    }))
+    assert r.ok is True
+    assert "hello world" in (r.content or "")

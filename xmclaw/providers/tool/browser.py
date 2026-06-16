@@ -322,7 +322,16 @@ _BROWSER_SCREENSHOT_SPEC = ToolSpec(
         "labels at every ref'd element's bounding box (ref numbers "
         "match the last browser_snapshot). Vision-capable models can "
         "then say 'click 5' off the image directly. Falls back to a "
-        "plain screenshot if PIL isn't installed."
+        "plain screenshot if PIL isn't installed.\n\n"
+        "★ To screenshot an HTML page you generated: call ``browser_open`` "
+        "first, then this. For a LOCAL file (file://) that uses ES modules "
+        "(`type=\"module\"`) or fetch(), the page renders blank under "
+        "file:// (CORS) — serve it over HTTP instead: start a server in the "
+        "BACKGROUND (``bash`` with the command ending in ` &`; never run "
+        "``python -m http.server`` in the foreground — it blocks until the "
+        "wall-clock timeout), then ``browser_open(http://localhost:<port>/"
+        "<file>)`` → ``browser_screenshot``. NEVER drive Playwright from "
+        "``code_python`` — it can't run there."
     ),
     parameters_schema={
         "type": "object",

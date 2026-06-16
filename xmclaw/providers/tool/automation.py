@@ -146,7 +146,13 @@ _CODE_PYTHON_SPEC = ToolSpec(
         "model requires it.\n\n"
         "Falls back to a one-shot subprocess (no state, no persistence) "
         "if ``jupyter_client`` / ``ipykernel`` aren't installed — the "
-        "result shape is identical so callers don't branch."
+        "result shape is identical so callers don't branch.\n\n"
+        "⛔ DO NOT run Playwright / Selenium / a browser here. This kernel "
+        "is INSIDE an asyncio loop, so Playwright's sync API refuses to "
+        "start, and its async API can't spawn the browser subprocess from "
+        "this kernel — both ALWAYS fail. To open/screenshot a web page use "
+        "the dedicated ``browser_open`` + ``browser_screenshot`` tools "
+        "(they run Playwright correctly in the daemon process)."
     ),
     parameters_schema={
         "type": "object",
@@ -343,6 +349,30 @@ class AutomationTools(ToolProvider):
         code = args.get("code")
         if not isinstance(code, str) or not code.strip():
             return _fail(call, t0, "code required")
+
+        # 2026-06-16 guardrail: Playwright CANNOT run in this kernel — the
+        # sync API refuses inside a running asyncio loop, and the async
+        # API can't spawn the browser subprocess from the kernel. Both
+        # always fail, and the agent tends to burn several hops rediscovering
+        # this. Short-circuit with a redirect to the working tools instead
+        # of letting it run and fail.
+        import re as _re
+        if _re.search(r"(?m)^\s*(import\s+playwright|from\s+playwright\b)", code) \
+                or "sync_playwright" in code or "async_playwright" in code:
+            return _fail(
+                call, t0,
+                "Playwright won't run in code_python: this kernel is inside "
+                "an asyncio loop (sync API refuses) and can't spawn the "
+                "browser subprocess (async API fails). Use the dedicated "
+                "browser tools instead: ``browser_open(url)`` then "
+                "``browser_screenshot()``. For a LOCAL file that needs HTTP "
+                "(ES modules / fetch), first start a server in the "
+                "BACKGROUND — ``bash`` with the command ending in ` &` (do "
+                "NOT run ``python -m http.server`` in the foreground; it "
+                "blocks until the wall-clock timeout) — then browser_open "
+                "http://localhost:<port>/<file>.",
+            )
+
         timeout_s = max(1, min(int(args.get("timeout_s", 30)), 300))
         reset_ns = bool(args.get("reset", False))
 
