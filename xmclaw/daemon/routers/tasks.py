@@ -186,6 +186,22 @@ async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
     bus = getattr(request.app.state, "bus", None)
     can_query = bus is not None and hasattr(bus, "query")
     now = time.time()
+    # Authoritative "is this turn actually live" signal — a session whose
+    # turn died mid-flight keeps a recent event tail and would otherwise
+    # show "running" for STALE_S. Only sessions with a live, not-done turn
+    # task are truly running.
+    _live = getattr(request.app.state, "active_turn_tasks", {}) or {}
+
+    def _is_live(sid: str) -> bool:
+        t = _live.get(sid)
+        return t is not None and not getattr(t, "done", lambda: True)()
+
+    def _truthful_status(sid: str, status: str) -> str:
+        # Derived "running" but no live turn → it stopped; show idle so the
+        # user can resume instead of staring at a frozen "运行中".
+        if status == "running" and not _is_live(sid):
+            return "chat"
+        return status
 
     tasks: list[dict[str, Any]] = []
     for r in rows:
@@ -217,6 +233,7 @@ async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
                     snap.update(derived)
             except Exception:  # noqa: BLE001
                 pass  # 单 session 推导失败不拖垮整个列表
+        snap["status"] = _truthful_status(sid, snap["status"])
         tasks.append(snap)
 
     # 2026-06-16: surface sessions that are LIVE in the event log but not
@@ -227,16 +244,27 @@ async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
     if can_query:
         try:
             covered = {t["sid"] for t in tasks}
-            recent = bus.query(since=now - 86400.0, limit=5000)
+            # Direct GROUP BY on the durable log: reliably finds EVERY
+            # session active in the last 24h, regardless of total event
+            # volume (a recent-N scan misses older-but-unpersisted sessions
+            # once a chatty run floods the tail).
+            import sqlite3 as _sql
+            from xmclaw.core.bus.sqlite import default_events_db_path
+            _con = _sql.connect(str(default_events_db_path()))
+            try:
+                _rows = _con.execute(
+                    "SELECT session_id, MAX(ts) FROM events WHERE ts >= ? "
+                    "GROUP BY session_id ORDER BY MAX(ts) DESC LIMIT 300",
+                    (now - 86400.0,),
+                ).fetchall()
+            finally:
+                _con.close()
             extra_ts: dict[str, float] = {}
-            for e in recent:
-                sid = getattr(e, "session_id", "") or ""
-                if (
-                    not sid or sid in covered
-                    or is_internal_session_id(sid)
-                ):
+            for sid, last in _rows:
+                sid = str(sid or "")
+                if not sid or sid in covered or is_internal_session_id(sid):
                     continue
-                extra_ts[sid] = max(extra_ts.get(sid, 0.0), float(getattr(e, "ts", 0) or 0))
+                extra_ts[sid] = float(last or 0)
             for sid in sorted(extra_ts, key=lambda s: extra_ts[s], reverse=True)[:requested]:
                 events = bus.query(session_id=sid, types=_SALIENT_TYPES, limit=500)
                 if not events:
@@ -253,6 +281,7 @@ async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
                     if c != sid:
                         snap["title"] = c
                 snap.update(derived)
+                snap["status"] = _truthful_status(sid, snap["status"])
                 tasks.append(snap)
         except Exception:  # noqa: BLE001
             pass

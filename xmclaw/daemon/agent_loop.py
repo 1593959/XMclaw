@@ -1132,6 +1132,41 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # has_image / user_message / tool_count 参数保留仅为签名兼容。
         return self._llm_timeout_s
 
+    def _reconstruct_history_from_events(self, session_id: str) -> "list[Message]":
+        """#窜台-fix (2026-06-16): rebuild a session's history from the
+        DURABLE event log when neither memory nor the session_store has it
+        (mid-turn loss / never-persisted, e.g. the user refreshed before a
+        turn finished). Without this the resumed session has EMPTY history,
+        so the LLM has no idea what THIS conversation was about and answers
+        from global cross-session memory — i.e. it talks about a DIFFERENT
+        task ("窜台"). Reconstructs user + assistant TEXT messages only
+        (tool_calls dropped, so no orphaned-tool_use API error)."""
+        try:
+            from xmclaw.core.bus.sqlite import (
+                SqliteEventBus, default_events_db_path,
+            )
+            bus = SqliteEventBus(default_events_db_path())
+            try:
+                evs = bus.query(session_id=session_id, limit=5000)
+            finally:
+                bus.close()
+        except Exception:  # noqa: BLE001
+            return []
+        out: list[Message] = []
+        for e in sorted(evs, key=lambda x: getattr(x, "ts", 0) or 0):
+            t = e.type.value if hasattr(e.type, "value") else str(e.type)
+            p = getattr(e, "payload", {}) or {}
+            if t == "user_message":
+                c = p.get("content")
+                if isinstance(c, str) and c.strip() and p.get("channel") != "steering":
+                    out.append(Message(role="user", content=c))
+            elif t == "llm_response":
+                txt = p.get("text") or p.get("content") or ""
+                if isinstance(txt, str) and txt.strip():
+                    out.append(Message(role="assistant", content=txt))
+        # Keep the tail — recent context matters most and bounds size.
+        return out[-60:]
+
     async def run_turn(
         self, session_id: str, user_message: str,
         *, user_correlation_id: str | None = None,
@@ -2049,8 +2084,21 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 )
             except Exception:  # noqa: BLE001
                 loaded = None
-            if loaded is not None:
+            if loaded:
                 self._histories[session_id] = loaded
+            else:
+                # Store had nothing (mid-turn loss / never-persisted).
+                # Rebuild from the durable event log so the resumed session
+                # carries ITS OWN context and doesn't cross-talk ("窜台")
+                # by falling back to global cross-session memory.
+                try:
+                    rebuilt = await asyncio.to_thread(
+                        self._reconstruct_history_from_events, session_id
+                    )
+                except Exception:  # noqa: BLE001
+                    rebuilt = []
+                if rebuilt:
+                    self._histories[session_id] = rebuilt
 
         # B-30: pre-turn LLM-compression upgrade. If a previous turn
         # in this session triggered overflow + queued an async LLM

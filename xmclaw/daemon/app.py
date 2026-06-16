@@ -860,6 +860,10 @@ def create_app(
     # cooperative cancel_event race (tool teardown, returns normally) or
     # the hard task-cancel (stuck LLM call, raises CancelledError).
     active_turn_cancelled: set[str] = set()
+    # Expose the live-turn registry so /api/v2/tasks can tell a genuinely
+    # running session from a dead one whose event tail merely looks recent
+    # (a turn killed mid-flight keeps "running" for STALE_S otherwise).
+    app.state.active_turn_tasks = active_turn_tasks
 
     async def _session_log_subscriber(event: BehavioralEvent) -> None:
         buf = session_logs.setdefault(event.session_id, [])
