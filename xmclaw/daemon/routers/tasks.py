@@ -219,5 +219,43 @@ async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
                 pass  # 单 session 推导失败不拖垮整个列表
         tasks.append(snap)
 
+    # 2026-06-16: surface sessions that are LIVE in the event log but not
+    # yet in session_store (persisted only at turn-END). Without this, a
+    # task the user is mid-way through — or one they refreshed away from
+    # before it finished — never appears in the rail and looks lost, even
+    # though it's fully recoverable from events.db.
+    if can_query:
+        try:
+            covered = {t["sid"] for t in tasks}
+            recent = bus.query(since=now - 86400.0, limit=5000)
+            extra_ts: dict[str, float] = {}
+            for e in recent:
+                sid = getattr(e, "session_id", "") or ""
+                if (
+                    not sid or sid in covered
+                    or is_internal_session_id(sid)
+                ):
+                    continue
+                extra_ts[sid] = max(extra_ts.get(sid, 0.0), float(getattr(e, "ts", 0) or 0))
+            for sid in sorted(extra_ts, key=lambda s: extra_ts[s], reverse=True)[:requested]:
+                events = bus.query(session_id=sid, types=_SALIENT_TYPES, limit=500)
+                if not events:
+                    continue
+                derived = _derive(events, now)
+                snap = {
+                    "sid": sid, "title": sid, "status": "chat",
+                    "steps_total": 0, "steps_done": 0,
+                    "updated_at": 0.0, "last_activity": "",
+                }
+                ut = derived.pop("_first_user_text", "")
+                if ut:
+                    c = _clean_title(ut, sid)
+                    if c != sid:
+                        snap["title"] = c
+                snap.update(derived)
+                tasks.append(snap)
+        except Exception:  # noqa: BLE001
+            pass
+
     tasks.sort(key=lambda t: t["updated_at"], reverse=True)
     return JSONResponse({"tasks": tasks})
