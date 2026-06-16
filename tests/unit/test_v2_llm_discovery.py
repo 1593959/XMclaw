@@ -108,6 +108,52 @@ class TestDiscoverEndpoint:
         assert "elapsed_ms" in body
         assert body["endpoint_id"]  # non-empty
 
+    async def test_slow_openrouter_warm_does_not_block_model_list(self):
+        """Regression: a cold OpenRouter catalog warm (~8s, vision pre-light
+        enrichment only) must NOT gate the model list. Previously the
+        handler blocked on it, so '从供应商获取' hung ~9s on first use. Now
+        it's fire-and-forget — the handler returns immediately while the
+        warm runs in the background.
+
+        Called directly (not via TestClient, whose request scope would
+        join the background task and mask the non-blocking behaviour)."""
+        import json as _json
+        import time
+
+        from xmclaw.daemon.routers.llm_discovery import discover_models
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [{"id": "agnes-2.0-flash", "name": "Agnes", "created": 1700000000}]
+        }
+
+        async def mock_get(*args, **kwargs):
+            return mock_response
+
+        def slow_warm():
+            time.sleep(3.0)  # simulate cold OpenRouter refresh
+
+        class _Req:
+            async def json(self):
+                return {
+                    "base_url": "https://apihub.agnes-ai.com/v1",
+                    "api_key": "sk-test",
+                    "provider": "openai_compat",
+                }
+
+        t0 = time.perf_counter()
+        with patch("httpx.AsyncClient.get", new=mock_get), patch(
+            "xmclaw.providers.llm._openrouter_discovery.warm_cache", new=slow_warm,
+        ):
+            resp = await discover_models(_Req())
+        elapsed = time.perf_counter() - t0
+        body = _json.loads(bytes(resp.body).decode())
+        assert body["ok"] is True
+        assert body["model_count"] == 1  # models returned despite slow warm
+        # Handler must not have waited on the 3s background warm.
+        assert elapsed < 1.5, f"discover blocked on warm_cache: {elapsed:.1f}s"
+
 
 class TestApplyEndpoint:
     """POST /api/v2/llm/endpoints/apply"""

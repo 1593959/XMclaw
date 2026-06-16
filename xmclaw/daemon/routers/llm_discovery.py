@@ -164,12 +164,24 @@ async def discover_models(request: Request) -> JSONResponse:
             if not isinstance(items, list):
                 items = []
             # Warm the OpenRouter catalog (24h disk cache) so name-based
-            # vision lookup below can enrich resellers' models. Off-thread
-            # to avoid blocking the event loop on the first (cold) fetch.
+            # vision lookup below can enrich resellers' models. This ONLY
+            # feeds the 👁 pre-light hint — it must NOT gate the model list.
+            # A cold refresh fetches ~336 models (~8s); blocking on it made
+            # "从供应商获取" hang ~9s on first use. Fire-and-forget: warm in
+            # the background for the NEXT call; this call uses whatever's
+            # already cached (else the name heuristic). The 👁 pre-light is
+            # cosmetic — the user can always toggle / probe it.
             try:
                 import asyncio as _asyncio
                 from xmclaw.providers.llm._openrouter_discovery import warm_cache
-                await _asyncio.to_thread(warm_cache)
+
+                async def _bg_warm() -> None:
+                    try:
+                        await _asyncio.to_thread(warm_cache)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                _asyncio.create_task(_bg_warm())
             except Exception:  # noqa: BLE001
                 pass
             parsed = []
@@ -637,7 +649,6 @@ async def hotload_profiles(request: Request) -> JSONResponse:
 
     # Build LLMProvider instances (re-uses factory logic)
     from xmclaw.daemon.factory import (
-        _default_model_for,
         _infer_capabilities_from_model,
         _infer_tier_from_model,
         _instantiate_llm,
@@ -746,7 +757,7 @@ async def hotload_profiles(request: Request) -> JSONResponse:
                 profiles[idx] = prof_entry
 
         _atomic_write(target, cfg)
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         pass  # persistence failure doesn't invalidate the hot-load
 
     if not created_ids and failed:
