@@ -2129,6 +2129,17 @@ class HopLoopMixin:
                         "image_count": len(_vision_attachments),
                     })
 
+                # Wave-33: persist the working history after each completed
+                # tool batch. If the daemon crashes before the turn ends, the
+                # next turn resumes from this hop instead of losing all
+                # intermediate tool calls and results.
+                try:
+                    await self._persist_history(
+                        session_id, messages, mid_hop=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
                 # Meta-cognitive no-progress guard: if we haven't made a
                 # successful tool call for N consecutive hops, we're
                 # probably stuck in a wasteful retry loop (different
@@ -2229,6 +2240,16 @@ class HopLoopMixin:
                     # Don't return yet — give the model one hop to
                     # actually call the memory tool.
                     continue
+
+            # Wave-33: terminal assistant response is also a completed hop.
+            # Persist it before the turn-end cleanup so crashes here don't
+            # lose the final synthesis.
+            try:
+                await self._persist_history(
+                    session_id, messages, mid_hop=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
             compression_info = await self._persist_history(session_id, messages)
             if compression_info is not None:

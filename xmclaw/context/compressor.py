@@ -286,6 +286,7 @@ class ContextCompressor:
         protect_last_ratio: float = 0.20,  # % of ctx_len kept verbatim as recent history
         summary_target_ratio: float = 0.30,
         context_length: int = 200_000,
+        strategy: str = "default",
         quiet_mode: bool = False,
     ) -> None:
         """Wave-27 fix-6 (2026-05-15): make tail protection scale with
@@ -321,6 +322,7 @@ class ContextCompressor:
         self.context_length = max(int(context_length), 4_096)
         self.threshold_percent = threshold_percent
         self.threshold_tokens = max(int(self.context_length * threshold_percent), 4_096)
+        self.strategy = strategy if strategy in ("default", "tool_first") else "default"
         # tail_token_budget — primary driver. Scales linearly with
         # ctx_len so big-context models get proportionally more
         # recent history kept verbatim. The summary_target_ratio
@@ -508,6 +510,19 @@ class ContextCompressor:
             if compress_start >= compress_end:
                 return messages
 
+            # Wave-33 tool_first strategy: collapse oldest tool-use groups
+            # in the compressible middle before the LLM summarizer touches
+            # plain assistant text.
+            if self.strategy == "tool_first":
+                messages = self._compress_tool_pairs_first(
+                    messages, compress_start, compress_end,
+                )
+                compress_end = self._find_tail_cut_by_tokens(
+                    messages, compress_start,
+                )
+                if compress_start >= compress_end:
+                    return messages
+
             turns_to_summarize_all = messages[compress_start:compress_end]
 
             # Wave-27 fix-8: USER MESSAGES ARE SACRED. The user's actual
@@ -644,6 +659,74 @@ class ContextCompressor:
                 and messages[check].tool_calls):
             idx = check
         return idx
+
+    def _compress_tool_pairs_first(
+        self,
+        messages: list[Message],
+        start: int,
+        end: int,
+    ) -> list[Message]:
+        """Wave-33: replace tool-use groups in ``[start:end)`` with compact
+        one-line summaries before the LLM summarizer runs.
+
+        This implements the "tool_first" compression strategy: when the
+        context window is under pressure, the oldest tool-call / tool-result
+        pairs are collapsed first, while plain conversation text is left for
+        the normal summarization pass.
+        """
+        if start >= end:
+            return messages
+        try:
+            from xmclaw.context.tool_result_prune import (
+                _summarize_tool_result,
+            )
+        except Exception:  # noqa: BLE001
+            return messages
+
+        new_messages = list(messages)
+        i = start
+        while i < end:
+            m = new_messages[i]
+            if m.role == "assistant" and m.tool_calls:
+                group_end = i + 1
+                while group_end < end and new_messages[group_end].role == "tool":
+                    group_end += 1
+
+                call_lookup: dict[str, tuple[str, Any]] = {}
+                for tc in m.tool_calls:
+                    cid = getattr(tc, "id", "") or ""
+                    if cid:
+                        call_lookup[cid] = (
+                            getattr(tc, "name", "unknown") or "unknown",
+                            getattr(tc, "args", {}) or {},
+                        )
+
+                summaries: list[str] = []
+                for j in range(i + 1, group_end):
+                    tm = new_messages[j]
+                    cid = tm.tool_call_id or ""
+                    name, args = call_lookup.get(cid, ("unknown", {}))
+                    summaries.append(_summarize_tool_result(name, args, tm.content))
+
+                summary_text = (
+                    "\n".join(f"- {s}" for s in summaries)
+                    if summaries else "(tool batch)"
+                )
+                synthetic = Message(
+                    role="assistant",
+                    content=f"[Earlier tool batch]\n{summary_text}",
+                )
+                removed = group_end - i - 1
+                new_messages = (
+                    new_messages[:i]
+                    + [synthetic]
+                    + new_messages[group_end:]
+                )
+                end -= removed
+                i += 1
+            else:
+                i += 1
+        return new_messages
 
     @staticmethod
     def _find_last_user_message_idx(

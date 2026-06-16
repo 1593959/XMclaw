@@ -7,6 +7,7 @@ upgrade logic.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -164,6 +165,9 @@ class HistoryCompressionMixin:
         protect_last_n = _i("protect_last_n", 5, 1, 100)
         protect_last_ratio = _f("protect_last_ratio", 0.20, 0.05, 0.50)
         summary_target_ratio = _f("summary_target_ratio", 0.30, 0.10, 0.60)
+        strategy = sub.get("strategy", "default")
+        if strategy not in ("default", "tool_first"):
+            strategy = "default"
 
         self._compressor = ContextCompressor(
             model=model,
@@ -174,6 +178,7 @@ class HistoryCompressionMixin:
             protect_last_ratio=protect_last_ratio,
             summary_target_ratio=summary_target_ratio,
             context_length=ctx_len,
+            strategy=strategy,
             quiet_mode=False,
         )
         return self._compressor
@@ -662,8 +667,81 @@ class HistoryCompressionMixin:
 
         return subgoals
 
+    _SCRUB_MARKERS = (
+        "memory-context",
+        "curriculum-hint",
+        "curriculum-strategies",
+        "memory-files",
+        "<memory-v2-facts>",
+        "【相关记忆】",
+        # 2026-05-17: ``[turn hint]`` is appended to user
+        # messages by agent_loop when no local skill matched
+        # the query. Same "in-flight scaffolding leaking into
+        # persisted history" failure mode as GOAL-ANCHOR.
+        "[turn hint]",
+        # Jarvis Phase 1-2: time_block moved system → user msg.
+        "## 当前时刻",
+        # Fix Bug C (audit 2026-06-11): continuation anchor leaks into
+        # persisted history on "继续"/"go on" turns.
+        "[System note:",
+        "</output_schema>",
+        "git status:",
+    )
+
+    _SESSION_WORKSPACE_RE = re.compile(
+        r"\n?\n?<session-workspace>.*?</session-workspace>\n?\n?",
+        re.DOTALL,
+    )
+
+    def _scrub_messages(self, messages: list[Message]) -> list[Message]:
+        """Drop system messages and turn-scaffolding from ``messages``.
+
+        Shared by ``_persist_history`` and ``_persist_history_mid_hop``
+        so mid-hop snapshots obey the same cleaning rules as turn-end
+        snapshots.
+        """
+        import dataclasses as _dc
+
+        def _clean_content(text: str) -> str:
+            text = _sanitize_memory_context(text)
+            text = self._SESSION_WORKSPACE_RE.sub("", text)
+            return text
+
+        history = [m for m in messages if m.role != "system"]
+        cleaned_history: list[Message] = []
+        for m in history:
+            if (
+                m.role == "user"
+                and isinstance(m.content, str)
+                and m.content.lstrip().startswith("[GOAL-ANCHOR]")
+            ):
+                continue
+            if (
+                m.role == "user"
+                and isinstance(m.content, str)
+                and any(mk in m.content for mk in self._SCRUB_MARKERS)
+            ):
+                cleaned_history.append(_dc.replace(
+                    m, content=_clean_content(m.content),
+                ))
+            elif (
+                m.role == "user"
+                and isinstance(m.content, str)
+                and "<session-workspace>" in m.content
+            ):
+                cleaned_history.append(_dc.replace(
+                    m, content=_clean_content(m.content),
+                ))
+            else:
+                cleaned_history.append(m)
+        return cleaned_history
+
     async def _persist_history(
-        self, session_id: str, messages: list[Message],
+        self,
+        session_id: str,
+        messages: list[Message],
+        *,
+        mid_hop: bool = False,
     ) -> dict[str, Any] | None:
         """Save conversation history (system prompt excluded).
 
@@ -689,91 +767,22 @@ class HistoryCompressionMixin:
         ``CONTEXT_COMPRESSED`` event with full details.
         """
         # Drop the system message we prepended for this turn.
-        history = [m for m in messages if m.role != "system"]
-        # B-25: strip memory-context fences from user messages before
-        # persisting. The injected ``<memory-context>...</memory-
-        # context>`` block was useful for THIS turn's LLM call — it
-        # must NOT survive into history, or every subsequent turn
-        # would see the prefetched recall as part of the user's
-        # actual words (and the model would echo it back as if the
-        # user had said it). the upstream agent does this in its memory_manager.
-        import dataclasses as _dc
-        cleaned_history: list[Message] = []
-        # Sprint 3 #6: extend the predicate to ALSO catch
-        # ``<curriculum-strategies>`` and ``<curriculum-hint>`` so
-        # those blocks get scrubbed before persistence — same rationale
-        # as the original memory-context scrub.
-        _SCRUB_MARKERS = (
-            "memory-context",
-            "curriculum-hint",
-            "curriculum-strategies",
-            "memory-files",
-            "<memory-v2-facts>",
-            "【相关记忆】",
-            # 2026-05-17: ``[turn hint]`` is appended to user
-            # messages by agent_loop.py when no local skill matched
-            # the query. Same "in-flight scaffolding leaking into
-            # persisted history" failure mode as GOAL-ANCHOR; both
-            # the marker-detection here AND turn_context's regex
-            # stripper need to know about it.
-            "[turn hint]",
-            # Jarvis Phase 1-2: time_block moved system → user msg.
-            "## 当前时刻",
-            # Fix Bug C (audit 2026-06-11): continuation anchor leaks into
-            # persisted history on "继续"/"go on" turns. Also scrub git
-            # status and output schema blocks that are turn scaffolding.
-            "[System note:",
-            "</output_schema>",
-            "git status:",
-        )
-        for m in history:
-            # 2026-05-17: drop GOAL-ANCHOR user messages entirely from
-            # the persisted history. hop_loop.py:293 injects them as a
-            # per-turn scaffolding (every N hops, plus once at hop 0
-            # on multi-turn sessions). They have no value in the
-            # on-disk record — they're regenerated from scratch each
-            # turn from the real history's user thread — and worse,
-            # leaving them in causes role-sequence corruption: the
-            # NEXT turn's run_turn hydrates them as part of ``prior``,
-            # appends the new user msg, hop 0 injects a fresh anchor,
-            # and persists [user, asst, user, anchor, asst] instead
-            # of [user, asst, user, asst]. The duplicate user message
-            # then forms the basis of the NEXT-next turn's anchor,
-            # which compounds across the session. Surfaced by
-            # tests/unit/test_session_store.py:test_agent_loop_persists_after_each_turn
-            # which exercises exactly this two-turn-with-resume path.
-            if (
-                m.role == "user"
-                and isinstance(m.content, str)
-                and m.content.lstrip().startswith("[GOAL-ANCHOR]")
-            ):
-                continue
-            if (
-                m.role == "user"
-                and isinstance(m.content, str)
-                and any(mk in m.content for mk in _SCRUB_MARKERS)
-            ):
-                cleaned_history.append(_dc.replace(
-                    m, content=_sanitize_memory_context(m.content),
-                ))
-            else:
-                cleaned_history.append(m)
-        history = cleaned_history
+        history = self._scrub_messages(messages)
 
-        # B-226: prune old tool results FIRST (before deciding to
-        # drop turns). Most context bloat is huge tool outputs (file
-        # reads, web fetches, grep results) that the model doesn't
-        # need verbatim 30 turns later. Replacing them with 1-line
-        # summaries often gets us back under the token cap without
-        # losing any turn boundaries. Returns (new_history, count) —
-        # count is logged at debug level inside the prune helper, no
-        # need to expose here.
-        # Wave-28: raised protect_tail_tokens from 6000 → 12000
-        # (protect_tail_count_floor from 6 → 10) so older tool results
-        # survive longer. 6000 tokens ≈ 6 messages; for a session with
-        # heavy tool use that's too aggressive — the agent "forgets"
-        # what it did 3 turns ago.
-        if len(history) > 10:
+        if not mid_hop and len(history) > 10:
+            # B-226: prune old tool results FIRST (before deciding to
+            # drop turns). Most context bloat is huge tool outputs (file
+            # reads, web fetches, grep results) that the model doesn't
+            # need verbatim 30 turns later. Replacing them with 1-line
+            # summaries often gets us back under the token cap without
+            # losing any turn boundaries. Returns (new_history, count) —
+            # count is logged at debug level inside the prune helper, no
+            # need to expose here.
+            # Wave-28: raised protect_tail_tokens from 6000 → 12000
+            # (protect_tail_count_floor from 6 → 10) so older tool results
+            # survive longer. 6000 tokens ≈ 6 messages; for a session with
+            # heavy tool use that's too aggressive — the agent "forgets"
+            # what it did 3 turns ago.
             try:
                 from xmclaw.context.tool_result_prune import (
                     prune_old_tool_results,
@@ -804,6 +813,19 @@ class HistoryCompressionMixin:
                 # never break the live turn. The in-memory copy is the source
                 # of truth for the rest of this process.
                 pass
+        if mid_hop:
+            # B-RESUME-2: keep the in-flight stash in sync with the
+            # disk copy. If the turn crashes after this hop, the finally
+            # block must not regress to an older (shorter) message list
+            # and overwrite our mid-hop save.
+            try:
+                _ims = getattr(self, "_inflight_messages", None)
+                if _ims is not None:
+                    _ims[session_id] = list(messages)
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+
         # Epic #2 Phase 2: sync to ContextEngine when wired.
         # The engine is a shadow store today; future refactor will
         # make it the primary source of truth.

@@ -76,6 +76,9 @@ from xmclaw.daemon.turn_context import (
 )
 from xmclaw.daemon.turn_types import AgentTurnResult, _log_memory_failure
 from xmclaw.daemon.history_compression import HistoryCompressionMixin
+from xmclaw.daemon.history_reconstruction import (
+    reconstruct_history_from_event_bus,
+)
 from xmclaw.daemon.hop_loop import HopLoopMixin
 
 
@@ -1139,33 +1142,22 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         turn finished). Without this the resumed session has EMPTY history,
         so the LLM has no idea what THIS conversation was about and answers
         from global cross-session memory — i.e. it talks about a DIFFERENT
-        task ("窜台"). Reconstructs user + assistant TEXT messages only
-        (tool_calls dropped, so no orphaned-tool_use API error)."""
+        task ("窜台").
+
+        Wave-33: restore full tool-use pairs (assistant tool_calls + tool
+        results) so a resumed session can continue from the last completed
+        hop instead of restarting from scratch.
+        """
         try:
-            from xmclaw.core.bus.sqlite import (
-                SqliteEventBus, default_events_db_path,
+            from xmclaw.core.bus.sqlite import default_events_db_path
+            return reconstruct_history_from_event_bus(
+                session_id,
+                db_path=default_events_db_path(),
+                event_limit=5000,
+                tail_limit=120,
             )
-            bus = SqliteEventBus(default_events_db_path())
-            try:
-                evs = bus.query(session_id=session_id, limit=5000)
-            finally:
-                bus.close()
         except Exception:  # noqa: BLE001
             return []
-        out: list[Message] = []
-        for e in sorted(evs, key=lambda x: getattr(x, "ts", 0) or 0):
-            t = e.type.value if hasattr(e.type, "value") else str(e.type)
-            p = getattr(e, "payload", {}) or {}
-            if t == "user_message":
-                c = p.get("content")
-                if isinstance(c, str) and c.strip() and p.get("channel") != "steering":
-                    out.append(Message(role="user", content=c))
-            elif t == "llm_response":
-                txt = p.get("text") or p.get("content") or ""
-                if isinstance(txt, str) and txt.strip():
-                    out.append(Message(role="assistant", content=txt))
-        # Keep the tail — recent context matters most and bounds size.
-        return out[-60:]
 
     async def run_turn(
         self, session_id: str, user_message: str,
@@ -1513,6 +1505,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 "\n\n[note: model returned tool calls in instant mode; "
                 "ignored because no tools were offered]"
             )
+
+        # Persist the instant-mode turn so it survives a fresh AgentLoop
+        # or daemon restart, just like the hop-loop path.
+        messages.append(Message(role="assistant", content=text))
+        try:
+            await self._persist_history(session_id, messages)
+        except Exception:  # noqa: BLE001
+            pass
 
         return AgentTurnResult(
             ok=True, text=text,
