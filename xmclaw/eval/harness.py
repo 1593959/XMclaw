@@ -183,6 +183,8 @@ class Runner:
         self,
         agent_factory: AgentFactory,
         suite: BenchmarkSuite,
+        *,
+        per_task_timeout_s: float = 600.0,
     ) -> None:
         if not callable(agent_factory):
             raise TypeError(
@@ -190,6 +192,12 @@ class Runner:
             )
         self._agent_factory = agent_factory
         self._suite = suite
+        # 2026-06-16 robustness: a per-task wall-clock cap. Without it ONE
+        # hung agentic task (a stalled LLM hop against a slow/dead endpoint)
+        # wedges the WHOLE suite indefinitely — observed: a 6-task run stuck
+        # for a full day on task 6. On timeout the task is failed and the
+        # suite moves on, so a baseline always finishes in bounded time.
+        self._per_task_timeout_s = max(1.0, float(per_task_timeout_s))
 
     async def run(self, limit: int | None = None) -> SuiteResult:
         """Run every task in the suite (up to ``limit``) and return a
@@ -241,7 +249,25 @@ class Runner:
             )
 
         try:
-            agent_text, turns, cost = await self._invoke_agent(agent, case)
+            agent_text, turns, cost = await asyncio.wait_for(
+                self._invoke_agent(agent, case),
+                timeout=self._per_task_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            latency = time.monotonic() - start
+            return TaskResult(
+                task_id=case.task_id,
+                agent_text="",
+                passed=False,
+                score=0.0,
+                turns=0,
+                cost_usd=0.0,
+                latency_s=latency,
+                error=(
+                    f"task exceeded {self._per_task_timeout_s:.0f}s wall-clock "
+                    f"and was aborted (likely a stalled LLM hop) — suite continues"
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
             latency = time.monotonic() - start
             return TaskResult(

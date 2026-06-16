@@ -445,3 +445,43 @@ def test_cli_eval_wired_into_root_app():
     out = runner.invoke(root_app, ["eval", "list"])
     assert out.exit_code == 0
     assert "longmemeval-mini" in out.stdout
+
+
+# ── per-task timeout (2026-06-16) ──────────────────────────────────
+# A hung agentic task must not wedge the whole suite (a 6-task run was
+# observed stuck for a full day on one task). The Runner caps each task.
+
+def _hanging_agent_factory():
+    import asyncio as _a
+    def _factory():
+        async def _arun(prompt: str) -> dict:
+            await _a.sleep(3600)  # never returns within the test
+            return {"text": "never"}
+        return type("Agent", (), {"arun": staticmethod(_arun)})()
+    return _factory
+
+
+@pytest.mark.asyncio
+async def test_runner_per_task_timeout_fails_task_and_continues():
+    # Task 'a' hangs → must time out (not wedge the suite); 'b','c' still run.
+    class _MixedSuite(_FakeSuite):
+        pass
+    # Agent: 'a' hangs forever; others return canned wins.
+    import asyncio as _a
+    def _factory():
+        async def _arun(prompt: str) -> dict:
+            tail = prompt.rsplit("-", 1)[-1]
+            if tail == "a":
+                await _a.sleep(3600)
+            return {"text": f"win-{tail}", "turns": 1, "cost_usd": 0.0}
+        return type("Agent", (), {"arun": staticmethod(_arun)})()
+
+    runner = Runner(_factory, _MixedSuite(), per_task_timeout_s=0.3)
+    res = await runner.run()
+    assert res.n_tasks == 3
+    by_id = {r.task_id: r for r in res.results}
+    assert by_id["a"].passed is False
+    assert "wall-clock" in (by_id["a"].error or "")
+    # The suite did NOT wedge — b and c completed and passed.
+    assert by_id["b"].passed is True
+    assert by_id["c"].passed is True
