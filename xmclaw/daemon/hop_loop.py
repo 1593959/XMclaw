@@ -445,6 +445,16 @@ class HopLoopMixin:
             "image_read": "vision",
         }
 
+        # 2026-06-16: todo-staleness nudge. The model tends to write a todo
+        # list once and then never update item statuses as it works, so the
+        # UI's "待办 0/N" bar sits frozen even as the agent clearly makes
+        # progress (user report). Track the latest todo items + hops since
+        # the last todo_write; when there are unfinished items and several
+        # hops have passed without an update, nudge it to sync the list.
+        _todo_items: list[Any] = []
+        _hops_since_todo = 0
+        _TODO_NUDGE_EVERY = 4
+
         for hop in range(self._max_hops):
             hop_corr = f"{turn_uuid}-{hop}"
             # 2026-06-08 动态超时(按 hop 深度,不按开场消息)。
@@ -513,6 +523,27 @@ class HopLoopMixin:
                         "hop": hop,
                     })
                 self._steer_queue[session_id] = []
+
+            # 2026-06-16: todo-staleness nudge (safe hop boundary). If the
+            # agent has unfinished todos and hasn't touched the list in a
+            # few hops, remind it to sync — otherwise the "待办 N/M" bar
+            # stays frozen while it works.
+            _pending_todos = [
+                it for it in _todo_items
+                if isinstance(it, dict)
+                and str(it.get("status") or "").lower() not in ("completed", "done", "cancelled")
+            ]
+            if _pending_todos and _hops_since_todo >= _TODO_NUDGE_EVERY:
+                messages.append(Message(
+                    role="user",
+                    content=(
+                        "[系统提示] 你的待办列表还有未完成项,且已经几步没更新了。"
+                        "请立刻用 todo_write 重写整张列表,把已完成的标 completed、"
+                        "正在做的标 in_progress —— 保持待办与真实进度一致(用户在侧栏盯着进度条)。"
+                    ),
+                ))
+                _hops_since_todo = 0
+            _hops_since_todo += 1
 
             # Anti-req #6: check the hard budget cap BEFORE the LLM call.
             # If we've already exceeded, abort with an
@@ -1651,6 +1682,10 @@ class HopLoopMixin:
                                 "items": items,
                                 "count": len(items),
                             })
+                            # Feed the staleness nudge: remember the list +
+                            # reset the "hops since update" counter.
+                            _todo_items = items
+                            _hops_since_todo = 0
                     # B-MULTIMODAL-UI / Wave 26: surface media
                     # attachments to the chat UI. Tools emit either
                     # the legacy ``metadata.attach_image: str`` or the
