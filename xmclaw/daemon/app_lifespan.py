@@ -921,20 +921,20 @@ def make_lifespan(
         _app.state.reflector_cron = None
         try:
             agent = getattr(_app.state, "agent", None)
-            llm = getattr(agent, "_llm", None) if agent is not None else None
-            mem_svc = getattr(agent, "_memory_service", None) if agent is not None else None
             refl_section = (
                 (((config or {}).get("cognition") or {}).get("memory_v2") or {})
                 .get("reflection") or {}
             )
             refl_enabled = refl_section.get("enabled", True)
-            if llm is not None and mem_svc is not None and refl_enabled:
+            # llm + memory_service are resolved lazily from the agent on the
+            # first tick — agent._memory_service is wired AFTER this point in
+            # lifespan, but the first reflect is 30 min out, long since ready.
+            if agent is not None and refl_enabled:
                 from xmclaw.daemon.session_reflector import (
                     ReflectorCron, SessionReflector,
                 )
                 reflector = SessionReflector(
-                    llm=llm,
-                    memory_service=mem_svc,
+                    agent=agent,
                     bus=bus,
                     max_sessions_per_tick=int(
                         refl_section.get("max_sessions_per_tick", 20)

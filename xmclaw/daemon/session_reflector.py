@@ -90,16 +90,21 @@ class SessionReflector:
     def __init__(
         self,
         *,
-        llm: "LLMProvider",
-        memory_service: Any,
+        llm: "LLMProvider | None" = None,
+        memory_service: Any = None,
         events_db_path: Path | str | None = None,
         state_path: Path | str | None = None,
         bus: Any = None,
+        agent: Any = None,
         max_sessions_per_tick: int = 20,
         lookback_days: float = 14.0,
     ) -> None:
         self._llm = llm
         self._memory = memory_service
+        # ``agent._memory_service`` is wired LATER in app_lifespan than where
+        # the reflector is constructed; keep the agent ref so we can resolve
+        # llm / memory lazily on the first tick (30 min out — long since wired).
+        self._agent = agent
         if events_db_path is None:
             from xmclaw.core.bus.sqlite import default_events_db_path
             events_db_path = default_events_db_path()
@@ -226,6 +231,11 @@ class SessionReflector:
 
     async def reflect_once(self) -> dict[str, Any]:
         """Scan changed sessions, distil lessons, persist to memory."""
+        # Lazy-resolve from the agent (wired after construction).
+        if self._memory is None and self._agent is not None:
+            self._memory = getattr(self._agent, "_memory_service", None)
+        if self._llm is None and self._agent is not None:
+            self._llm = getattr(self._agent, "_llm", None)
         if self._memory is None or self._llm is None:
             return {"ok": False, "error": "llm or memory_service not wired"}
         now = time.time()
