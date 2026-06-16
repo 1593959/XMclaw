@@ -53,4 +53,13 @@ constructs them from the `config.voice` block.
 - `whisper.py` — `WhisperSTT(model_name="tiny", device="cpu",
   compute_type="int8", language=None)`.
 - `edge_tts.py` — `EdgeTTS(voice="zh-CN-XiaoxiaoNeural", rate="+0%",
-  volume="+0%")`.
+  volume="+0%")` — free, no key; the zero-config default.
+- `minimax_tts.py` — `MiniMaxTTS(api_key, model, base_url, voice)` —
+  native `/t2a_v2` (hex-encoded audio in `data.audio`).
+- `openai_tts.py` — `OpenAICompatTTS(api_key, model, base_url, voice)` —
+  OpenAI-compatible `/audio/speech` (raw audio body).
+- `dispatch.py` — `build_tts_backend(api_key, model, base_url, voice)`
+  picks the remote backend by vendor (MiniMax / OpenAI-compat); returns
+  None for vendors without a portable backend (e.g. Volcengine seed-tts)
+  so the factory falls back to EdgeTTS. Vendor detection lives in
+  `xmclaw/utils/vendor_detect.py` (shared with `providers/media`).

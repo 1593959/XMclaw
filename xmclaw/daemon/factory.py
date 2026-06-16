@@ -977,7 +977,7 @@ def _scan_media_profiles(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Find the first enabled profile carrying each media-gen capability.
 
     Returns ``{capability: {api_key, base_url, model, provider}}`` for
-    ``image_gen`` / ``video_gen``. Capability comes from the profile's
+    ``image_gen`` / ``video_gen`` / ``audio_out``. Capability comes from the profile's
     explicit ``capabilities`` list, else the name heuristic — so tagging a
     model 「生图」 in the UI (capability ``image_gen``) is enough to light
     up the ``generate_image`` tool. Key resolution mirrors
@@ -1009,7 +1009,7 @@ def _scan_media_profiles(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             }
         else:
             caps = set(_infer_capabilities_from_model(model, provider=provider))
-        wanted = {"image_gen", "video_gen"} & caps
+        wanted = {"image_gen", "video_gen", "audio_out"} & caps
         if not wanted:
             continue
         # Resolve api_key: inline → per-profile secret → legacy block.
@@ -1049,37 +1049,35 @@ def _build_media_tool_providers(cfg: dict[str, Any]) -> list[Any]:
         get_aggregator().record(ErrorSeverity.WARNING, __name__, "_scan_media_profiles", _exc)
         found = {}
 
-    # Image: any OpenAI-compatible /images/generations endpoint (OpenAI
-    # DALL-E, or compat endpoints exposing the same shape).
+    # Image: protocol dispatch picks DALL-E (OpenAI) / MiniMax-native /
+    # portable OpenAI-compat (Ark Seedream + generic) by vendor.
     img = found.get("image_gen")
     if img:
         try:
-            from xmclaw.providers.media.dalle3 import Dalle3Provider
+            from xmclaw.providers.media.dispatch import build_image_backend
             from xmclaw.providers.tool.generate_image import (
                 GenerateImageToolProvider,
             )
-            backend = Dalle3Provider(
-                api_key=img["api_key"],
-                base_url=img["base_url"],
-                model=img["model"],
+            backend = build_image_backend(
+                api_key=img["api_key"], model=img["model"],
+                base_url=img.get("base_url"), provider=img.get("provider"),
             )
-            out.append(GenerateImageToolProvider(provider=backend))
+            if backend is not None:
+                out.append(GenerateImageToolProvider(provider=backend))
         except Exception as _exc:  # noqa: BLE001
             get_aggregator().record(ErrorSeverity.WARNING, __name__, "_build_image_tool", _exc)
 
-    # Video: Replicate (the implemented backend). Resolved from a
-    # video_gen profile pointing at Replicate, or a dedicated
-    # ``media.replicate`` config block (token, not an LLM profile).
+    # Video: protocol dispatch picks Replicate / MiniMax (3-step) / Ark
+    # (submit+poll) by vendor. A ``media.replicate`` config block (token,
+    # not an LLM profile) is honoured as a fallback.
     video_backend = None
     vid = found.get("video_gen")
     try:
-        from xmclaw.providers.media.replicate_video import ReplicateVideoProvider
-        if vid and (
-            "replicate" in (vid.get("base_url") or "").lower()
-            or vid.get("provider") == "replicate"
-        ):
-            video_backend = ReplicateVideoProvider(
-                api_token=vid["api_key"], model_version=vid["model"],
+        if vid:
+            from xmclaw.providers.media.dispatch import build_video_backend
+            video_backend = build_video_backend(
+                api_key=vid["api_key"], model=vid["model"],
+                base_url=vid.get("base_url"), provider=vid.get("provider"),
             )
         if video_backend is None:
             media_cfg = cfg.get("media")
@@ -1087,6 +1085,9 @@ def _build_media_tool_providers(cfg: dict[str, Any]) -> list[Any]:
             if isinstance(rep, dict):
                 tok = rep.get("api_token") or rep.get("api_key")
                 if isinstance(tok, str) and tok.strip():
+                    from xmclaw.providers.media.replicate_video import (
+                        ReplicateVideoProvider,
+                    )
                     kwargs: dict[str, Any] = {"api_token": tok.strip()}
                     mv = rep.get("model") or rep.get("model_version")
                     if isinstance(mv, str) and mv.strip():
@@ -1260,8 +1261,29 @@ def build_tools_from_config(
             # load is deferred to first transcribe). If it does, leave
             # provider None — voice_transcribe just won't list.
             _stt_provider = None
+    # TTS: a remote ``audio_out`` model profile (MiniMax /t2a_v2 or an
+    # OpenAI-compatible /audio/speech) takes priority; EdgeTTS (free, no
+    # key) is the fallback. NB: the ``voice.tts.voice`` id is EdgeTTS-
+    # specific, so it's NOT forwarded to remote backends — they pick their
+    # own default voice. Volcengine seed-tts (native binary API) returns
+    # None from the dispatch and falls through to EdgeTTS.
     tts_section = voice_cfg.get("tts") if isinstance(voice_cfg, dict) else None
-    if isinstance(tts_section, dict):
+    try:
+        _audio_prof = _scan_media_profiles(cfg).get("audio_out")
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_scan_media_profiles", _exc)
+        _audio_prof = None
+    if _audio_prof:
+        try:
+            from xmclaw.providers.voice.dispatch import build_tts_backend
+            _tts_provider = build_tts_backend(
+                api_key=_audio_prof["api_key"], model=_audio_prof["model"],
+                base_url=_audio_prof.get("base_url"),
+            )
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_build_remote_tts", _exc)
+            _tts_provider = None
+    if _tts_provider is None and isinstance(tts_section, dict):
         try:
             from xmclaw.providers.voice.edge_tts import EdgeTTS
             _tts_provider = EdgeTTS(
