@@ -77,6 +77,9 @@ class _KernelEntry:
     # Until cleared by ``reset_session``, calls return a structured error
     # instead of busy-looping the kernel-start failure.
     dead: bool = False
+    # 2026-06-16: whether the no-window subprocess monkeypatch has been
+    # applied to this kernel yet (run once on first execute).
+    bootstrapped: bool = False
 
 
 @dataclass
@@ -111,6 +114,29 @@ class ExecutionResult:
         if self.result_repr:
             out["result"] = self.result_repr
         return out
+
+
+# 2026-06-16: hiding the kernel's OWN console (start_kernel CREATE_NO_WINDOW)
+# isn't enough — when the agent's code spawns a child (pip install, a Flask /
+# http.server dev server, etc.) via subprocess, Windows allocates a fresh
+# console window for that child and pops it to the desktop foreground (user:
+# "调用工具还是在最前端出现黑窗"). We can't edit what the model writes, so we
+# monkeypatch subprocess.Popen INSIDE the kernel to default-inject
+# CREATE_NO_WINDOW. Covers subprocess.run/call/check_output/Popen. Idempotent
+# + guarded so a re-run (or agent code that re-imports) is a no-op.
+_NOWIN_BOOTSTRAP = (
+    "import sys as _xsys, subprocess as _xsp\n"
+    "if _xsys.platform == 'win32' and not getattr(_xsp.Popen, '_xmclaw_nowin', False):\n"
+    "    _xorig = _xsp.Popen.__init__\n"
+    "    def _xpatched(self, *a, **kw):\n"
+    "        try:\n"
+    "            kw['creationflags'] = int(kw.get('creationflags', 0) or 0) | 0x08000000\n"
+    "        except Exception:\n"
+    "            pass\n"
+    "        return _xorig(self, *a, **kw)\n"
+    "    _xsp.Popen.__init__ = _xpatched\n"
+    "    _xsp.Popen._xmclaw_nowin = True\n"
+)
 
 
 class KernelPool:
@@ -163,6 +189,18 @@ class KernelPool:
         _check_deps()
         entry = await self._get_or_create(session_id)
         async with entry.lock:
+            # One-time: silence child-process console windows (pip / dev
+            # servers the agent's code spawns). Best-effort — a failure here
+            # must never block the user's actual code.
+            if not entry.bootstrapped:
+                entry.bootstrapped = True
+                try:
+                    await self._execute_locked(
+                        entry, _NOWIN_BOOTSTRAP,
+                        timeout_s=10.0, stdout_cap=1_000, stderr_cap=1_000,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             return await self._execute_locked(
                 entry, code,
                 timeout_s=timeout_s,
