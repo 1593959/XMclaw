@@ -272,6 +272,23 @@ def test_tts_dispatch_minimax_vs_openai_vs_volcengine() -> None:
     assert vol is None
 
 
+def test_stt_dispatch_is_conservative() -> None:
+    from xmclaw.providers.voice.dispatch import build_stt_backend
+    from xmclaw.providers.voice.openai_stt import OpenAICompatSTT
+
+    # A real transcription model wires to /audio/transcriptions.
+    w = build_stt_backend(
+        api_key="k", model="whisper-1", base_url="https://api.openai.com/v1")
+    assert isinstance(w, OpenAICompatSTT)
+
+    # A multimodal CHAT model that merely carries audio_in must NOT be
+    # mistaken for a transcription endpoint → None → local Whisper.
+    chat = build_stt_backend(
+        api_key="k", model="gpt-4o-audio-preview",
+        base_url="https://api.openai.com/v1")
+    assert chat is None
+
+
 # ── end-to-end through build_tools_from_config ─────────────────────
 
 

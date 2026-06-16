@@ -1009,7 +1009,7 @@ def _scan_media_profiles(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             }
         else:
             caps = set(_infer_capabilities_from_model(model, provider=provider))
-        wanted = {"image_gen", "video_gen", "audio_out"} & caps
+        wanted = {"image_gen", "video_gen", "audio_out", "audio_in"} & caps
         if not wanted:
             continue
         # Resolve api_key: inline → per-profile secret → legacy block.
@@ -1246,7 +1246,30 @@ def build_tools_from_config(
     _stt_provider: Any = None
     _tts_provider: Any = None
     stt_section = voice_cfg.get("stt") if isinstance(voice_cfg, dict) else None
-    if isinstance(stt_section, dict):
+    # STT: a remote ``audio_in`` transcription profile (whisper-api /
+    # gpt-4o-transcribe on an OpenAI-compat host) takes priority; local
+    # WhisperSTT is the fallback. build_stt_backend is conservative — it
+    # returns None for non-transcription audio_in models (multimodal chat),
+    # so those fall through to local Whisper.
+    try:
+        _stt_prof = _scan_media_profiles(cfg).get("audio_in")
+    except Exception as _exc:  # noqa: BLE001
+        get_aggregator().record(ErrorSeverity.WARNING, __name__, "_scan_media_profiles", _exc)
+        _stt_prof = None
+    if _stt_prof:
+        try:
+            from xmclaw.providers.voice.dispatch import build_stt_backend
+            _lang = (
+                stt_section.get("language") if isinstance(stt_section, dict) else None
+            )
+            _stt_provider = build_stt_backend(
+                api_key=_stt_prof["api_key"], model=_stt_prof["model"],
+                base_url=_stt_prof.get("base_url"), language=_lang,
+            )
+        except Exception as _exc:  # noqa: BLE001
+            get_aggregator().record(ErrorSeverity.WARNING, __name__, "_build_remote_stt", _exc)
+            _stt_provider = None
+    if _stt_provider is None and isinstance(stt_section, dict):
         try:
             from xmclaw.providers.voice.whisper import WhisperSTT
             _stt_provider = WhisperSTT(

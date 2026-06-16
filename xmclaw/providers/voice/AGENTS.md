@@ -58,8 +58,15 @@ constructs them from the `config.voice` block.
   native `/t2a_v2` (hex-encoded audio in `data.audio`).
 - `openai_tts.py` — `OpenAICompatTTS(api_key, model, base_url, voice)` —
   OpenAI-compatible `/audio/speech` (raw audio body).
-- `dispatch.py` — `build_tts_backend(api_key, model, base_url, voice)`
-  picks the remote backend by vendor (MiniMax / OpenAI-compat); returns
-  None for vendors without a portable backend (e.g. Volcengine seed-tts)
-  so the factory falls back to EdgeTTS. Vendor detection lives in
-  `xmclaw/utils/vendor_detect.py` (shared with `providers/media`).
+- `openai_stt.py` — `OpenAICompatSTT(api_key, model, base_url, language)`
+  — OpenAI-compatible `/audio/transcriptions` (multipart upload). The
+  remote counterpart to local WhisperSTT, wired from an `audio_in`
+  transcription profile.
+- `dispatch.py` — `build_tts_backend(...)` / `build_stt_backend(...)`
+  pick the remote backend by vendor; return None for vendors without a
+  portable backend (Volcengine seed-tts, MiniMax/Volcengine ASR) so the
+  factory falls back to EdgeTTS / local WhisperSTT. `build_stt_backend` is
+  conservative: only transcription-named models (whisper/transcribe/asr)
+  wire remote — a multimodal chat model carrying `audio_in` does NOT.
+  Vendor detection lives in `xmclaw/utils/vendor_detect.py` (shared with
+  `providers/media`).
