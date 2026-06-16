@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -130,6 +131,33 @@ def _model_supports_vision(model: str | None, base_url: str | None) -> bool:
         if any(t in mdl for t in ("vl", "vision", "4o", "claude-3", "claude-opus", "claude-sonnet")):
             return True
     return False
+
+
+_THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _split_inline_think(text: str) -> tuple[str, str]:
+    """Separate inline ``<think>…</think>`` reasoning from visible content.
+
+    2026-06-16: some OpenAI-compat models (Kimi k2.6, DeepSeek-R1, …) emit
+    reasoning INLINE in the content as ``<think>…</think>`` rather than in a
+    separate ``reasoning_content`` field. Unstripped, the tag leaks into the
+    chat bubble (user saw ``…创建看板页面。</think>现在我了解了…``). Returns
+    ``(visible_content, thinking)``. Handles three shapes: balanced blocks,
+    a leaked CLOSING tag with no opener (everything before the last
+    ``</think>`` is reasoning), and a stray opener.
+    """
+    if "<think>" not in text and "</think>" not in text:
+        return text, ""
+    thinks = _THINK_BLOCK_RE.findall(text)  # inner reasoning of balanced blocks
+    clean = _THINK_BLOCK_RE.sub("", text)
+    if "</think>" in clean:  # leaked close (no opener): split at the last one
+        idx = clean.rfind("</think>")
+        thinks.append(clean[:idx])
+        clean = clean[idx + len("</think>"):]
+    clean = clean.replace("<think>", "").replace("</think>", "")
+    extracted = "\n".join(t.strip() for t in thinks if t and t.strip())
+    return clean.strip(), extracted
 
 
 class OpenAILLM(LLMProvider):
@@ -604,6 +632,9 @@ class OpenAILLM(LLMProvider):
             return LLMResponse(content="", tool_calls=(), latency_ms=latency_ms)
         msg = choices[0].message
         text = getattr(msg, "content", "") or ""
+        # 2026-06-16: strip inline <think>…</think> reasoning some compat
+        # models emit in content (else it leaks into the visible message).
+        text, _ = _split_inline_think(text)
         # B-229: forward finish_reason so callers can detect truncation.
         finish_reason = str(getattr(choices[0], "finish_reason", "") or "")
 
@@ -941,8 +972,15 @@ class OpenAILLM(LLMProvider):
                     # fires.
                     pass
 
+        # 2026-06-16: strip inline <think>…</think> that some compat models
+        # emit in content (else the tag leaks into the chat bubble). Route
+        # the extracted reasoning to the thinking channel.
+        _clean, _inline_think = _split_inline_think("".join(text_parts))
+        _thinking = "".join(thinking_parts)
+        if _inline_think:
+            _thinking = (_thinking + "\n" + _inline_think) if _thinking else _inline_think
         return LLMResponse(
-            content="".join(text_parts),
+            content=_clean,
             tool_calls=tuple(tool_calls),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -954,7 +992,7 @@ class OpenAILLM(LLMProvider):
             cache_read_input_tokens=cache_read_input_tokens,
             # 2026-05-26: thinking accumulated from the stream so
             # hop_loop can echo it back on the next assistant turn.
-            thinking="".join(thinking_parts),
+            thinking=_thinking,
         )
 
     @property
