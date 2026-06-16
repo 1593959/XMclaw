@@ -259,7 +259,21 @@ class KernelPool:
             env["PYTHONUTF8"] = "1"
             env["PYTHONIOENCODING"] = "utf-8"
             km = KernelManager()
-            km.start_kernel(env=env)
+            # 2026-06-16: hide the kernel's console window on Windows. jupyter
+            # only applies CREATE_NO_WINDOW when it redirects the kernel's
+            # stdout (launcher.py: `if redirect_out`), which we don't — so a
+            # black cmd window pops to the FOREGROUND every time code_python
+            # spins up a kernel (user: "调用工具弹到最前端的黑窗"). Forward our
+            # CREATE_NO_WINDOW + SW_HIDE kwargs through start_kernel →
+            # provisioner → Popen. Fall back to a plain start if a future
+            # jupyter_client rejects the kwargs (no popup is best-effort, a
+            # working kernel is mandatory).
+            from xmclaw.utils.subprocess_hidden import hidden_subprocess_kwargs
+            _hidden = hidden_subprocess_kwargs()
+            try:
+                km.start_kernel(env=env, **_hidden)
+            except TypeError:
+                km.start_kernel(env=env)
             kc = km.client()
             kc.start_channels()
             # Block until kernel signals ready. 30s ceiling to keep a
