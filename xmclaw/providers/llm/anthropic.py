@@ -729,15 +729,14 @@ class AnthropicLLM(LLMProvider):
         # Kimi /coding emits reasoning inline as <think>…</think> in the text
         # stream; strip it live so it never reaches the visible bubble (the
         # final re-strip alone loses to the webui "keep longer text" rule).
-        # 2026-06-17: Kimi K2.6 /coding also emits reasoning with NO opening
-        # <think> then a lone </think> (user saw "…确认上下文。</think>🐱…" leak
-        # into the bubble). For that endpoint, hold leading text until the
-        # close so the reasoning sentence — not just the tag — stays out of
-        # the bubble. Gated to Kimi-coding so real Claude (thinking_delta, no
-        # inline tags) keeps live-streaming its leading text.
-        _base_l = (self.base_url or "").lower()
-        _kimi_coding = "kimi" in _base_l or "/coding" in _base_l
-        _think_filter = InlineThinkStreamFilter(hold_leading_reasoning=_kimi_coding)
+        # The filter also drops a bare/leaked </think> (no opener) and routes
+        # co-arriving reasoning to the thinking channel.
+        # 2026-06-17: a `hold_leading_reasoning` mode (hold ALL leading text
+        # until the close) was tried to also catch reasoning that streams
+        # token-by-token before the close, but it blanked the thinking panel
+        # for this endpoint (reasoning likely arrives via thinking_delta, not
+        # inline) — reverted pending a real stream dump. Default mode only.
+        _think_filter = InlineThinkStreamFilter()
 
         # B-270 (reverted 2026-05-24): the prefix-based heuristic
         # separator was too fragile — any LLM reply opening with
