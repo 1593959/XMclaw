@@ -4,8 +4,14 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
 import { apiGet, apiPost } from "../lib/api";
+import SegTabs from "../components/SegTabs";
 
 const CognitionView = lazy(() => import("./CognitionView"));
+
+const SKILL_TABS = [
+  { id: "skills" as const, label: "技能 / 进化" },
+  { id: "cognition" as const, label: "认知 / 自主" },
+];
 
 interface SkillVersion {
   version: number;
@@ -63,9 +69,8 @@ export default function SkillsView() {
   if (tab === "cognition") {
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="flex gap-1.5 px-5 pt-4 shrink-0">
-          <SkillsTab id="skills" cur={tab} onPick={setTab}>技能 / 进化</SkillsTab>
-          <SkillsTab id="cognition" cur={tab} onPick={setTab}>认知 / 自主</SkillsTab>
+        <div className="px-5 pt-4 shrink-0">
+          <SegTabs tabs={SKILL_TABS} cur={tab} onPick={setTab} />
         </div>
         <div className="flex-1 overflow-y-auto min-h-0">
           <Suspense fallback={<div className="p-5 text-mc-faint text-sm">加载中…</div>}>
@@ -78,9 +83,8 @@ export default function SkillsView() {
 
   return (
     <div className="flex-1 overflow-y-auto p-5 space-y-4">
-      <div className="flex gap-1.5">
-        <SkillsTab id="skills" cur={tab} onPick={setTab}>技能 / 进化</SkillsTab>
-        <SkillsTab id="cognition" cur={tab} onPick={setTab}>认知 / 自主</SkillsTab>
+      <div>
+        <SegTabs tabs={SKILL_TABS} cur={tab} onPick={setTab} />
       </div>
       <div>
         <h2 className="text-base font-semibold">能力</h2>
@@ -260,28 +264,3 @@ function SkillRow({ skill: s, token }: { skill: Skill; token: string | null }) {
   );
 }
 
-function SkillsTab({
-  id,
-  cur,
-  onPick,
-  children,
-}: {
-  id: "skills" | "cognition";
-  cur: string;
-  onPick: (v: "skills" | "cognition") => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={() => onPick(id)}
-      className={
-        "text-xs px-3 py-1.5 rounded-md border cursor-pointer " +
-        (cur === id
-          ? "border-mc-accent/50 text-mc-accent bg-mc-accent/10"
-          : "border-mc-border text-mc-faint hover:text-mc-muted")
-      }
-    >
-      {children}
-    </button>
-  );
-}

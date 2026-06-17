@@ -4,11 +4,17 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
 import { apiGet, type ApiError } from "../lib/api";
+import SegTabs from "../components/SegTabs";
 
 const ModelConfig = lazy(() => import("./ModelConfig"));
 const CronView = lazy(() => import("./CronView"));
 
 type SystemTabId = "status" | "models" | "cron";
+const SYS_TABS = [
+  { id: "status" as const, label: "健康 / 日志" },
+  { id: "models" as const, label: "模型管理" },
+  { id: "cron" as const, label: "定时任务" },
+];
 
 interface Health {
   status?: string;
@@ -37,10 +43,8 @@ export default function SystemView() {
   if (tab === "models" || tab === "cron") {
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="flex gap-1.5 px-5 pt-4 shrink-0">
-          <SystemTab id="status" cur={tab} onPick={setTab}>健康 / 日志</SystemTab>
-          <SystemTab id="models" cur={tab} onPick={setTab}>模型管理</SystemTab>
-          <SystemTab id="cron" cur={tab} onPick={setTab}>定时任务</SystemTab>
+        <div className="px-5 pt-4 shrink-0">
+          <SegTabs tabs={SYS_TABS} cur={tab} onPick={setTab} />
         </div>
         <div className="flex-1 overflow-y-auto min-h-0">
           <Suspense fallback={<div className="p-5 text-mc-faint text-sm">加载中…</div>}>
@@ -53,10 +57,8 @@ export default function SystemView() {
 
   return (
     <div className="flex-1 overflow-y-auto p-5 space-y-4 min-h-0 flex flex-col">
-      <div className="flex gap-1.5 shrink-0">
-        <SystemTab id="status" cur={tab} onPick={setTab}>健康 / 日志</SystemTab>
-        <SystemTab id="models" cur={tab} onPick={setTab}>模型管理</SystemTab>
-        <SystemTab id="cron" cur={tab} onPick={setTab}>定时任务</SystemTab>
+      <div className="shrink-0">
+        <SegTabs tabs={SYS_TABS} cur={tab} onPick={setTab} />
       </div>
       <div className="shrink-0">
         <h2 className="text-base font-semibold">系统</h2>
@@ -108,31 +110,5 @@ export default function SystemView() {
         </pre>
       </div>
     </div>
-  );
-}
-
-function SystemTab({
-  id,
-  cur,
-  onPick,
-  children,
-}: {
-  id: SystemTabId;
-  cur: string;
-  onPick: (v: SystemTabId) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={() => onPick(id)}
-      className={
-        "text-xs px-3 py-1.5 rounded-md border cursor-pointer " +
-        (cur === id
-          ? "border-mc-accent/50 text-mc-accent bg-mc-accent/10"
-          : "border-mc-border text-mc-faint hover:text-mc-muted")
-      }
-    >
-      {children}
-    </button>
   );
 }
