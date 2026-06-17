@@ -259,6 +259,18 @@ def make_lifespan(
             from xmclaw.daemon.memory_indexer import MemoryFileIndexer
             from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
             embedder = build_embedding_provider(config or {})
+            # Index-rebuild protection: if the embedding model/dim changed
+            # vs what built the existing vectors, warn loudly (recall would
+            # silently degrade across embedding spaces). Marker lives next to
+            # the V2 index data. Never blocks boot.
+            if embedder is not None:
+                try:
+                    from xmclaw.providers.memory.embedding_guard import guard_embedder
+                    from xmclaw.utils.paths import data_dir
+                    if guard_embedder(data_dir() / "v2", embedder):
+                        _app.state.embedding_fingerprint_changed = True
+                except Exception:  # noqa: BLE001
+                    pass
             mgr = getattr(_app.state, "memory", None)
             vec_provider = None
             # B-88: ``_app.state.memory`` is the raw return value of
@@ -3464,9 +3476,10 @@ def make_lifespan(
                     _agent_inter_for_hooks = getattr(
                         _app.state, "agent_inter_tools", None,
                     )
-                    _workspace_root = str(_HOME_PATH) if (
-                        '_HOME_PATH' in globals()
-                    ) else None
+                    # ``_HOME_PATH`` was never defined anywhere — the old
+                    # ``'_HOME_PATH' in globals()`` guard made this dead code
+                    # that always passed None. Kept explicit (+ F821-clean).
+                    _workspace_root = None
                     hook_engine = build_hook_engine_from_config(
                         config,
                         llm_provider=_llm_for_hooks,

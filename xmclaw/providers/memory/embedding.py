@@ -65,6 +65,17 @@ class EmbeddingProvider(abc.ABC):
         cloud providers override."""
         return True
 
+    @property
+    def fingerprint(self) -> str:
+        """Stable identity of the embedding space this provider produces.
+
+        Switching the embedding model (or its output dimension) makes
+        previously-stored vectors incompatible — cosine distances across
+        two spaces are meaningless. Persisting this lets callers detect a
+        change and rebuild the index instead of silently degrading recall
+        to keyword search. Subclasses with a model id fold it in."""
+        return f"{self.name}::{self.dim}"
+
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     """OpenAI-compatible embedding endpoint client.
@@ -106,6 +117,11 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def fingerprint(self) -> str:
+        # Fold the model id in — same dim, different model = different space.
+        return f"{self.name}:{self._model}:{self.dim}"
 
     @property
     def _is_local(self) -> bool:
@@ -270,6 +286,13 @@ def build_embedding_provider(cfg: dict | None) -> EmbeddingProvider | None:
         return _from_env()
     sec = (((cfg.get("evolution") or {}).get("memory") or {}).get("embedding") or {})
     if not sec:
+        # No explicit embedding block — fall back to an ``embedding``-tagged
+        # LLM profile (cloud or a local Ollama/vLLM endpoint configured as a
+        # profile). Without this, a user who added an embedding model still
+        # got keyword-only recall because nothing consumed the profile.
+        prof = _from_profiles(cfg)
+        if prof is not None:
+            return prof
         return _from_env()
     provider = str(sec.get("provider") or "openai").lower()
     if provider not in ("openai", ""):
@@ -289,6 +312,68 @@ def build_embedding_provider(cfg: dict | None) -> EmbeddingProvider | None:
         return p
     # Fall through to env vars
     return _from_env()
+
+
+_EMBED_NAME_HINTS = (
+    "embedding", "embed", "bge-", "bge_", "text-embedding", "m3e", "voyage",
+    "nomic-embed", "gte-", "e5-", "jina-embed",
+)
+
+
+def _looks_like_embedding_model(model: str, caps: Any) -> bool:
+    if isinstance(caps, list) and any(
+        isinstance(c, str) and c.strip().lower() == "embedding" for c in caps
+    ):
+        return True
+    ml = model.lower()
+    return any(h in ml for h in _EMBED_NAME_HINTS)
+
+
+def _from_profiles(cfg: dict) -> EmbeddingProvider | None:
+    """Resolve an embedding provider from an ``embedding``-capability LLM
+    profile (explicit ``capabilities`` tag or the name heuristic).
+
+    Note: dimension is NOT guessed. We pass the profile's explicit
+    ``dimensions`` when set, else leave the OpenAIEmbeddingProvider default
+    — for OpenAI-shape models that honour the ``dimensions`` request param
+    that's correct; for fixed-dim models the index must lazy-init its dim
+    from the first real vector. The fingerprint guard catches a later
+    mismatch loudly rather than letting recall degrade silently."""
+    llm = cfg.get("llm") if isinstance(cfg, dict) else None
+    profiles = llm.get("profiles") if isinstance(llm, dict) else None
+    if not isinstance(profiles, list):
+        return None
+    for entry in profiles:
+        if not isinstance(entry, dict) or entry.get("enabled") is False:
+            continue
+        model = str(entry.get("model") or entry.get("default_model") or "").strip()
+        if not model or not _looks_like_embedding_model(model, entry.get("capabilities")):
+            continue
+        api_key = entry.get("api_key") if isinstance(entry.get("api_key"), str) else ""
+        pid = str(entry.get("id") or "").strip()
+        if not api_key.strip() and pid:
+            try:
+                from xmclaw.utils.secrets import get_secret
+                api_key = get_secret(f"llm.profile.{pid}.api_key") or ""
+            except Exception:  # noqa: BLE001
+                api_key = ""
+        base_url = entry.get("base_url") if isinstance(entry.get("base_url"), str) else None
+        dims = entry.get("dimensions") or entry.get("embedding_dim")
+        kwargs: dict[str, Any] = {
+            "api_key": api_key.strip() or None,
+            "base_url": base_url,
+            "model": model,
+        }
+        if isinstance(dims, int) and dims > 0:
+            kwargs["dimensions"] = dims
+        p = OpenAIEmbeddingProvider(**kwargs)
+        if p.is_available():
+            _log.info(
+                "embedding.from_profile model=%s base=%s",
+                model, base_url or "openai",
+            )
+            return p
+    return None
 
 
 def _from_env() -> EmbeddingProvider | None:
