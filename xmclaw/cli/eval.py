@@ -84,6 +84,25 @@ def _build_agent_factory(
     from xmclaw.core.bus import InProcessEventBus
     from xmclaw.daemon.factory import build_agent_from_config
 
+    # CRITICAL isolation: point the workspace root at a throwaway dir for
+    # the eval process. Benchmark prompts (e.g. LongMemEval's "User: I have
+    # a golden retriever and I work as a dentist.") otherwise flow through
+    # the agent's normal memory pipeline (journal / fact extraction / graph)
+    # and get written into the USER's real ~/.xmclaw — then surface in real
+    # chat as fabricated user facts. ``XMC_DATA_DIR`` redirects every store
+    # (memory.db / graph.db / facts / journal / events) in one lever. Only
+    # set it when the user hasn't already pinned one, and only for real
+    # (config-backed) runs.
+    import os
+    import tempfile
+    if not os.environ.get("XMC_DATA_DIR"):
+        _iso_home = tempfile.mkdtemp(prefix="xmc_eval_home_")
+        os.environ["XMC_DATA_DIR"] = _iso_home
+        typer.echo(
+            f"  [eval] isolated memory home → {_iso_home} "
+            "(benchmark data will NOT touch ~/.xmclaw)"
+        )
+
     def _real_factory() -> Any:
         bus = InProcessEventBus()
         agent = build_agent_from_config(cfg, bus)
