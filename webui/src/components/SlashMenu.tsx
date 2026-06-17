@@ -19,6 +19,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/think", desc: "切换深思（ultrathink）", run: (a) => a.toggleUltrathink() },
   { cmd: "/memory", desc: "打开记忆域", run: (a) => a.setView("memory") },
   { cmd: "/skills", desc: "打开能力域", run: (a) => a.setView("skills") },
+  { cmd: "/files", desc: "打开文件域（工作区 md 编辑）", run: (a) => a.setView("files") },
   { cmd: "/system", desc: "打开系统域", run: (a) => a.setView("system") },
   { cmd: "/tasks", desc: "回到任务视图", run: (a) => a.setView("tasks") },
 ];

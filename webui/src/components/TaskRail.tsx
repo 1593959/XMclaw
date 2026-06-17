@@ -219,11 +219,12 @@ export default function TaskRail({ width }: { width?: number }) {
   );
 }
 
-// 四域导航（10.M3）：任务是主视图，其余为驾驶舱仪表（模型配置在系统域子标签）。
+// 五域导航（10.M3 + 2026-06-17 文件域）：任务是主视图，其余为驾驶舱仪表。
 const DOMAINS = [
   { key: "tasks", label: "任务", icon: "◧" },
   { key: "memory", label: "记忆", icon: "◔" },
   { key: "skills", label: "能力", icon: "⚡" },
+  { key: "files", label: "文件", icon: "🗂" },
   { key: "system", label: "系统", icon: "⚙" },
 ] as const;
 
@@ -231,7 +232,7 @@ function DomainNav() {
   const view = useApp((s) => s.view);
   const setView = useApp((s) => s.setView);
   return (
-    <div className="shrink-0 border-t border-mc-border grid grid-cols-4">
+    <div className="shrink-0 border-t border-mc-border grid grid-cols-5">
       {DOMAINS.map((d) => (
         <button
           key={d.key}
