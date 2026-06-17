@@ -1,3 +1,4 @@
+# Stage 1 fix: multi-scale template + click retry + fuzzy OCR + pixel verify
 """ComputerUseTools — give the agent a mouse, a keyboard, and eyes.
 
 2026-05-12. Pre-this the agent could only act through the shell + file
@@ -63,6 +64,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import difflib
 import json
 import os
 import platform
@@ -1024,9 +1026,41 @@ class ComputerUseTools(ToolProvider):
                 "x": int(pos[0]), "y": int(pos[1]),
                 "button": button, "count": count,
             }
+
+        # Optional pixel-level verification
+        if args.get("verify_pixel") and x is not None and y is not None:
+            pixel_verify = await self._verify_pixel_after_click(x, y)
+            if pixel_verify is not None:
+                payload.update(pixel_verify)
+
         verify = await self._verify_after_action(args)
         if verify is not None:
             payload.update(verify)
+            if not verify.get("verified") and x is not None and y is not None:
+                # Neighbourhood retry: 4 diagonal offsets ±3 px
+                offsets = [(3, 3), (3, -3), (-3, 3), (-3, -3)]
+                for n, (dx, dy) in enumerate(offsets, start=1):
+                    rx, ry = x + dx, y + dy
+                    try:
+                        await asyncio.to_thread(
+                            pg.click, x=rx, y=ry, button=button, clicks=count,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        continue
+                    retry_verify = await self._verify_after_action(args)
+                    if retry_verify and retry_verify.get("verified"):
+                        payload.update(retry_verify)
+                        payload.update({
+                            "retried": True,
+                            "retries": n,
+                            "x": rx,
+                            "y": ry,
+                        })
+                        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+                # All 4 retries failed — mark final failure
+                payload["retried"] = True
+                payload["retries"] = len(offsets)
+                return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
         return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
 
     async def _mouse_drag(self, call: ToolCall, t0: float, args: dict) -> ToolResult:
@@ -1392,6 +1426,36 @@ class ComputerUseTools(ToolProvider):
         verify = await self._verify_after_action(args)
         if verify is not None:
             payload.update(verify)
+            if not verify.get("verified"):
+                # 5-point candidate retry: centre + 4 corners
+                bbox = find_payload.get("bbox", [x, y, 0, 0])
+                bx, by, bw, bh = bbox
+                candidates = [
+                    (x, y),                    # centre
+                    (bx, by),                  # top-left
+                    (bx + bw, by + bh),        # bottom-right
+                    (bx + bw, by),             # top-right
+                    (bx, by + bh),             # bottom-left
+                ]
+                for n, (cx, cy) in enumerate(candidates[1:], start=1):
+                    try:
+                        await asyncio.to_thread(
+                            pg.click, x=cx, y=cy, button=button, clicks=count,
+                        )
+                    except Exception:  # noqa: BLE001
+                        continue
+                    retry_v = await self._verify_after_action(args)
+                    if retry_v and retry_v.get("verified"):
+                        payload.update(retry_v)
+                        payload.update({
+                            "retried": True,
+                            "retries": n,
+                            "x": cx,
+                            "y": cy,
+                        })
+                        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+                payload["retried"] = True
+                payload["retries"] = len(candidates) - 1
         return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
 
     # Phase 9 M2.3: 动作后验证。点击类工具带 ``verify_text`` 时,动作
@@ -1445,6 +1509,43 @@ class ComputerUseTools(ToolProvider):
                 {"text": b["text"], "confidence": b["confidence"]}
                 for b in last_blocks[:10]
             ],
+        }
+
+    async def _verify_pixel_after_click(
+        self, x: int, y: int, timeout_s: float = 2.0,
+    ) -> dict[str, Any] | None:
+        """点击前后比较目标像素颜色变化。如果颜色没变，可能点击未触发UI更新。"""
+        try:
+            import numpy as np
+        except ImportError:
+            return None
+        try:
+            pg = self._require_pyautogui()
+        except Exception:  # noqa: BLE001
+            return None
+
+        def _sample() -> tuple[int, int, int] | None:
+            try:
+                im = pg.screenshot(region=(max(0, x - 1), max(0, y - 1), 3, 3))
+                arr = np.array(im)
+                # centre pixel of the 3x3 grab
+                return (int(arr[1, 1, 0]), int(arr[1, 1, 1]), int(arr[1, 1, 2]))
+            except Exception:  # noqa: BLE001
+                return None
+
+        before = await asyncio.to_thread(_sample)
+        if before is None:
+            return None
+        await asyncio.sleep(0.3)
+        after = await asyncio.to_thread(_sample)
+        if after is None:
+            return None
+        diff = sum(abs(a - b) for a, b in zip(before, after))
+        return {
+            "pixel_changed": diff > 30,  # threshold ~10/255 per channel
+            "pixel_diff": diff,
+            "pixel_before": list(before),
+            "pixel_after": list(after),
         }
 
     async def _wait_for_text(
@@ -1607,24 +1708,64 @@ class ComputerUseTools(ToolProvider):
             template = cv2.imread(str(tpath), cv2.IMREAD_COLOR)
             if template is None:
                 raise RuntimeError(f"cv2 couldn't read template {tpath}")
-            th, tw = template.shape[:2]
+            orig_th, orig_tw = template.shape[:2]
             # Grab full screen / region as BGR ndarray
             screen, (ox, oy) = _grab_for_ocr(region)
-            res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-            _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(res)
-            if max_val < confidence:
+
+            best_result: dict[str, Any] | None = None
+            best_max_val = -1.0
+            scales = [0.75, 1.0, 1.25]
+            scale_tried: list[float] = []
+
+            for scale in scales:
+                scale_tried.append(scale)
+                if scale == 1.0:
+                    scaled_template = template
+                else:
+                    new_w = max(1, int(round(orig_tw * scale)))
+                    new_h = max(1, int(round(orig_th * scale)))
+                    scaled_template = cv2.resize(template, (new_w, new_h))
+                sth, stw = scaled_template.shape[:2]
+                if sth > screen.shape[0] or stw > screen.shape[1]:
+                    continue
+                res = cv2.matchTemplate(screen, scaled_template, cv2.TM_CCOEFF_NORMED)
+                _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(res)
+                if max_val > best_max_val:
+                    best_max_val = max_val
+                    best_result = {
+                        "scale": scale,
+                        "max_val": max_val,
+                        "max_loc": max_loc,
+                        "tw": stw,
+                        "th": sth,
+                    }
+
+            if best_result is None:
                 return {
                     "found": False,
-                    "best_confidence": round(float(max_val), 4),
+                    "best_confidence": 0.0,
                     "threshold": confidence,
+                    "scale_tried": scale_tried,
                 }
-            x0, y0 = int(max_loc[0]) + ox, int(max_loc[1]) + oy
+
+            if best_max_val < confidence:
+                return {
+                    "found": False,
+                    "best_confidence": round(float(best_max_val), 4),
+                    "threshold": confidence,
+                    "scale_tried": scale_tried,
+                }
+
+            x0, y0 = int(best_result["max_loc"][0]) + ox, int(best_result["max_loc"][1]) + oy
+            tw = best_result["tw"]
+            th = best_result["th"]
             return {
                 "found": True,
                 "x": x0 + tw // 2,
                 "y": y0 + th // 2,
                 "bbox": [x0, y0, tw, th],
-                "confidence": round(float(max_val), 4),
+                "confidence": round(float(best_max_val), 4),
+                "scale_used": best_result["scale"],
             }
 
         try:
@@ -1677,13 +1818,48 @@ class ComputerUseTools(ToolProvider):
                 call, t0,
                 f"click at ({x},{y}) failed: {type(exc).__name__}: {exc}",
             )
-        return _ok(call, t0, json.dumps({
+
+        payload: dict[str, Any] = {
             "clicked": True, "x": x, "y": y,
             "button": button, "count": count,
             "template": args.get("template_path"),
             "confidence": fp["confidence"],
             "bbox": fp["bbox"],
-        }, ensure_ascii=False))
+        }
+        verify = await self._verify_after_action(args)
+        if verify is not None:
+            payload.update(verify)
+            if not verify.get("verified"):
+                # 5-point candidate retry: centre + 4 corners
+                bbox = fp.get("bbox", [x, y, 0, 0])
+                bx, by, bw, bh = bbox
+                candidates = [
+                    (x, y),                    # centre
+                    (bx, by),                  # top-left
+                    (bx + bw, by + bh),        # bottom-right
+                    (bx + bw, by),             # top-right
+                    (bx, by + bh),             # bottom-left
+                ]
+                for n, (cx, cy) in enumerate(candidates[1:], start=1):
+                    try:
+                        await asyncio.to_thread(
+                            pg.click, x=cx, y=cy, button=button, clicks=count,
+                        )
+                    except Exception:  # noqa: BLE001
+                        continue
+                    retry_v = await self._verify_after_action(args)
+                    if retry_v and retry_v.get("verified"):
+                        payload.update(retry_v)
+                        payload.update({
+                            "retried": True,
+                            "retries": n,
+                            "x": cx,
+                            "y": cy,
+                        })
+                        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
+                payload["retried"] = True
+                payload["retries"] = len(candidates) - 1
+        return _ok(call, t0, json.dumps(payload, ensure_ascii=False))
 
     # ── 2026-05-12 r2: scroll_to_text ──────────────────────────────
 
@@ -3182,7 +3358,24 @@ def _match_text_in_blocks(
             if wanted_norm in text_norm:
                 matches.append(b)
     matches.sort(key=lambda m: m["confidence"], reverse=True)
-    return matches
+    if matches or exact:
+        return matches
+    # Fuzzy fallback (exact=False only)
+    best_ratio = 0.0
+    best_block: dict | None = None
+    for b in blocks:
+        text_norm = b["text"].strip().casefold()
+        ratio = difflib.SequenceMatcher(None, text_norm, wanted_norm).ratio()
+        if ratio > best_ratio and ratio > 0.65:
+            best_ratio = ratio
+            best_block = b
+    if best_block is not None:
+        # Return a shallow copy so we can tag the match type
+        tagged = dict(best_block)
+        tagged["match_type"] = "fuzzy"
+        tagged["fuzzy_ratio"] = round(best_ratio, 4)
+        return [tagged]
+    return []
 
 
 __all__ = ["ComputerUseTools"]

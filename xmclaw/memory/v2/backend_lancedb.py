@@ -23,12 +23,15 @@ that are required from L1) so type errors fail loud at write time.
 
 Embedding dimension is configurable at construction (default 1536
 for text-embedding-3-small / qwen-3-embedding-0.6b).
+
+# Stage 2 fix: LanceDB operations wrapped with inner timeout + retry (lancedb_utils.py).
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
 from xmclaw.memory.v2.models import Fact, Relation, RelationKind
+from xmclaw.memory.v2.lancedb_utils import _with_timeout_and_retry
 
 if TYPE_CHECKING:
     import lancedb
@@ -274,20 +277,30 @@ class LanceDBVectorBackend:
             return False
 
     def _handle_lance_error(self, exc: RuntimeError, context: str) -> None:
-        """Wave-4: transient retry before permanent corruption."""
+        """Stage 2: final-line defence after _with_timeout_and_retry exhausted.
+
+        _with_timeout_and_retry already retries transient errors (Timeout,
+        lance error with busy/lock/unavailable, ConnectionError).  When
+        the wrapped coroutine still raises a RuntimeError that reaches here,
+        we only mark permanent corruption for non-transient lance errors.
+        """
         if "lance error" not in str(exc).lower():
             raise
+        # Already marked corrupted by _with_timeout_and_retry on exhaustion
+        if self._corrupted:
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.corrupted context=%s err=%s", context, exc,
+            )
+            return
+        # Defensive: if a transient somehow leaked through, do not corrupt
         if self._is_transient_lance_error(exc):
-            self._transient_failures += 1
-            if self._transient_failures < self._MAX_TRANSIENT_RETRIES:
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).warning(
-                    "lancedb.transient_retry attempt=%d/%d context=%s err=%s",
-                    self._transient_failures, self._MAX_TRANSIENT_RETRIES,
-                    context, exc,
-                )
-                return  # caller may retry
-        # Permanent corruption or exhausted retries
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "lancedb.transient_leaked context=%s err=%s", context, exc,
+            )
+            return
+        # Permanent corruption
         self._corrupted = True
         from xmclaw.utils.log import get_logger
         get_logger(__name__).error(
@@ -300,17 +313,32 @@ class LanceDBVectorBackend:
         import lancedb
         try:
             if self._db is None:
-                self._db = await lancedb.connect_async(self._db_path)
+                self._db = await _with_timeout_and_retry(
+                    lancedb.connect_async(self._db_path),
+                    timeout_s=10,
+                    context="connect",
+                    corrupted_flag=self,
+                )
             if self._schema_cls is None:
                 self._schema_cls = _build_fact_schema(self._dim)
             if self._table is None:
                 # LanceDB 0.30+: list_tables() returns a pageable with
                 # a .tables attribute; older releases had table_names().
                 # Use the new API + fall back gracefully.
-                page = await self._db.list_tables()
+                page = await _with_timeout_and_retry(
+                    self._db.list_tables(),
+                    timeout_s=10,
+                    context="list_tables",
+                    corrupted_flag=self,
+                )
                 existing = list(getattr(page, "tables", []) or page)
                 if self._table_name in existing:
-                    self._table = await self._db.open_table(self._table_name)
+                    self._table = await _with_timeout_and_retry(
+                        self._db.open_table(self._table_name),
+                        timeout_s=10,
+                        context="open_table",
+                        corrupted_flag=self,
+                    )
                     # Wave-27 fix-LAT15 (2026-05-17): migrate schema when
                     # the on-disk table predates a code-side schema
                     # addition. The 2026-05-15 ``bucket`` field add
@@ -324,8 +352,13 @@ class LanceDBVectorBackend:
                     # idempotent through the missing-check below.
                     await self._maybe_add_missing_columns()
                 else:
-                    self._table = await self._db.create_table(
-                        self._table_name, schema=self._schema_cls,
+                    self._table = await _with_timeout_and_retry(
+                        self._db.create_table(
+                            self._table_name, schema=self._schema_cls,
+                        ),
+                        timeout_s=15,
+                        context="create_table",
+                        corrupted_flag=self,
                     )
         except RuntimeError as exc:
             self._handle_lance_error(exc, "ensure_ready")
@@ -357,7 +390,12 @@ class LanceDBVectorBackend:
         log = get_logger(__name__)
         assert self._table is not None
         try:
-            schema = await self._table.schema()
+            schema = await _with_timeout_and_retry(
+                self._table.schema(),
+                timeout_s=10,
+                context="schema",
+                corrupted_flag=self,
+            )
             on_disk = {f.name for f in schema}
         except Exception as exc:  # noqa: BLE001
             log.warning(
@@ -383,7 +421,12 @@ class LanceDBVectorBackend:
             if col in on_disk:
                 continue
             try:
-                await self._table.add_columns({col: default})
+                await _with_timeout_and_retry(
+                    self._table.add_columns({col: default}),
+                    timeout_s=10,
+                    context="add_columns",
+                    corrupted_flag=self,
+                )
                 log.info(
                     "lancedb.schema_migrated table=%s column=%s "
                     "default=%s",
@@ -441,12 +484,16 @@ class LanceDBVectorBackend:
         # NOT here, because the backend doesn't know L1 business rules.
         assert self._table is not None
         try:
-            await (
+            await _with_timeout_and_retry(
                 self._table
                     .merge_insert("id")
                     .when_matched_update_all()
                     .when_not_matched_insert_all()
-                    .execute(rows)
+                    .execute(rows),
+                timeout_s=15,
+                max_retries=2,
+                context="upsert",
+                corrupted_flag=self,
             )
             return len(rows)
         except RuntimeError as exc:
@@ -482,7 +529,12 @@ class LanceDBVectorBackend:
                 builder = self._table.query()
                 if where:
                     builder = builder.where(where)
-                rows = await builder.to_list()
+                rows = await _with_timeout_and_retry(
+                    builder.to_list(),
+                    timeout_s=10,
+                    context="search",
+                    corrupted_flag=self,
+                )
                 rows.sort(key=lambda r: r.get("ts_last", 0.0), reverse=True)
                 return [_record_to_fact(r) for r in rows[:limit]]
 
@@ -495,7 +547,12 @@ class LanceDBVectorBackend:
                 if where:
                     where_combined = f"({where_combined}) AND ({where})"
                 builder = self._table.query().where(where_combined)
-                rows = await builder.limit(limit).to_list()
+                rows = await _with_timeout_and_retry(
+                    builder.limit(limit).to_list(),
+                    timeout_s=10,
+                    context="search",
+                    corrupted_flag=self,
+                )
                 return [_record_to_fact(r) for r in rows[:limit]]
 
             # Vector query.
@@ -504,10 +561,20 @@ class LanceDBVectorBackend:
             # chaining .where / .limit. The 0.30+ AsyncStandardQuery.where
             # API no longer accepts a ``prefilter`` kwarg (filtering is
             # always applied pre-KNN); pass plain string.
-            builder = await self._table.search(list(query))
+            builder = await _with_timeout_and_retry(
+                self._table.search(list(query)),
+                timeout_s=10,
+                context="search",
+                corrupted_flag=self,
+            )
             if where:
                 builder = builder.where(where)
-            rows = await builder.limit(limit).to_list()
+            rows = await _with_timeout_and_retry(
+                builder.limit(limit).to_list(),
+                timeout_s=10,
+                context="search",
+                corrupted_flag=self,
+            )
             return [_record_to_fact(r) for r in rows[:limit]]
         except RuntimeError as exc:
             self._handle_lance_error(exc, "search")
@@ -528,9 +595,24 @@ class LanceDBVectorBackend:
             return 0
         assert self._table is not None
         try:
-            before = await self._table.count_rows()
-            await self._table.delete(where)
-            after = await self._table.count_rows()
+            before = await _with_timeout_and_retry(
+                self._table.count_rows(),
+                timeout_s=10,
+                context="delete",
+                corrupted_flag=self,
+            )
+            await _with_timeout_and_retry(
+                self._table.delete(where),
+                timeout_s=10,
+                context="delete",
+                corrupted_flag=self,
+            )
+            after = await _with_timeout_and_retry(
+                self._table.count_rows(),
+                timeout_s=10,
+                context="delete",
+                corrupted_flag=self,
+            )
             return max(0, before - after)
         except RuntimeError as exc:
             self._handle_lance_error(exc, "delete")
@@ -552,9 +634,19 @@ class LanceDBVectorBackend:
         assert self._table is not None
         try:
             if where:
-                rows = await self._table.query().where(where).to_list()
+                rows = await _with_timeout_and_retry(
+                    self._table.query().where(where).to_list(),
+                    timeout_s=10,
+                    context="count",
+                    corrupted_flag=self,
+                )
                 return len(rows)
-            return await self._table.count_rows()
+            return await _with_timeout_and_retry(
+                self._table.count_rows(),
+                timeout_s=10,
+                context="count",
+                corrupted_flag=self,
+            )
         except RuntimeError as exc:
             self._handle_lance_error(exc, "count")
             if not self._corrupted:
@@ -575,7 +667,12 @@ class LanceDBVectorBackend:
         assert self._table is not None
         try:
             safe = fact_id.replace("'", "''")
-            rows = await self._table.query().where(f"id = '{safe}'").limit(1).to_list()
+            rows = await _with_timeout_and_retry(
+                self._table.query().where(f"id = '{safe}'").limit(1).to_list(),
+                timeout_s=10,
+                context="get",
+                corrupted_flag=self,
+            )
             if not rows:
                 return None
             return _record_to_fact(rows[0])
@@ -635,20 +732,27 @@ class LanceDBGraphBackend:
         return any(sig in msg for sig in transient_signatures)
 
     def _handle_lance_error(self, exc: RuntimeError, context: str) -> None:
-        """Wave-4: transient retry before permanent corruption."""
+        """Stage 2: final-line defence after _with_timeout_and_retry exhausted.
+
+        _with_timeout_and_retry already retries transient errors (Timeout,
+        lance error with busy/lock/unavailable, ConnectionError).  When
+        the wrapped coroutine still raises a RuntimeError that reaches here,
+        we only mark permanent corruption for non-transient lance errors.
+        """
         if "lance error" not in str(exc).lower():
             raise
+        if self._corrupted:
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted context=%s err=%s", context, exc,
+            )
+            return
         if self._is_transient_lance_error(exc):
-            self._transient_failures += 1
-            if self._transient_failures < self._MAX_TRANSIENT_RETRIES:
-                from xmclaw.utils.log import get_logger
-                get_logger(__name__).warning(
-                    "lancedb.graph_transient_retry attempt=%d/%d context=%s err=%s",
-                    self._transient_failures, self._MAX_TRANSIENT_RETRIES,
-                    context, exc,
-                )
-                return  # caller may retry
-        # Permanent corruption or exhausted retries
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).warning(
+                "lancedb.graph_transient_leaked context=%s err=%s", context, exc,
+            )
+            return
         self._corrupted = True
         from xmclaw.utils.log import get_logger
         get_logger(__name__).error(
@@ -661,20 +765,40 @@ class LanceDBGraphBackend:
         import lancedb
         try:
             if self._db is None:
-                self._db = await lancedb.connect_async(self._db_path)
+                self._db = await _with_timeout_and_retry(
+                    lancedb.connect_async(self._db_path),
+                    timeout_s=10,
+                    context="graph_connect",
+                    corrupted_flag=self,
+                )
             if self._schema_cls is None:
                 self._schema_cls = _build_relation_schema()
             if self._table is None:
                 # LanceDB 0.30+: list_tables() returns a pageable with
                 # a .tables attribute; older releases had table_names().
                 # Use the new API + fall back gracefully.
-                page = await self._db.list_tables()
+                page = await _with_timeout_and_retry(
+                    self._db.list_tables(),
+                    timeout_s=10,
+                    context="graph_list_tables",
+                    corrupted_flag=self,
+                )
                 existing = list(getattr(page, "tables", []) or page)
                 if self._table_name in existing:
-                    self._table = await self._db.open_table(self._table_name)
+                    self._table = await _with_timeout_and_retry(
+                        self._db.open_table(self._table_name),
+                        timeout_s=10,
+                        context="graph_open_table",
+                        corrupted_flag=self,
+                    )
                 else:
-                    self._table = await self._db.create_table(
-                        self._table_name, schema=self._schema_cls,
+                    self._table = await _with_timeout_and_retry(
+                        self._db.create_table(
+                            self._table_name, schema=self._schema_cls,
+                        ),
+                        timeout_s=15,
+                        context="graph_create_table",
+                        corrupted_flag=self,
                     )
         except RuntimeError as exc:
             self._handle_lance_error(exc, "graph_ensure_ready")
@@ -702,12 +826,16 @@ class LanceDBGraphBackend:
         assert self._table is not None
         rows = [_relation_to_record(r) for r in rels]
         try:
-            await (
+            await _with_timeout_and_retry(
                 self._table
                     .merge_insert("id")
                     .when_matched_update_all()
                     .when_not_matched_insert_all()
-                    .execute(rows)
+                    .execute(rows),
+                timeout_s=15,
+                max_retries=2,
+                context="graph_add",
+                corrupted_flag=self,
             )
             return len(rels)
         except RuntimeError as exc:
@@ -730,7 +858,12 @@ class LanceDBGraphBackend:
         assert self._table is not None
         safe = rel_id.replace("'", "''")
         try:
-            await self._table.delete(f"id = '{safe}'")
+            await _with_timeout_and_retry(
+                self._table.delete(f"id = '{safe}'"),
+                timeout_s=10,
+                context="graph_remove",
+                corrupted_flag=self,
+            )
         except RuntimeError as exc:
             self._handle_lance_error(exc, "graph_remove")
             if not self._corrupted:
@@ -770,7 +903,12 @@ class LanceDBGraphBackend:
                     rels = ", ".join(f"'{r}'" for r in relation_types)
                     where_parts.append(f"relation IN ({rels})")
                 where = " AND ".join(where_parts)
-                rows = await self._table.query().where(where).to_list()
+                rows = await _with_timeout_and_retry(
+                    self._table.query().where(where).to_list(),
+                    timeout_s=10,
+                    context="graph_neighbors",
+                    corrupted_flag=self,
+                )
                 next_frontier: list[str] = []
                 for row in rows:
                     rel = _record_to_relation(row)
@@ -826,7 +964,12 @@ class LanceDBGraphBackend:
                     rels = ", ".join(f"'{r}'" for r in relation_types)
                     where_parts.append(f"relation IN ({rels})")
                 where = " AND ".join(where_parts)
-                rows = await self._table.query().where(where).to_list()
+                rows = await _with_timeout_and_retry(
+                    self._table.query().where(where).to_list(),
+                    timeout_s=10,
+                    context="graph_reverse_neighbors",
+                    corrupted_flag=self,
+                )
                 next_frontier: list[str] = []
                 for row in rows:
                     rel = _record_to_relation(row)
@@ -893,7 +1036,12 @@ class LanceDBGraphBackend:
         try:
             # LanceDB doesn't have a distinct "select distinct" in the
             # async Python SDK; we read all rows and deduplicate in memory.
-            rows = await self._table.query().limit(100_000).to_list()
+            rows = await _with_timeout_and_retry(
+                self._table.query().limit(100_000).to_list(),
+                timeout_s=10,
+                context="graph_all_nodes",
+                corrupted_flag=self,
+            )
             nodes: set[str] = set()
             for row in rows:
                 nodes.add(str(row.get("source_fact_id", "")))

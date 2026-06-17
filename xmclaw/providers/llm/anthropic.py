@@ -1,5 +1,7 @@
 """AnthropicLLM — thin wrapper around the official Anthropic SDK.
 
+# Stage 3 fix: hard-cap cache_breakpoints to ≤4 at request construction time.
+
 Design principles (anti-req #11: same model on XMclaw must not be worse):
 - Minimal transformation. The wire messages are converted to Anthropic's
   expected shape but no prompt decoration / wrapping happens here. Any
@@ -268,7 +270,9 @@ class AnthropicLLM(LLMProvider):
         converted = AnthropicLLM._repair_tool_pairing(converted)
         system_text = "\n\n".join(system_parts).strip()
         if not system_text:
-            AnthropicLLM._mark_history_cache_breakpoint(converted)
+            if AnthropicLLM._count_msg_breakpoint(converted) + 1 <= 4:
+                AnthropicLLM._mark_history_cache_breakpoint(converted)
+            AnthropicLLM._log_breakpoint_summary(0, converted)
             return "", converted
 
         from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
@@ -278,28 +282,34 @@ class AnthropicLLM(LLMProvider):
             ]
             raw_parts = [p for p in raw_parts if p]
             if len(raw_parts) >= 2:
-                # 4-breakpoint budget validation (audit 2026-06-11).
-                # Anthropic's API allows ≤4 cache_control blocks total
-                # across tools + system + messages. Excess breakpoints
-                # cause cache misses without API errors.
-                # budget: (len-1) system + 1 tools = len total.
+                # Stage 3 fix: hard-cap cache_breakpoints to ≤4 at request construction time.
                 _MAX_BREAKPOINTS = 4
-                _sys_bp_count = len(raw_parts) - 1
-                if _sys_bp_count + 1 > _MAX_BREAKPOINTS:
-                    from xmclaw.utils.log import get_logger
-                    get_logger(__name__).warning(
-                        "anthropic.cache_breakpoints_over_budget "
-                        "system=%d tools=1 max=%d — excess will be "
-                        "silently ignored by the API",
-                        _sys_bp_count, _MAX_BREAKPOINTS,
+                _sys_bp_count = len(raw_parts) - 1  # 每两个 parts 之间一个断点
+                # 强制截断 system 断点到预算内。
+                # 我们保留 system 的前缀断点（命中最高），必要时丢弃中间断点。
+                _system_bp_budget = min(_sys_bp_count, _MAX_BREAKPOINTS - 2)  # 留 1 给 tools, 1 给 messages
+                _dropped_system_bp = max(0, _sys_bp_count - _system_bp_budget)
+                if _dropped_system_bp > 0:
+                    _log.warning(
+                        "anthropic.cache_breakpoints_hard_cap "
+                        "system_bp=%d tools=1 msg=1 max=%d — "
+                        "dropped %d system breakpoint(s) to stay within budget",
+                        _sys_bp_count, _MAX_BREAKPOINTS, _dropped_system_bp,
                     )
-                system_blocks: list[dict[str, Any]] = []
+                system_blocks = []
                 for i, part in enumerate(raw_parts):
-                    block: dict[str, Any] = {"type": "text", "text": part}
-                    if i < len(raw_parts) - 1 and i < _MAX_BREAKPOINTS - 1:  # -1 for tools
+                    block = {"type": "text", "text": part}
+                    # 只在预算内放断点；优先保留前面的断点（前缀更值钱），最后一段（当前轮）不放 system 断点
+                    if i < _system_bp_budget:
                         block["cache_control"] = {"type": "ephemeral"}
                     system_blocks.append(block)
-                AnthropicLLM._mark_history_cache_breakpoint(converted)
+                _system_bp_placed = sum(1 for b in system_blocks if b.get("cache_control"))
+                # 预留 1 给 tools，检查剩余是否够给 messages 1 个
+                if _system_bp_placed + 1 + 1 <= _MAX_BREAKPOINTS:
+                    AnthropicLLM._mark_history_cache_breakpoint(converted)
+                AnthropicLLM._log_breakpoint_summary(
+                    _system_bp_placed, converted, dropped=_dropped_system_bp,
+                )
                 return system_blocks, converted
             # Fewer than 2 effective parts after strip — fall through.
             system_text = raw_parts[0] if raw_parts else system_text
@@ -309,8 +319,42 @@ class AnthropicLLM(LLMProvider):
             "text": system_text,
             "cache_control": {"type": "ephemeral"},
         }]
-        AnthropicLLM._mark_history_cache_breakpoint(converted)
+        if 1 + 1 + AnthropicLLM._count_msg_breakpoint(converted) <= 4:
+            AnthropicLLM._mark_history_cache_breakpoint(converted)
+        AnthropicLLM._log_breakpoint_summary(1, converted)
         return system_blocks, converted
+
+    @staticmethod
+    def _count_msg_breakpoint(converted: list[dict[str, Any]]) -> int:
+        """Return 1 if the last message has a cache_control block, else 0."""
+        if not converted:
+            return 0
+        last = converted[-1]
+        content = last.get("content")
+        if isinstance(content, list) and content:
+            return 1 if content[-1].get("cache_control") else 0
+        if isinstance(content, dict):
+            return 1 if content.get("cache_control") else 0
+        return 0
+
+    @staticmethod
+    def _log_breakpoint_summary(
+        system_placed: int,
+        converted: list[dict[str, Any]],
+        *,
+        dropped: int = 0,
+    ) -> None:
+        """Emit a single info log with cache-control breakpoint accounting."""
+        msg_placed = AnthropicLLM._count_msg_breakpoint(converted)
+        total = system_placed + msg_placed + 1  # +1 for tools
+        _log.info(
+            "anthropic.cache_breakpoints_final "
+            "system=%d msg=%d tools=1 total=%d max=4%s",
+            system_placed,
+            msg_placed,
+            total,
+            " dropped=%d" % dropped if dropped else "",
+        )
 
     @staticmethod
     def _repair_tool_pairing(

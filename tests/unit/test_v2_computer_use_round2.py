@@ -89,6 +89,11 @@ async def test_find_image_calls_cv2(tools, tmp_path, monkeypatch):
     cv2.imread = _imread
     cv2.matchTemplate = _matchTemplate
     cv2.minMaxLoc = _minMaxLoc
+    def _resize(img, size):
+        class _R:
+            shape = (size[1], size[0], img.shape[2])
+        return _R()
+    cv2.resize = _resize
     monkeypatch.setitem(sys.modules, "cv2", cv2)
 
     # Mock _grab_for_ocr (avoid touching real mss)
@@ -113,10 +118,11 @@ async def test_find_image_calls_cv2(tools, tmp_path, monkeypatch):
     p = _json(r)
     assert p["found"] is True
     assert p["confidence"] == 0.95
-    # bbox = [match_x, match_y, tpl_w, tpl_h] → [500, 300, 64, 32]
-    assert p["bbox"] == [500, 300, 64, 32]
-    # center = bbox top-left + half size → [500 + 32, 300 + 16]
-    assert p["x"] == 532 and p["y"] == 316
+    # Multi-scale: 0.75 scale wins because all mocked confidences are equal (0.95)
+    # Template resized from (64, 32) to (48, 24)
+    assert p["bbox"] == [500, 300, 48, 24]
+    assert p["x"] == 524 and p["y"] == 312
+    assert p["scale_used"] == 0.75
 
 
 async def test_find_image_below_confidence(tools, tmp_path, monkeypatch):
@@ -132,6 +138,11 @@ async def test_find_image_below_confidence(tools, tmp_path, monkeypatch):
     cv2.imread = lambda *a, **kw: _Tpl()
     cv2.matchTemplate = lambda *a, **kw: [[0.4]]
     cv2.minMaxLoc = lambda res: (0.0, 0.4, (0, 0), (10, 10))
+    def _resize(img, size):
+        class _R:
+            shape = (size[1], size[0], img.shape[2])
+        return _R()
+    cv2.resize = _resize
     monkeypatch.setitem(sys.modules, "cv2", cv2)
 
     # numpy is also imported by _find_image_on_screen; stub it.
