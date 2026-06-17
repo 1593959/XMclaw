@@ -74,23 +74,65 @@ class InlineThinkStreamFilter:
     of stream.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, hold_leading_reasoning: bool = False) -> None:
         self._in_think = False
         self._buf = ""
+        # 2026-06-17: some endpoints (Kimi K2.6 /coding) emit reasoning at the
+        # START of the text stream with NO opening <think>, then a lone
+        # </think> before the answer. Token-by-token, the reasoning streams
+        # out as visible before the close arrives — so dropping the literal
+        # tag alone still leaks the reasoning sentence into the bubble. When
+        # this flag is set we hold ALL leading text silently until the first
+        # tag resolves it: a </think> → it was reasoning (→ thinking channel);
+        # a <think> → the held text was real visible content; stream end with
+        # neither → it was a plain answer (flush as visible). Once resolved,
+        # normal streaming resumes. Gated to known leakers so real Claude
+        # (which uses thinking_delta, never inline tags) keeps live streaming.
+        self._hold_leading = hold_leading_reasoning
+        self._lead_resolved = not hold_leading_reasoning
 
     def feed(self, text: str) -> tuple[str, str]:
         self._buf += text
         vis: list[str] = []
         think: list[str] = []
         while self._buf:
+            if not self._lead_resolved and not self._in_think:
+                # Leading limbo: hold everything until a tag tells us what it
+                # was. Only a *full* tag resolves; otherwise keep buffering.
+                i_open = self._buf.find(_THINK_OPEN)
+                i_close = self._buf.find(_THINK_CLOSE)
+                if i_open != -1 and (i_close == -1 or i_open < i_close):
+                    vis.append(self._buf[:i_open])  # real visible before <think>
+                    self._buf = self._buf[i_open + len(_THINK_OPEN):]
+                    self._in_think = True
+                    self._lead_resolved = True
+                    continue
+                if i_close != -1:
+                    think.append(self._buf[:i_close])  # leaked leading reasoning
+                    self._buf = self._buf[i_close + len(_THINK_CLOSE):]
+                    self._lead_resolved = True
+                    continue
+                # No full tag yet — hold the whole buffer, emit nothing.
+                break
             if not self._in_think:
-                i = self._buf.find(_THINK_OPEN)
-                if i != -1:
-                    vis.append(self._buf[:i])
-                    self._buf = self._buf[i + len(_THINK_OPEN):]
+                i_open = self._buf.find(_THINK_OPEN)
+                i_close = self._buf.find(_THINK_CLOSE)
+                # A `<think>` opener that comes before any close → enter think.
+                if i_open != -1 and (i_close == -1 or i_open < i_close):
+                    vis.append(self._buf[:i_open])
+                    self._buf = self._buf[i_open + len(_THINK_OPEN):]
                     self._in_think = True
                     continue
-                # no full open tag — emit all but a possible partial-tag tail
+                # A bare `</think>` with no opener (Kimi /coding et al. emit
+                # reasoning first, then a lone close) → the text before it was
+                # leaked reasoning, route it to the thinking channel and DROP
+                # the literal tag so it never shows in the bubble. Mirrors the
+                # non-streaming split_inline_think's leaked-close handling.
+                if i_close != -1:
+                    think.append(self._buf[:i_close])
+                    self._buf = self._buf[i_close + len(_THINK_CLOSE):]
+                    continue
+                # no full tag — emit all but a possible partial-tag tail
                 hold = _longest_partial_tag_suffix(self._buf)
                 if hold:
                     vis.append(self._buf[:-hold])
