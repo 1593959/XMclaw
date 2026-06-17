@@ -47,6 +47,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -234,6 +235,7 @@ async def _write_facts_to_memory(
     runs even when ``memory_provider`` is None (the legacy memory.db
     write is optional; v2 doesn't depend on it).
     """
+    import time as _time
     if not facts:
         return
 
@@ -288,7 +290,7 @@ async def _write_facts_to_memory(
                 source="post_sampling",
                 content=fact,
                 turn_id=ctx.session_id,
-                timestamp=time.time(),
+                timestamp=_time.time(),
                 metadata={
                     "kind_hint": kind,
                     "scope_hint": v2_scope,
@@ -501,7 +503,8 @@ class ExtractMemoriesHook(PostSamplingHook):
     def is_enabled(self, ctx: HookContext) -> bool:
         if ctx.persona_dir is None:
             return False
-        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）�?        if _is_internal_session(ctx.session_id):
+        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）
+        if _is_internal_session(ctx.session_id):
             return False
         section = (
             ((ctx.cfg.get("evolution") or {}).get("memory") or {})
@@ -773,7 +776,8 @@ class ExtractLessonsHook(PostSamplingHook):
     def is_enabled(self, ctx: HookContext) -> bool:
         if ctx.persona_dir is None:
             return False
-        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）�?        if _is_internal_session(ctx.session_id):
+        # 内部反思会话不抽取（防记忆污染，见模块顶部说明）
+        if _is_internal_session(ctx.session_id):
             return False
         memory_cfg = ((ctx.cfg.get("evolution") or {}).get("memory") or {})
         # Forward name first; legacy name as backward-compat alias.

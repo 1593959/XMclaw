@@ -793,6 +793,7 @@ class MemoryService:
                 # merged, causing "不,叫我张总" to be appended to "我叫敬宇".
                 if kind_str == FactKind.CORRECTION.value:
                     now_ts = time.time()
+                    new_id = fact_id  # the new fact will be created with this id below
                     near_dup.invalid_at = now_ts
                     near_dup.superseded_by = new_id
                     near_dup.confidence = min(near_dup.confidence, 0.3)
