@@ -115,7 +115,8 @@ class ReplicateVideoProvider:
                 json={"version": self._model, "input": input_payload},
                 timeout=30.0,
             )
-            create_resp.raise_for_status()
+            from xmclaw.utils.http_errors import raise_for_vendor_error
+            raise_for_vendor_error(create_resp, "Replicate create prediction")
             pred = create_resp.json()
             pred_id = pred.get("id")
             if not pred_id:
@@ -142,7 +143,7 @@ class ReplicateVideoProvider:
                     headers=headers,
                     timeout=30.0,
                 )
-                poll_resp.raise_for_status()
+                raise_for_vendor_error(poll_resp, "Replicate poll prediction")
                 pred = poll_resp.json()
                 status = pred.get("status", "unknown")
                 logger.debug(

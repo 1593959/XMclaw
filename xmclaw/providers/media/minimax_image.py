@@ -90,12 +90,14 @@ class MiniMaxImageProvider:
             self._model, ratio, prompt[:80],
         )
 
+        from xmclaw.utils.http_errors import raise_for_vendor_error
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{self._base}/image_generation",
                 headers=headers, json=body, timeout=180.0,
             )
-            resp.raise_for_status()
+            raise_for_vendor_error(resp, f"MiniMax image_generation (model={self._model})")
             data = resp.json()
             _raise_on_base_resp(data)
 

@@ -110,9 +110,11 @@ class OpenAICompatImageProvider:
             self._model, effective_size, prompt[:80],
         )
 
+        from xmclaw.utils.http_errors import raise_for_vendor_error
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=body, timeout=180.0)
-            resp.raise_for_status()
+            raise_for_vendor_error(resp, f"image generation (model={self._model})")
             data = resp.json()
 
             items = data.get("data")

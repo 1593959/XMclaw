@@ -106,6 +106,8 @@ class ArkVideoProvider:
         }
         tasks_url = f"{self._base}/contents/generations/tasks"
 
+        from xmclaw.utils.http_errors import raise_for_vendor_error
+
         async with httpx.AsyncClient() as client:
             # 1. Create task.
             create_resp = await client.post(
@@ -114,7 +116,7 @@ class ArkVideoProvider:
                 json={"model": self._model, "content": content},
                 timeout=30.0,
             )
-            create_resp.raise_for_status()
+            raise_for_vendor_error(create_resp, f"Ark create video task (model={self._model})")
             created = create_resp.json()
             task_id = created.get("id")
             if not task_id:
@@ -135,7 +137,7 @@ class ArkVideoProvider:
                     )
                 await asyncio.sleep(_DEFAULT_POLL_INTERVAL)
                 poll_resp = await client.get(poll_url, headers=headers, timeout=30.0)
-                poll_resp.raise_for_status()
+                raise_for_vendor_error(poll_resp, "Ark poll video task")
                 task = poll_resp.json()
                 status = str(task.get("status") or "unknown").lower()
                 logger.debug("ark_video.poll id=%s status=%s", task_id, status)

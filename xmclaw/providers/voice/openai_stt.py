@@ -68,7 +68,8 @@ class OpenAICompatSTT(STTProvider):
                 f"{self._base}/audio/transcriptions",
                 headers=headers, data=data, files=files, timeout=120.0,
             )
-            resp.raise_for_status()
+            from xmclaw.utils.http_errors import raise_for_vendor_error
+            raise_for_vendor_error(resp, f"STT /audio/transcriptions (model={self._model})")
             payload = resp.json()
         text = payload.get("text") if isinstance(payload, dict) else None
         return text if isinstance(text, str) else ""

@@ -97,13 +97,15 @@ class MiniMaxVideoProvider:
             # MiniMax image-to-video takes a first frame (url or data URI).
             body["first_frame_image"] = _to_data_uri(image_path)
 
+        from xmclaw.utils.http_errors import raise_for_vendor_error
+
         async with httpx.AsyncClient() as client:
             # 1. Create task.
             create = await client.post(
                 f"{self._base}/video_generation",
                 headers=headers, json=body, timeout=30.0,
             )
-            create.raise_for_status()
+            raise_for_vendor_error(create, f"MiniMax create video task (model={self._model})")
             created = create.json()
             _raise_on_base_resp(created, "create video task")
             task_id = created.get("task_id")
@@ -126,7 +128,7 @@ class MiniMaxVideoProvider:
                     f"{self._base}/query/video_generation",
                     headers=headers, params=params, timeout=30.0,
                 )
-                q.raise_for_status()
+                raise_for_vendor_error(q, "MiniMax poll video task")
                 qj = q.json()
                 status = str(qj.get("status") or "").strip().lower()
                 logger.debug("minimax_video.poll task=%s status=%s", task_id, status)
@@ -149,7 +151,7 @@ class MiniMaxVideoProvider:
                 f"{self._base}/files/retrieve",
                 headers=headers, params=fparams, timeout=30.0,
             )
-            fr.raise_for_status()
+            raise_for_vendor_error(fr, "MiniMax retrieve file")
             frj = fr.json()
             _raise_on_base_resp(frj, "retrieve file")
             output_url = _extract_download_url(frj)

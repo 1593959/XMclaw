@@ -77,7 +77,8 @@ class OpenAICompatTTS(TTSProvider):
                 f"{self._base}/audio/speech",
                 headers=headers, json=body, timeout=120.0,
             )
-            resp.raise_for_status()
+            from xmclaw.utils.http_errors import raise_for_vendor_error
+            raise_for_vendor_error(resp, f"TTS /audio/speech (model={self._model})")
             return resp.content
 
 

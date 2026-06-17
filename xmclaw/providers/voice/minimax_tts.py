@@ -76,7 +76,8 @@ class MiniMaxTTS(TTSProvider):
             resp = await client.post(
                 f"{self._base}/t2a_v2", headers=headers, json=body, timeout=120.0,
             )
-            resp.raise_for_status()
+            from xmclaw.utils.http_errors import raise_for_vendor_error
+            raise_for_vendor_error(resp, f"MiniMax t2a_v2 (model={self._model})")
             data = resp.json()
 
         br = data.get("base_resp")
