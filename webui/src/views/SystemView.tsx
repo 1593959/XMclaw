@@ -62,13 +62,7 @@ export default function SystemView() {
       </div>
       <div className="shrink-0">
         <h2 className="text-base font-semibold">系统</h2>
-        <p className="text-xs text-mc-faint mt-0.5">
-          daemon 健康与日志 — 深度配置暂在
-          <a href="/ui-legacy/settings" target="_blank" rel="noreferrer" className="text-mc-accent underline mx-1">
-            旧 Settings
-          </a>
-          （M3 过渡期）
-        </p>
+        <p className="text-xs text-mc-faint mt-0.5">daemon 健康与日志</p>
       </div>
 
       <div className="flex gap-3 flex-wrap shrink-0">
