@@ -39,12 +39,17 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from xmclaw.skills.base import Skill
 from xmclaw.skills.manifest import SkillManifest
 from xmclaw.skills.markdown_skill import MarkdownProcedureSkill
 from xmclaw.skills.registry import SkillRegistry
+
+if TYPE_CHECKING:
+    # Runtime import stays local inside ``_trust_for`` to avoid an import
+    # cycle (manifest ↔ user_loader); this is annotation-only.
+    from xmclaw.skills.manifest import SkillTrustLevel
 
 
 log = logging.getLogger(__name__)
@@ -233,20 +238,31 @@ class UserSkillsLoader:
                 if res.ok:
                     seen_ids.add(entry.name)
                 seen_realpaths.add(real)
-        # Inject synthetic LoadResult rows for path conflicts so the
-        # SkillsWatcher → load_failures pipeline surfaces them in the
-        # same channel as broken-module failures. ``kind="duplicate"``
-        # lets callers tell these apart from genuine import errors.
+        # Inject synthetic LoadResult rows for path conflicts so callers
+        # can surface the shadowed copies as a diagnostic. ``kind="duplicate"``
+        # tells them apart from genuine import errors.
+        #
+        # 2026-06-17: these are NOT load failures. A conflict is only
+        # recorded AFTER an earlier root's copy loaded successfully (the
+        # ``entry.name in seen_ids`` check above is only true once a prior
+        # ``res.ok`` added the id) — so the skill IS loaded and working from
+        # the canonical root; the shadow is merely a benign "you have a dupe
+        # in another root" notice. Emitting it as ``ok=False`` made the UI
+        # cry "1 个技能加载失败: huashu-design" for a skill that loaded fine
+        # (the user hit exactly this with a copy in ~/.agents/skills). Mark
+        # it ``ok=True`` so it never inflates the failure banner; the message
+        # rides along for any consumer that wants to show it as a warning,
+        # and ``log.warning`` above already records it for operators.
         for sid, paths in path_conflicts.items():
             results.append(LoadResult(
                 skill_id=sid,
-                ok=False,
+                ok=True,
                 skill_path=Path(paths[0]),
                 error=(
-                    f"skill_id {sid!r} found in multiple roots; the "
-                    f"canonical (first scanned) wins, shadowed copies: "
+                    f"skill_id {sid!r} also found in another root (shadowed, "
+                    f"the canonical copy wins): "
                     + ", ".join(paths)
-                    + ". Delete the duplicates to silence this warning."
+                    + ". Delete the duplicate to silence this notice."
                 ),
                 kind="duplicate",
                 source_root="",

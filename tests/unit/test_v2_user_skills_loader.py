@@ -567,9 +567,13 @@ async def test_g09_same_id_different_paths_records_duplicate(
     tmp_path: Path,
 ) -> None:
     """Drop the same skill_id (different dir content) in both
-    canonical and extra roots → canonical wins, BUT a duplicate
-    row appears in results so the SkillsWatcher / UI / agent can
-    surface the conflict."""
+    canonical and extra roots → canonical wins, and a duplicate NOTICE
+    row appears so the watcher / UI / agent can surface the shadow.
+
+    2026-06-17: the duplicate is NOT a load failure — the canonical copy
+    loaded fine (a conflict is only recorded after an earlier root's copy
+    succeeded). So the duplicate row is ``ok=True`` and must not inflate
+    the failure banner."""
     canonical = tmp_path / "skills_user"
     extras = tmp_path / "agents_skills"
     canonical.mkdir()
@@ -583,13 +587,15 @@ async def test_g09_same_id_different_paths_records_duplicate(
     ).load_all()
     # Canonical version registered.
     assert "conflict-id" in reg.list_skill_ids()
-    # A duplicate row exists in results so SkillsWatcher can pick
-    # it up + put in load_failures.
+    # A duplicate NOTICE row exists (so the UI *could* surface the shadow),
+    # but it is NOT a failure.
     dupes = [r for r in results if r.kind == "duplicate"]
     assert len(dupes) == 1
     assert dupes[0].skill_id == "conflict-id"
-    assert not dupes[0].ok
-    assert "multiple roots" in (dupes[0].error or "")
+    assert dupes[0].ok  # benign notice, not a failure
+    assert "shadowed" in (dupes[0].error or "")
+    # The whole load reports ZERO failures — the skill loaded fine.
+    assert [r for r in results if not r.ok] == []
 
 
 # ── Epic #27 P1 G-10 (2026-05-19): frontmatter extras ──────────────
@@ -685,12 +691,13 @@ async def test_g10_markdown_skill_carries_extras_into_manifest(
 
 
 @pytest.mark.asyncio
-async def test_g09_duplicate_row_surfaces_in_watcher_failures(
+async def test_g09_duplicate_does_not_surface_as_watcher_failure(
     tmp_path: Path,
 ) -> None:
-    """End-to-end: SkillsWatcher's load_failures() exposes the
-    duplicate row so the Skills page banner + skill_status tool
-    pick it up alongside genuine load failures."""
+    """End-to-end regression: a skill present in two roots loaded fine
+    from the canonical one — the shadow must NOT show up in the Skills
+    page banner as "1 个技能加载失败". (User hit this with a copy in both
+    ~/.xmclaw/skills_user and ~/.agents/skills.)"""
     from xmclaw.daemon.skills_watcher import SkillsWatcher
 
     canonical = tmp_path / "skills_user"
@@ -705,7 +712,7 @@ async def test_g09_duplicate_row_surfaces_in_watcher_failures(
         reg, canonical, extra_roots=[extras], interval_s=3600.0,
     )
     await watcher.tick()
-    failures = watcher.load_failures()
-    assert len(failures) == 1
-    assert failures[0]["skill_id"] == "dup-end-to-end"
-    assert failures[0]["kind"] == "duplicate"
+    # Skill is registered (loaded from canonical), and the benign shadow
+    # does NOT inflate the failure banner.
+    assert "dup-end-to-end" in reg.list_skill_ids()
+    assert watcher.load_failures() == []
