@@ -150,7 +150,7 @@ scope 含义：
 # commitment, correction. Preference is also delegated to
 # ExtractLessonsHook (B-319) to keep a single write-path.
 _VALID_KINDS = {
-    "decision", "identity", "commitment", "correction", "project",
+    "preference", "decision", "identity", "commitment", "correction", "project",
 }
 _VALID_SCOPES = {"user", "project", "session"}
 

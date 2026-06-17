@@ -716,6 +716,14 @@ class HistoryCompressionMixin:
                 and m.content.lstrip().startswith("[GOAL-ANCHOR]")
             ):
                 continue
+            # B-302: drop honesty-guard nudge messages so they don't
+            # leak into the chat UI after a history reload.
+            if (
+                m.role == "user"
+                and isinstance(m.content, str)
+                and m.content.lstrip().startswith("你刚才说记住了/记下了，但我没有检测到")
+            ):
+                continue
             if (
                 m.role == "user"
                 and isinstance(m.content, str)

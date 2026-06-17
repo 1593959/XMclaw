@@ -2237,11 +2237,14 @@ class MemoryService:
         # Point-in-time query: only return facts whose validity window
         # covers the requested timestamp (valid_at <= t < invalid_at).
         # This enables historical queries per Zep/Graphiti model.
+        # When include_invalidated=True, skip the point-in-time invalid_at
+        # filter so superseded facts (which have invalid_at set) are still
+        # visible to the caller (test_list_facts_hides_superseded_by_default).
         _query_time = valid_at if valid_at is not None else time.time()
         hits = [
             f for f in hits
             if (f.valid_at is None or f.valid_at <= _query_time)
-            and (f.invalid_at is None or f.invalid_at > _query_time)
+            and (f.invalid_at is None or f.invalid_at > _query_time or include_invalidated)
         ]
 
         # Enrich with relations.
@@ -2962,7 +2965,7 @@ class MemoryService:
             remaining.sort(
                 key=lambda f: (
                     -(getattr(f, "evidence_count", 1) * f.confidence),
-                    f.ts_last,
+                    -f.ts_last,
                 ),
             )
 

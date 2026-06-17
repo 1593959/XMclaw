@@ -1,4 +1,4 @@
-﻿"""Hop loop mixin for AgentLoop.
+"""Hop loop mixin for AgentLoop.
 
 Extracted from agent_loop.py to reduce module size.
 Contains the LLM ↔ tool hop loop execution logic.
@@ -32,7 +32,7 @@ _MEMORY_HONESTY_TRIGGERS: tuple[str, ...] = (
     "记下了", "记住了", "已记录", "已经记录",
     "我记住了", "我记下了", "我已经记录",
 )
-_MEMORY_TOOLS: frozenset[str] = frozenset({"remember", "learn_about_user"})
+_MEMORY_TOOLS: frozenset[str] = frozenset({"remember", "learn_about_user", "memory"})
 
 # 2026-06-08 动态 per-call 超时:按 hop 深度递增(代替按开场消息分档)。
 # 有效超时 = min(llm_timeout_s 上限, BASE + hop×STEP)。深一跳 = 任务更复杂、
@@ -83,7 +83,7 @@ def _check_memory_honesty(
         return None
     # Did any memory tool actually run this hop?
     actually_called = any(
-        getattr(tc, "name", "") in _MEMORY_TOOLS
+        (getattr(tc, "name", None) or tc.get("name", "")) in _MEMORY_TOOLS
         for tc in tool_calls_made
     )
     if actually_called:

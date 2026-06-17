@@ -165,7 +165,7 @@ def test_factkind_values_cover_canonical_set() -> None:
     assert {k.value for k in FactKind} == {
         "preference", "decision", "identity",
         "commitment", "correction", "project", "episode",
-        "lesson", "persona_manual", "topic",
+        "lesson", "persona_manual", "topic", "task_context",
     }
 
 
