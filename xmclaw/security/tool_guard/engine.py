@@ -66,6 +66,34 @@ class ToolGuardEngine:
         self._guardians = guardians or []
         self._guarded_tools = guarded_tools or set(_DEFAULT_GUARDED_TOOLS)
         self._denied_tools = denied_tools or set(_DEFAULT_DENIED_TOOLS)
+        self._build_index()
+
+    # ------------------------------------------------------------------
+    # Indexing
+    # ------------------------------------------------------------------
+
+    def _build_index(self) -> None:
+        """Build a tool-name -> guardians index to avoid O(N) scans.
+
+        Guardians that declare ``guarded_tool_names()`` containing ``"*"``
+        (or that do not implement the method) are stored in
+        ``_universal_guardians`` and consulted on every tool call.
+        Guardians that declare a finite list of tool names are stored in
+        ``_guardian_index`` and only consulted for those tools.
+        """
+        self._guardian_index: dict[str, list[BaseToolGuardian]] = {}
+        self._universal_guardians: list[BaseToolGuardian] = []
+        for g in self._guardians:
+            tool_names = getattr(g, "guarded_tool_names", lambda: ("*",))()
+            if "*" in tool_names:
+                self._universal_guardians.append(g)
+            else:
+                for tn in tool_names:
+                    self._guardian_index.setdefault(tn, []).append(g)
+
+    def invalidate_index(self) -> None:
+        """Rebuild the index after runtime guardian mutations."""
+        self._build_index()
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,24 +126,49 @@ class ToolGuardEngine:
         findings: list[GuardFinding] = []
         used: list[str] = []
 
-        for g in self._guardians:
-            if only_always_run and g.name not in _ALWAYS_RUN_GUARDIANS:
-                continue
-            try:
-                batch = g.guard(tool_name, params)
-            except Exception:  # noqa: BLE001
-                # Guardian failure must not block the tool call,
-                # but MUST be logged so operators can detect
-                # silent security degradation (audit 2026-06-11).
-                from xmclaw.utils.log import get_logger as _gl
-                _gl(__name__).warning(
-                    "tool_guard.guardian_failed guardian=%s tool=%s",
-                    g.name, tool_name, exc_info=True,
-                )
-                batch = []
-            if batch:
-                findings.extend(batch)
-                used.append(g.name)
+        if only_always_run:
+            # Legacy path — the _ALWAYS_RUN_GUARDIANS set is tiny (1 item),
+            # so a linear scan over the full list is effectively O(1).
+            for g in self._guardians:
+                if g.name not in _ALWAYS_RUN_GUARDIANS:
+                    continue
+                try:
+                    batch = g.guard(tool_name, params)
+                except Exception:  # noqa: BLE001
+                    from xmclaw.utils.log import get_logger as _gl
+                    _gl(__name__).warning(
+                        "tool_guard.guardian_failed guardian=%s tool=%s",
+                        g.name, tool_name, exc_info=True,
+                    )
+                    batch = []
+                if batch:
+                    findings.extend(batch)
+                    used.append(g.name)
+        else:
+            # Indexed path — O(relevant guardians) instead of O(total).
+            candidates = self._guardian_index.get(tool_name, [])
+            candidates = candidates + self._universal_guardians
+            # De-duplicate in case a guardian is both specific and universal.
+            seen_ids: set[int] = set()
+            for g in candidates:
+                if id(g) in seen_ids:
+                    continue
+                seen_ids.add(id(g))
+                try:
+                    batch = g.guard(tool_name, params)
+                except Exception:  # noqa: BLE001
+                    # Guardian failure must not block the tool call,
+                    # but MUST be logged so operators can detect
+                    # silent security degradation (audit 2026-06-11).
+                    from xmclaw.utils.log import get_logger as _gl
+                    _gl(__name__).warning(
+                        "tool_guard.guardian_failed guardian=%s tool=%s",
+                        g.name, tool_name, exc_info=True,
+                    )
+                    batch = []
+                if batch:
+                    findings.extend(batch)
+                    used.append(g.name)
 
         duration = time.perf_counter() - start
         return ToolGuardResult(

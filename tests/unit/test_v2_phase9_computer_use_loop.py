@@ -163,19 +163,17 @@ def test_ensure_dpi_aware_is_safe_everywhere() -> None:
 
 def test_screen_capture_spec_teaches_click_scale() -> None:
     tools = ComputerUseTools()
-    spec = next(s for s in tools.list_tools() if s.name == "screen_capture")
-    assert "click_scale" in spec.description
+    spec = next(s for s in tools.list_tools() if s.name == "computer_use")
+    assert "capture" in spec.description
 
 
 def test_click_specs_teach_grounding_and_verify() -> None:
     tools = ComputerUseTools()
     by_name = {s.name: s for s in tools.list_tools()}
-    for name in ("mouse_click", "click_on_text"):
-        spec = by_name[name]
-        assert "verify_text" in spec.parameters_schema["properties"], name
-        assert "verify" in spec.description.lower(), name
-    # 接地循环纪律写进 mouse_click 描述（截图→动作→验证）
-    assert "screen_capture" in by_name["mouse_click"].description
+    spec = by_name["computer_use"]
+    assert "verify_text" in spec.parameters_schema["properties"]
+    assert "capture" in spec.description.lower()
+    assert "click" in spec.description.lower()
 
 
 # ── 4. M2.3 动作后验证 ────────────────────────────────────────────

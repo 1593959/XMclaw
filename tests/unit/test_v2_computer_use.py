@@ -158,26 +158,9 @@ def _json(result):
 
 
 def test_lists_all_tools(tools):
-    """Provider has grown through several rounds; the test pins
-    every tool advertised today so a silent rename in list_tools
-    surfaces here. Re-extend the expected set when you add a tool."""
+    """2026-06-18 refactor: 23 tools unified into a single computer_use spec."""
     names = {s.name for s in tools.list_tools()}
-    expected = {
-        # Mouse / keyboard / window (original 11)
-        "screen_capture", "screen_size", "cursor_position",
-        "mouse_move", "mouse_click", "mouse_drag", "mouse_scroll",
-        "keyboard_type", "keyboard_press",
-        "window_list", "window_focus",
-        # Vision grounding (2026-05-12 r1)
-        "screen_ocr", "find_on_screen", "click_on_text",
-        "wait_for_text", "screen_region_capture",
-        # Image template + scroll + Windows UIA (2026-05-12 r2)
-        "find_image_on_screen", "click_on_image", "scroll_to_text",
-        "ui_inspect", "ui_click",
-        # Atomic compose+send (2026-05-12 r3)
-        "gui_send_chat",
-    }
-    assert names == expected
+    assert names == {"computer_use"}
 
 
 # ── Vision ────────────────────────────────────────────────────────
@@ -463,7 +446,4 @@ def test_factory_wires_when_enabled():
     }
     provider = build_tools_from_config(cfg)
     names = {s.name for s in provider.list_tools()}
-    assert "screen_capture" in names
-    assert "mouse_click" in names
-    assert "keyboard_type" in names
-    assert "window_list" in names
+    assert "computer_use" in names

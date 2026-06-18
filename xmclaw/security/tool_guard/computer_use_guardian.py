@@ -38,6 +38,7 @@ from .models import GuardFinding, GuardSeverity
 # GUI 操作类工具 —— 会改变屏幕上的世界。新增 computer-use 操作工具时
 # 必须同步加进来（engine 的 guarded_tools 用同一份名单,漏加 = 不扫）。
 MUTATING_GUI_TOOLS: frozenset[str] = frozenset({
+    # Desktop computer-use tools
     "mouse_move",
     "mouse_click",
     "mouse_drag",
@@ -50,11 +51,21 @@ MUTATING_GUI_TOOLS: frozenset[str] = frozenset({
     "scroll_to_text",
     "ui_click",
     "gui_send_chat",
+    # Android companion tools (Phase 12 / Android Companion M1)
+    "phone_open_app",
+    "phone_click",
+    "phone_tap",
+    "phone_input",
+    "phone_swipe",
+    "phone_key",
+    "phone_notification",
+    "phone_clipboard_set",
 })
 
 # 读取类 —— 这里列出只为文档完整性 + 测试断言用,guard() 对不在
 # MUTATING_GUI_TOOLS 里的名字一律零 finding。
 READONLY_GUI_TOOLS: frozenset[str] = frozenset({
+    # Desktop computer-use tools
     "screen_capture",
     "screen_size",
     "cursor_position",
@@ -65,6 +76,11 @@ READONLY_GUI_TOOLS: frozenset[str] = frozenset({
     "screen_region_capture",
     "find_image_on_screen",
     "ui_inspect",
+    # Android companion tools
+    "phone_screenshot",
+    "phone_ui_tree",
+    "phone_wait",
+    "phone_clipboard_get",
 })
 
 _VALID_MODES = ("allow", "approve", "deny")
@@ -72,6 +88,13 @@ _VALID_MODES = ("allow", "approve", "deny")
 
 class ComputerUseActionGuardian(BaseToolGuardian):
     """Tier-based gate for GUI-mutating computer-use tools."""
+
+    # 2026-06-18 refactor: unified computer_use 的 mutating action 子命令
+    _MUTATING_ACTIONS: frozenset[str] = frozenset({
+        "move", "click", "double_click", "right_click", "drag", "scroll",
+        "type", "key", "click_text", "click_image", "ui_click",
+        "gui_send_chat", "focus_window", "wait_for_text",
+    })
 
     def __init__(self, mode: str = "allow") -> None:
         mode = (mode or "allow").lower()
@@ -92,6 +115,34 @@ class ComputerUseActionGuardian(BaseToolGuardian):
     def guard(self, tool_name: str, params: dict[str, Any]) -> list[GuardFinding]:
         if self._mode == "allow":
             return []
+        # 2026-06-18 refactor: unified computer_use tool
+        if tool_name == "computer_use":
+            action = str(params.get("action", "")).strip().lower()
+            if action not in self._MUTATING_ACTIONS and action not in MUTATING_GUI_TOOLS:
+                return []
+            severity = (
+                GuardSeverity.CRITICAL if self._mode == "deny" else GuardSeverity.HIGH
+            )
+            return [
+                GuardFinding(
+                    rule_id="computer_use_mutating_action",
+                    category="unauthorized_tool_use",
+                    severity=severity,
+                    title="GUI 控制动作",
+                    description=(
+                        f"computer_use(action={action!r}) 会直接操作用户的"
+                        f"鼠标/键盘/窗口（security.guardians.computer_use_mode="
+                        f"{self._mode!r}）"
+                    ),
+                    tool_name=tool_name,
+                    remediation=(
+                        "确认该动作符合预期后批准；如需免确认，把 "
+                        "security.guardians.computer_use_mode 设为 'allow'"
+                    ),
+                    guardian=self.name,
+                )
+            ]
+        # Legacy tool names (backward compatible)
         if tool_name not in MUTATING_GUI_TOOLS:
             return []
         severity = (

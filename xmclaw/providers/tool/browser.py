@@ -102,6 +102,156 @@ try {
 
 # ── tool specs ────────────────────────────────────────────────────
 
+# ── unified browser spec ──────────────────────────────────────────
+
+_BROWSER_ACTIONS = [
+    "navigate", "click", "press", "fill", "hover", "scroll",
+    "select_option", "upload", "wait_for", "back", "forward", "reload",
+    "tabs", "tab_switch", "tab_close", "screenshot", "snapshot", "eval",
+    "close", "click_ref", "type_ref", "dialog", "dialog_arm",
+    "network_log", "download_next", "save_state", "list_states",
+    "import_cookies", "get_console", "use_my_browser",
+]
+
+_MUTATING_ACTIONS = {
+    "navigate", "click", "press", "fill", "hover", "scroll",
+    "select_option", "upload", "click_ref", "type_ref", "back",
+    "forward", "reload", "tab_switch", "tab_close", "dialog",
+}
+
+_LEGACY_TOOL_MAP: dict[str, tuple[str, dict[str, str]]] = {
+    "browser_open": ("navigate", {}),
+    "browser_click": ("click", {}),
+    "browser_press": ("press", {}),
+    "browser_fill": ("fill", {}),
+    "browser_hover": ("hover", {}),
+    "browser_scroll": ("scroll", {}),
+    "browser_select_option": ("select_option", {}),
+    "browser_upload": ("upload", {}),
+    "browser_wait_for": ("wait_for", {}),
+    "browser_back": ("back", {}),
+    "browser_forward": ("forward", {}),
+    "browser_reload": ("reload", {}),
+    "browser_tabs": ("tabs", {}),
+    "browser_tab_switch": ("tab_switch", {}),
+    "browser_tab_close": ("tab_close", {}),
+    "browser_screenshot": ("screenshot", {}),
+    "browser_snapshot": ("snapshot", {}),
+    "browser_eval": ("eval", {}),
+    "browser_close": ("close", {}),
+    "browser_click_ref": ("click_ref", {}),
+    "browser_type_ref": ("type_ref", {}),
+    "browser_dialog": ("dialog", {"action": "dialog_action"}),
+    "browser_dialog_arm": ("dialog_arm", {"action": "dialog_action"}),
+    "browser_network_log": ("network_log", {}),
+    "browser_download_next": ("download_next", {}),
+    "browser_save_state": ("save_state", {}),
+    "browser_list_states": ("list_states", {}),
+    "browser_import_cookies": ("import_cookies", {}),
+    "browser_get_console": ("get_console", {}),
+    "browser_use_my_browser": ("use_my_browser", {}),
+}
+
+_BROWSER_SPEC = ToolSpec(
+    name="browser",
+    description=(
+        "Unified browser automation tool. Use the 'action' parameter to "
+        "select the operation. All prior browser_* tools are consolidated "
+        "here.\n\n"
+        "Actions:\n"
+        "  • navigate (open) — go to a URL, optionally with persistent "
+        "profile or system Chrome.\n"
+        "  • click / press / fill / hover / scroll / select_option / upload — "
+        "interact with the page.\n"
+        "  • screenshot / snapshot — capture the current state (image or text).\n"
+        "  • eval — run JavaScript in the page (if enabled).\n"
+        "  • back / forward / reload — history navigation.\n"
+        "  • tabs / tab_switch / tab_close — manage multiple tabs.\n"
+        "  • wait_for — composite wait on selector, URL, load state, or JS.\n"
+        "  • click_ref / type_ref — interact by [N] ref from the last snapshot.\n"
+        "  • dialog / dialog_arm — handle or pre-arm JS dialogs.\n"
+        "  • network_log — inspect captured request/response entries.\n"
+        "  • download_next — capture file downloads.\n"
+        "  • save_state / list_states / import_cookies — cookie/profile management.\n"
+        "  • get_console — read captured console/pageerror messages.\n"
+        "  • close — close the session's page + context.\n"
+        "  • use_my_browser — open in the user's real Chrome via CDP.\n\n"
+        "For mutating actions (click, fill, navigate, etc.), set "
+        "capture_after=false to skip the automatic post-action screenshot."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": _BROWSER_ACTIONS,
+                "description": "Browser operation to perform.",
+            },
+            "capture_after": {
+                "type": "boolean",
+                "description": (
+                    "For mutating actions, automatically capture a screenshot "
+                    "after the action and return it in the result. Default true."
+                ),
+            },
+            "url": {"type": "string", "description": "URL for navigate or use_my_browser."},
+            "wait_until": {"type": "string", "description": "'load' | 'domcontentloaded' | 'networkidle'. Default 'load'."},
+            "visible": {"type": "boolean", "description": "Show a real browser window (navigate). Default true."},
+            "load_state": {"type": "string", "description": "Name of a saved storage-state profile (navigate)."},
+            "persistent_profile": {"type": "boolean", "description": "Use a real Chrome profile dir (navigate)."},
+            "profile_name": {"type": "string", "description": "Profile namespace for persistent_profile (navigate)."},
+            "use_system_chrome": {"type": "boolean", "description": "Drive the user's installed Chrome (navigate)."},
+            "browser": {"type": "string", "description": "Browser family for use_my_browser: auto/chrome/edge/brave."},
+            "profile": {"type": "string", "description": "Chrome profile dir name for use_my_browser. Default 'Default'."},
+            "selector": {"type": "string", "description": "CSS or Playwright locator selector."},
+            "force": {"type": "boolean", "description": "Bypass actionability checks (click). Default false."},
+            "visible_only": {"type": "boolean", "description": "Pick the first visible match when multiple elements match (click). Default true."},
+            "wait_for_navigation_ms": {"type": "integer", "description": "Max ms to wait for navigation after click. Default 2000."},
+            "key": {"type": "string", "description": "Key or chord to press, e.g. 'Enter', 'Control+A'."},
+            "value": {"type": "string", "description": "Value to fill into an input."},
+            "text": {"type": "string", "description": "Text to type (type_ref)."},
+            "submit": {"type": "boolean", "description": "Press Enter after typing (type_ref). Default false."},
+            "direction": {"type": "string", "description": "up / down / top / bottom (scroll)."},
+            "amount": {"type": "integer", "description": "Pixel amount for up/down scroll. Default 800."},
+            "to_selector": {"type": "string", "description": "Scroll until this element is in view (scroll)."},
+            "files": {"type": ["string", "array"], "description": "Path or list of paths to attach (upload)."},
+            "state": {"type": "string", "description": "attached / detached / visible / hidden (wait_for). Default visible."},
+            "url_glob": {"type": "string", "description": "Glob the page URL must match (wait_for)."},
+            "load_state": {"type": "string", "description": "load / domcontentloaded / networkidle (wait_for)."},
+            "js_predicate": {"type": "string", "description": "Truthy-when-ready JS expression (wait_for)."},
+            "timeout_ms": {"type": "integer", "description": "Timeout for wait_for or download_next. Default 10000/30000."},
+            "index": {"type": "integer", "description": "Tab index for tab_switch / tab_close."},
+            "full_page": {"type": "boolean", "description": "Capture the entire scrollable page (screenshot). Default false."},
+            "format": {"type": "string", "description": "png or jpeg (screenshot). Default png."},
+            "quality": {"type": "integer", "description": "JPEG quality 1-100 (screenshot). Default 80."},
+            "max_inline_bytes": {"type": "integer", "description": "Cap for inline data_url (screenshot). Default 524288."},
+            "annotate": {"type": "boolean", "description": "Overlay [N] ref labels from the last snapshot (screenshot). Default false."},
+            "max_chars": {"type": "integer", "description": "Text truncation cap (snapshot). Default 8000."},
+            "max_links": {"type": "integer", "description": "Top-N links to surface (snapshot). Default 30."},
+            "max_inputs": {"type": "integer", "description": "Top-N inputs/buttons to surface (snapshot). Default 20."},
+            "expression": {"type": "string", "description": "JavaScript expression to evaluate (eval)."},
+            "ref": {"type": "integer", "description": "Ref number from the last snapshot (click_ref / type_ref)."},
+            "dialog_action": {"type": "string", "description": "accept / dismiss / respond / clear (dialog / dialog_arm)."},
+            "id": {"type": "string", "description": "Dialog id from snapshot (dialog)."},
+            "method": {"type": "string", "description": "HTTP method filter (network_log)."},
+            "status_min": {"type": "integer", "description": "Only entries with status >= this (network_log). Default 0."},
+            "with_body": {"type": "boolean", "description": "Include response body (network_log). Default false."},
+            "limit": {"type": "integer", "description": "Max entries returned (network_log). Default 20."},
+            "clear": {"type": "boolean", "description": "Clear buffer after reading (network_log / get_console). Default false."},
+            "and_then_click": {"type": "string", "description": "Selector to click immediately after arming (download_next)."},
+            "save_dir": {"type": "string", "description": "Override default download directory (download_next)."},
+            "ticket": {"type": "string", "description": "Ticket id for two-step download (download_next)."},
+            "name": {"type": "string", "description": "Profile name for save_state / import_cookies."},
+            "cookies_json": {"type": "string", "description": "Inline JSON cookie payload (import_cookies)."},
+            "cookies_path": {"type": "string", "description": "Path to a JSON cookie file (import_cookies)."},
+            "level": {"type": "string", "description": "error / warning / info / log / debug / all (get_console). Default all."},
+            "max": {"type": "integer", "description": "Max entries (get_console). Default 50."},
+        },
+        "required": ["action"],
+    },
+)
+
+
 _BROWSER_OPEN_SPEC = ToolSpec(
     name="browser_open",
     description=(
@@ -1103,116 +1253,49 @@ class BrowserTools(ToolProvider):
         self._boot_lock = asyncio.Lock()
 
     def list_tools(self) -> list[ToolSpec]:
-        # These always appear in the spec -- the model shouldn't have
-        # to guess whether browser is enabled. If playwright is missing
-        # the tool returns a structured install-me error when called,
-        # which is much friendlier than "unknown tool".
-        return [
-            _BROWSER_OPEN_SPEC, _BROWSER_CLICK_SPEC, _BROWSER_PRESS_SPEC,
-            _BROWSER_FILL_SPEC, _BROWSER_HOVER_SPEC,
-            _BROWSER_SCROLL_SPEC, _BROWSER_SELECT_OPTION_SPEC,
-            _BROWSER_UPLOAD_SPEC, _BROWSER_WAIT_FOR_SPEC,
-            _BROWSER_BACK_SPEC, _BROWSER_FORWARD_SPEC,
-            _BROWSER_RELOAD_SPEC,
-            _BROWSER_TABS_SPEC, _BROWSER_TAB_SWITCH_SPEC,
-            _BROWSER_TAB_CLOSE_SPEC, _BROWSER_DOWNLOAD_NEXT_SPEC,
-            _BROWSER_SAVE_STATE_SPEC, _BROWSER_LIST_STATES_SPEC,
-            _BROWSER_IMPORT_COOKIES_SPEC,
-            _BROWSER_GET_CONSOLE_SPEC,
-            _BROWSER_SCREENSHOT_SPEC,
-            _BROWSER_SNAPSHOT_SPEC, _BROWSER_EVAL_SPEC, _BROWSER_CLOSE_SPEC,
-            _BROWSER_USE_MY_BROWSER_SPEC,
-            # 2026-05-28 P0.1 + P0.2: ref-based action tools +
-            # dialog supervisor — major LLM accuracy wins.
-            _BROWSER_CLICK_REF_SPEC, _BROWSER_TYPE_REF_SPEC,
-            _BROWSER_DIALOG_SPEC,
-            # 2026-05-28 P2.4 + P3.5: dialog pre-arm + network log.
-            _BROWSER_DIALOG_ARM_SPEC, _BROWSER_NETWORK_LOG_SPEC,
-        ]
+        return [_BROWSER_SPEC]
 
     async def invoke(self, call: ToolCall) -> ToolResult:
         t0 = time.perf_counter()
         try:
-            if call.name == "browser_open":
-                return await self._open(call, t0)
-            if call.name == "browser_click":
-                return await self._click(call, t0)
-            if call.name == "browser_press":
-                return await self._press(call, t0)
-            if call.name == "browser_fill":
-                return await self._fill(call, t0)
-            if call.name == "browser_screenshot":
-                return await self._screenshot(call, t0)
-            if call.name == "browser_snapshot":
-                return await self._snapshot(call, t0)
-            if call.name == "browser_eval":
-                return await self._eval(call, t0)
-            if call.name == "browser_close":
-                return await self._close(call, t0)
-            if call.name == "browser_use_my_browser":
-                return await self._use_my_browser(call, t0)
-            if call.name == "browser_click_ref":
-                return await self._click_ref(call, t0)
-            if call.name == "browser_type_ref":
-                return await self._type_ref(call, t0)
-            if call.name == "browser_dialog":
-                return await self._dialog(call, t0)
-            if call.name == "browser_dialog_arm":
-                return await self._dialog_arm(call, t0)
-            if call.name == "browser_network_log":
-                return await self._network_log(call, t0)
-            if call.name == "browser_hover":
-                return await self._hover(call, t0)
-            if call.name == "browser_scroll":
-                return await self._scroll(call, t0)
-            if call.name == "browser_select_option":
-                return await self._select_option(call, t0)
-            if call.name == "browser_upload":
-                return await self._upload(call, t0)
-            if call.name == "browser_wait_for":
-                return await self._wait_for(call, t0)
-            if call.name == "browser_back":
-                return await self._history_nav(call, t0, "back")
-            if call.name == "browser_forward":
-                return await self._history_nav(call, t0, "forward")
-            if call.name == "browser_reload":
-                return await self._history_nav(call, t0, "reload")
-            if call.name == "browser_tabs":
-                return await self._tabs_list(call, t0)
-            if call.name == "browser_tab_switch":
-                return await self._tab_switch(call, t0)
-            if call.name == "browser_tab_close":
-                return await self._tab_close(call, t0)
-            if call.name == "browser_download_next":
-                return await self._download_next(call, t0)
-            if call.name == "browser_save_state":
-                return await self._save_state(call, t0)
-            if call.name == "browser_list_states":
-                return await self._list_states(call, t0)
-            if call.name == "browser_import_cookies":
-                return await self._import_cookies(call, t0)
-            if call.name == "browser_get_console":
-                return await self._get_console(call, t0)
+            if call.name == "browser":
+                return await self._browser(call, t0)
+            # Backward compatibility: old browser_* names map into the unified action.
+            if call.name in _LEGACY_TOOL_MAP:
+                action, rename = _LEGACY_TOOL_MAP[call.name]
+                import warnings
+                warnings.warn(
+                    f"{call.name!r} is deprecated — use browser(action={action!r}) instead",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                new_args = dict(call.args)
+                for old_key, new_key in rename.items():
+                    if old_key in new_args:
+                        new_args[new_key] = new_args.pop(old_key)
+                new_args["action"] = action
+                forged = ToolCall(
+                    name="browser",
+                    args=new_args,
+                    provenance=getattr(call, "provenance", "synthetic"),
+                    id=getattr(call, "id", ""),
+                    session_id=getattr(call, "session_id", None),
+                )
+                return await self._browser(forged, t0)
             return _fail(call, t0, f"unknown tool: {call.name!r}")
         except _PlaywrightMissing as exc:
             return _fail_with_hint(
                 call, t0, "playwright not installed",
                 exc=exc,
                 hint=(
-                    "the browser_* tools need playwright + a chromium "
+                    "the browser tools need playwright + a chromium "
                     "binary. Install via ``pip install 'xmclaw[browser]'`` "
                     "then ``playwright install chromium`` (one-time, "
-                    "~150MB). Until installed, no browser_* tool will "
+                    "~150MB). Until installed, no browser tool will "
                     "be invocable."
                 ),
             )
         except Exception as exc:  # noqa: BLE001
-            # Epic #27 sweep #16 (2026-05-19): browser failures span a
-            # huge surface (network errors, selectors not matching, JS
-            # crashes, navigation cancellations). The exception type
-            # gives the LLM enough signal — we just add a generic
-            # debugging hint pointing at the most-common recovery
-            # path.
             return _fail_with_hint(
                 call, t0,
                 f"browser tool {call.name!r} raised",
@@ -1228,6 +1311,140 @@ class BrowserTools(ToolProvider):
                     "the session."
                 ),
             )
+
+    async def _browser(self, call: ToolCall, t0: float) -> ToolResult:
+        """Unified browser dispatcher. Routes action → existing private handler."""
+        action = call.args.get("action")
+        if action not in _BROWSER_ACTIONS:
+            return _fail(call, t0, f"unknown browser action: {action!r}")
+
+        capture_after = call.args.get("capture_after")
+        if capture_after is None:
+            capture_after = action in _MUTATING_ACTIONS
+
+        # Dispatch to existing private methods (unchanged).
+        if action == "navigate":
+            result = await self._open(call, t0)
+        elif action == "click":
+            result = await self._click(call, t0)
+        elif action == "press":
+            result = await self._press(call, t0)
+        elif action == "fill":
+            result = await self._fill(call, t0)
+        elif action == "hover":
+            result = await self._hover(call, t0)
+        elif action == "scroll":
+            result = await self._scroll(call, t0)
+        elif action == "select_option":
+            result = await self._select_option(call, t0)
+        elif action == "upload":
+            result = await self._upload(call, t0)
+        elif action == "wait_for":
+            result = await self._wait_for(call, t0)
+        elif action == "back":
+            result = await self._history_nav(call, t0, "back")
+        elif action == "forward":
+            result = await self._history_nav(call, t0, "forward")
+        elif action == "reload":
+            result = await self._history_nav(call, t0, "reload")
+        elif action == "tabs":
+            result = await self._tabs_list(call, t0)
+        elif action == "tab_switch":
+            result = await self._tab_switch(call, t0)
+        elif action == "tab_close":
+            result = await self._tab_close(call, t0)
+        elif action == "screenshot":
+            result = await self._screenshot(call, t0)
+        elif action == "snapshot":
+            result = await self._snapshot(call, t0)
+        elif action == "eval":
+            result = await self._eval(call, t0)
+        elif action == "close":
+            result = await self._close(call, t0)
+        elif action == "click_ref":
+            result = await self._click_ref(call, t0)
+        elif action == "type_ref":
+            result = await self._type_ref(call, t0)
+        elif action == "dialog":
+            # dialog_action was renamed from legacy "action" param
+            if "dialog_action" in call.args:
+                call = ToolCall(
+                    name=call.name,
+                    args={**call.args, "action": call.args["dialog_action"]},
+                    provenance=getattr(call, "provenance", "synthetic"),
+                    id=getattr(call, "id", ""),
+                    session_id=getattr(call, "session_id", None),
+                )
+            result = await self._dialog(call, t0)
+        elif action == "dialog_arm":
+            if "dialog_action" in call.args:
+                call = ToolCall(
+                    name=call.name,
+                    args={**call.args, "action": call.args["dialog_action"]},
+                    provenance=getattr(call, "provenance", "synthetic"),
+                    id=getattr(call, "id", ""),
+                    session_id=getattr(call, "session_id", None),
+                )
+            result = await self._dialog_arm(call, t0)
+        elif action == "network_log":
+            result = await self._network_log(call, t0)
+        elif action == "download_next":
+            result = await self._download_next(call, t0)
+        elif action == "save_state":
+            result = await self._save_state(call, t0)
+        elif action == "list_states":
+            result = await self._list_states(call, t0)
+        elif action == "import_cookies":
+            result = await self._import_cookies(call, t0)
+        elif action == "get_console":
+            result = await self._get_console(call, t0)
+        elif action == "use_my_browser":
+            result = await self._use_my_browser(call, t0)
+        else:
+            return _fail(call, t0, f"unimplemented action: {action!r}")
+
+        if capture_after and result.ok and action != "screenshot":
+            result = await self._append_screenshot(call, t0, result)
+        return result
+
+    async def _append_screenshot(
+        self, call: ToolCall, t0: float, prior: ToolResult,
+    ) -> ToolResult:
+        """Capture a screenshot after a mutating action and merge it into the result."""
+        try:
+            shot = await self._screenshot(
+                ToolCall(
+                    name="browser_screenshot",
+                    args={"annotate": True},
+                    provenance=getattr(call, "provenance", "synthetic"),
+                    id=getattr(call, "id", ""),
+                    session_id=getattr(call, "session_id", None),
+                ),
+                t0,
+            )
+        except Exception:  # noqa: BLE001
+            # Screenshot failure is non-fatal; just return the prior result.
+            return prior
+        if not shot.ok:
+            return prior
+        # Merge screenshot metadata into prior result so the UI still shows it.
+        merged_content = dict(prior.content) if isinstance(prior.content, dict) else {"text": prior.content}
+        merged_content["screenshot"] = shot.content
+        merged_metadata = dict(prior.metadata)
+        if shot.metadata.get("attach_image"):
+            merged_metadata["attach_image"] = shot.metadata["attach_image"]
+        side_effects = list(prior.side_effects)
+        if shot.side_effects:
+            side_effects.extend(shot.side_effects)
+        return ToolResult(
+            call_id=prior.call_id,
+            ok=prior.ok,
+            content=merged_content,
+            error=prior.error,
+            latency_ms=prior.latency_ms,
+            side_effects=tuple(side_effects),
+            metadata=merged_metadata,
+        )
 
     async def close_session(self, session_id: str) -> None:
         """Tear down a session's page + context. Safe to call repeatedly."""

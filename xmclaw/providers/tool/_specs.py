@@ -781,35 +781,37 @@ _MEMORY_SEARCH_SPEC = ToolSpec(
 
 
 def _build_memory_spec_description() -> str:
-    """2026-05-29 cleanup: bucket judgement list is rendered from
-    the central registry instead of hand-maintained here. Adding a
-    bucket to ``xmclaw.memory.v2.buckets.BUCKETS`` automatically
-    surfaces it in this tool's description — no copy-paste, no
-    drift. Phase 1's ``render_for_prompt()`` was built for exactly
-    this purpose.
+    """2026-06-18: unified memory tool — all memory operations in one
+    surface.  Backward-compatible with the 10 legacy single-purpose
+    tools (memory_search, memory_compact, …) which are still wired
+    but hidden from list_tools.
     """
     from xmclaw.memory.v2.buckets import render_for_prompt
     return (
-        "**Preferred** single-call interface for managing your long-"
-        "term memory (2026-05-28 memory v3). Four actions cover the "
-        "CRUD lifecycle:\n\n"
-        "  • ``add``   — record a NEW fact. Required: text, bucket, "
-        "scope. Optional: kind, confidence, due_ts (commitment only).\n"
-        "  • ``replace`` — supersede an old fact with a corrected one. "
-        "Required: text + EITHER ``old_fid`` (precise) OR ``old_text`` "
-        "(semantic search). Optional: bucket, kind, scope, reason.\n"
-        "  • ``forget`` — soft-delete fact(s). Required: EITHER "
-        "``old_fid`` OR ``query`` (semantic search). Optional: "
-        "max_matches (default 3), reason.\n"
-        "  • ``pin``   — record a fact that must never be auto-deleted "
-        "by dedup/compact. Args same as ``add``.\n\n"
+        "**Unified** memory interface — every memory operation is a "
+        "single call with an ``action`` parameter.\n\n"
+        "  • ``search`` — semantic search across all wired providers.\n"
+        "  • ``compact`` — trigger an immediate Auto-Dream pass.\n"
+        "  • ``forget`` — soft-delete a fact (v3 path via old_fid / query).\n"
+        "  • ``correct`` — replace a wrong fact with a corrected one.\n"
+        "  • ``dedup`` — run semantic dedup on a scope/bucket.\n"
+        "  • ``inspect`` — read-only health probe (fact counts, dup ratio).\n"
+        "  • ``add``   — record a NEW fact.\n"
+        "  • ``replace`` — supersede an old fact with a corrected one.\n"
+        "  • ``pin``   — record a fact that must never be auto-deleted.\n"
+        "  • ``get``   — read a persona MD file verbatim.\n"
+        "  • ``graph_neighbors`` — walk the memory graph from a fact_id.\n"
+        "  • ``multi_action`` — v3 multi-action alias; use ``sub_action`` "
+        "to pick add/replace/forget/pin.\n\n"
         "★ Bucket selection (required for add / pin / replace):\n"
         f"{render_for_prompt()}\n\n"
         "When in doubt, use ``misc`` — facts there still land in "
         "MEMORY.md ## Other facts (recent) and are searchable.\n\n"
-        "Replaces the legacy single-purpose tools (``remember`` / "
-        "``memory_correct`` / ``memory_forget`` / ``memory_pin``). "
-        "Those tools still work for backward compat but new code "
+        "Replaces the legacy single-purpose tools (``memory_search`` / "
+        "``memory_compact`` / ``memory_forget`` / ``memory_correct`` / "
+        "``memory_dedup`` / ``memory_inspect`` / ``memory_get`` / "
+        "``memory_graph_neighbors`` / ``memory_pin``). "
+        "Those tool names still work for backward compat but new code "
         "should use ``memory`` to keep the choice tree simple."
     )
 
@@ -831,7 +833,19 @@ _MEMORY_SPEC = ToolSpec(
         "properties": {
             "action": {
                 "type": "string",
+                "enum": [
+                    "search", "compact", "forget", "correct",
+                    "dedup", "inspect", "add", "replace", "pin",
+                    "get", "graph_neighbors", "multi_action",
+                ],
+            },
+            "sub_action": {
+                "type": "string",
                 "enum": ["add", "replace", "forget", "pin"],
+                "description": (
+                    "When ``action='multi_action'``, use ``sub_action`` "
+                    "to pick the v3 operation. Ignored for all other actions."
+                ),
             },
             "text": {
                 "type": "string",
@@ -894,8 +908,8 @@ _MEMORY_SPEC = ToolSpec(
             "query": {
                 "type": "string",
                 "description": (
-                    "For forget: semantic search phrase to locate the "
-                    "fact(s) to remove."
+                    "For search / forget: natural-language query or "
+                    "semantic search phrase."
                 ),
             },
             "max_matches": {
@@ -909,6 +923,99 @@ _MEMORY_SPEC = ToolSpec(
                 "type": "string",
                 "description": (
                     "Optional one-line audit note for replace/forget."
+                ),
+            },
+            "k": {
+                "type": "integer",
+                "description": (
+                    "For search: top-k hits per provider (default 5, max 20)."
+                ),
+            },
+            "layer": {
+                "type": "string",
+                "enum": ["short", "working", "long"],
+                "description": "For search: memory layer (default 'long').",
+            },
+            "max_chars": {
+                "type": "integer",
+                "description": (
+                    "For search: total result chars cap (default 6000, "
+                    "min 500, max 20000)."
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["vector", "llm"],
+                "description": (
+                    "For dedup: 'vector' (default, fast cosine) or 'llm' "
+                    "(semantic, catches paraphrases)."
+                ),
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": (
+                    "For dedup: when true (default), returns the preview "
+                    "without superseding anything. Pass false to commit."
+                ),
+            },
+            "sample_dup_check": {
+                "type": "integer",
+                "minimum": 50,
+                "maximum": 2000,
+                "description": (
+                    "For inspect: how many facts to sample when estimating "
+                    "duplicate ratio. Default 500."
+                ),
+            },
+            "file": {
+                "type": "string",
+                "description": "For get: persona MD basename (case-insensitive).",
+            },
+            "section": {
+                "type": "string",
+                "description": (
+                    "For get: optional ``## Section header`` to extract just "
+                    "that segment. ``## `` prefix is optional."
+                ),
+            },
+            "lines": {
+                "type": "string",
+                "description": (
+                    "For get: optional line range like '10-50' (1-indexed, "
+                    "inclusive). Applied AFTER section filtering."
+                ),
+            },
+            "fact_id": {
+                "type": "string",
+                "description": (
+                    "For graph_neighbors: starting fact id, e.g. 'fid:abc123'."
+                ),
+            },
+            "relation_types": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "For graph_neighbors: optional filter. "
+                    "E.g. [\"SAME_TOPIC\", \"SUPERSEDES\"]."
+                ),
+            },
+            "max_hops": {
+                "type": "integer",
+                "description": (
+                    "For graph_neighbors: graph hops to traverse (1-3, default 1)."
+                ),
+            },
+            "content": {
+                "type": "string",
+                "description": (
+                    "For legacy pin: the fact, one sentence. "
+                    "Will be prefixed with the current date."
+                ),
+            },
+            "new_text": {
+                "type": "string",
+                "description": (
+                    "For correct: the correct value, as a complete fact sentence."
                 ),
             },
         },

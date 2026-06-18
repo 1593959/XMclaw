@@ -40,11 +40,7 @@ def tools(tmp_path):
 
 def test_list_includes_round2_tools(tools):
     names = {s.name for s in tools.list_tools()}
-    for n in (
-        "find_image_on_screen", "click_on_image", "scroll_to_text",
-        "ui_inspect", "ui_click",
-    ):
-        assert n in names, n
+    assert "computer_use" in names
 
 
 # ── find_image_on_screen ───────────────────────────────────────────

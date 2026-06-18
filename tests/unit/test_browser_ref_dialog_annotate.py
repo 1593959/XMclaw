@@ -358,6 +358,4 @@ def test_draw_ref_overlay_skips_entries_without_bbox():
 def test_new_tools_registered():
     bt = BrowserTools()
     names = {t.name for t in bt.list_tools()}
-    assert "browser_click_ref" in names
-    assert "browser_type_ref" in names
-    assert "browser_dialog" in names
+    assert "browser" in names

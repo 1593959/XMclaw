@@ -333,5 +333,4 @@ async def test_close_session_clears_armed_and_network():
 def test_p2_p3_tools_registered():
     bt = BrowserTools()
     names = {t.name for t in bt.list_tools()}
-    assert "browser_dialog_arm" in names
-    assert "browser_network_log" in names
+    assert "browser" in names

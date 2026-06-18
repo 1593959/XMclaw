@@ -1,5 +1,16 @@
+# 2026-06-18 refactor: 23 tools → 1 unified computer_use tool + action param.
+# Adds: capture_after, backend sticky window state, SOM element indexing,
+# dangerous-action hard blocks, non-vision OCR fallback.
+# Old tool names remain as a backward-compatible deprecation layer.
 # Stage 1 fix: multi-scale template + click retry + fuzzy OCR + pixel verify
 """ComputerUseTools — give the agent a mouse, a keyboard, and eyes.
+
+2026-06-18. REFACTOR: list_tools() now returns a single ``computer_use``
+ToolSpec. The previous 23 individual tools (screen_capture, mouse_click,
+etc.) are mapped internally to ``action`` sub-commands with deprecation
+warnings. New features: ``capture_after`` auto-screenshot on mutating
+actions, backend sticky window state, SOM element indexing, and
+dangerous-action hard blocks.
 
 2026-05-12. Pre-this the agent could only act through the shell + file
 tools + browser (playwright). Anything that lived in a GUI app
@@ -69,6 +80,7 @@ import json
 import os
 import platform
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -759,6 +771,153 @@ _GUI_SEND_CHAT_SPEC = ToolSpec(
     },
 )
 
+_LEGACY_TOOL_MAP: dict[str, tuple[str, dict]] = {
+    "screen_capture":       ("capture", {"mode": "vision"}),
+    "screen_size":          ("screen_size", {}),
+    "cursor_position":      ("cursor_position", {}),
+    "mouse_move":           ("move", {}),
+    "mouse_click":          ("click", {}),
+    "mouse_drag":           ("drag", {}),
+    "mouse_scroll":         ("scroll", {}),
+    "keyboard_type":        ("type", {}),
+    "keyboard_press":       ("key", {}),
+    "window_list":          ("list_windows", {}),
+    "window_focus":         ("focus_window", {}),
+    "screen_ocr":           ("ocr", {}),
+    "find_on_screen":       ("find_text", {}),
+    "click_on_text":        ("click_text", {}),
+    "wait_for_text":        ("wait_for_text", {}),
+    "screen_region_capture": ("region_capture", {}),
+    "find_image_on_screen": ("find_image", {}),
+    "click_on_image":       ("click_image", {}),
+    "scroll_to_text":       ("scroll_to_text", {}),
+    "ui_inspect":           ("ui_inspect", {}),
+    "ui_click":             ("ui_click", {}),
+    "gui_send_chat":        ("gui_send_chat", {}),
+}
+
+_MUTATING_ACTIONS = {
+    "move", "click", "double_click", "right_click", "drag", "scroll",
+    "type", "key", "click_text", "click_image", "ui_click", "gui_send_chat",
+    "focus_window", "wait_for_text",
+}
+
+_COMPUTER_USE_SPEC = ToolSpec(
+    name="computer_use",
+    description=("""控制本地桌面：截图、点击、输入、滚动、应用管理。
+
+核心参数：
+- action: capture | click | double_click | right_click | scroll | type | key | wait | list_windows | focus_window | screen_size | cursor_position | move | drag | ocr | find_text | click_text | wait_for_text | region_capture | find_image | click_image | scroll_to_text | ui_inspect | ui_click | gui_send_chat
+- element: 元素索引（SOM 模式截图后返回的编号）
+- coordinate: [x, y]（坐标模式 fallback）
+- capture_after: 动作后自动截图并返回（默认 true，对 mutating 动作）
+- mode: "som" | "vision"（截图模式）
+- text: type 动作的文本
+- keys: key 动作的按键（如 "enter", "ctrl+v"）
+- monitor: 截图显示器索引（默认 1 = primary）
+- max_elements: SOM 模式下最大元素数（默认 50，上限 200）
+- vision: 是否返回图片（默认 true；设为 false 时非 vision 模型回退到 OCR 文本）
+
+使用流程：
+1. computer_use(action="capture", mode="som") → 返回截图 + 元素列表
+2. computer_use(action="click", element=3, capture_after=True) → 点击元素3，返回新截图
+3. computer_use(action="type", text="hello") → 输入文本
+4. computer_use(action="key", keys="enter") → 按键
+"""),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": (
+                    "Sub-action to perform. One of: capture, click, double_click, "
+                    "right_click, scroll, type, key, wait, list_windows, focus_window, "
+                    "screen_size, cursor_position, move, drag, ocr, find_text, click_text, "
+                    "wait_for_text, region_capture, find_image, click_image, scroll_to_text, "
+                    "ui_inspect, ui_click, gui_send_chat"
+                ),
+            },
+            "element": {
+                "type": "integer",
+                "description": "SOM element index (from a prior capture with mode=som).",
+            },
+            "coordinate": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "[x, y] screen coordinates. Used when element is not provided.",
+            },
+            "capture_after": {
+                "type": "boolean",
+                "description": (
+                    "If true, automatically capture a screenshot AFTER the action and "
+                    "attach it (metadata.attach_image). Defaults to true for mutating "
+                    "actions (click, type, key, scroll, move, drag, etc.)."
+                ),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["som", "vision"],
+                "description": "Screenshot mode. 'som' overlays numbered element circles.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Text to type (for action=type).",
+            },
+            "keys": {
+                "type": "string",
+                "description": "Key or chord to press (for action=key), e.g. 'enter', 'ctrl+v'.",
+            },
+            "monitor": {
+                "type": "integer",
+                "description": "mss monitor index (default 1 = primary).",
+            },
+            "max_elements": {
+                "type": "integer",
+                "description": "Max elements in SOM mode (default 50, hard cap 200).",
+            },
+            "vision": {
+                "type": "boolean",
+                "description": (
+                    "If false and action=capture, return OCR text description instead of "
+                    "an image (non-vision model fallback)."
+                ),
+            },
+            "title_contains": {
+                "type": "string",
+                "description": "Substring for window matching.",
+            },
+            "window_title": {
+                "type": "string",
+                "description": "Window title for focus / inspect.",
+            },
+            "x": {"type": "integer"},
+            "y": {"type": "integer"},
+            "duration": {"type": "number", "description": "Mouse move duration (0-30s)."},
+            "button": {"type": "string", "enum": ["left", "right", "middle"]},
+            "count": {"type": "integer", "description": "Click count (1-3)."},
+            "amount": {"type": "integer", "description": "Scroll amount (+/- clicks)."},
+            "interval": {"type": "number", "description": "Typing interval between keys."},
+            "include_base64": {"type": "boolean"},
+            "min_confidence": {"type": "number"},
+            "exact": {"type": "boolean"},
+            "region": {"type": "array", "items": {"type": "integer"}},
+            "verify_pixel": {"type": "boolean"},
+            "verify_text": {"type": "string"},
+            "nav_chat_name": {"type": "string"},
+            "verify_chat_title": {"type": "string"},
+            "input_bbox": {"type": "array", "items": {"type": "integer"}},
+            "press_after": {"type": "string"},
+            "confirm_screenshot": {"type": "boolean"},
+            "control_type": {"type": "string"},
+            "name_contains": {"type": "string"},
+            "max_depth": {"type": "integer"},
+        },
+        "required": ["action"],
+    },
+)
+
 
 # ── Provider ──────────────────────────────────────────────────────────
 
@@ -802,24 +961,16 @@ class ComputerUseTools(ToolProvider):
         # guaranteed even if gui_send_chat errored out before reaching
         # its own release).
         self._pending_topmost_release: Any | None = None
+        # ── 2026-06-18 refactor: backend sticky state ───────────────────
+        self._active_hwnd: int | None = None
+        self._active_pid: int | None = None
+        self._last_window_title: str | None = None
+        # SOM sticky state for element indexing
+        self._last_som_elements: list[dict[str, Any]] = []
+        self._last_som_overlay_path: str | None = None
 
     def list_tools(self) -> list[ToolSpec]:
-        return [
-            _SCREEN_CAPTURE_SPEC, _SCREEN_SIZE_SPEC, _CURSOR_POSITION_SPEC,
-            _MOUSE_MOVE_SPEC, _MOUSE_CLICK_SPEC, _MOUSE_DRAG_SPEC,
-            _MOUSE_SCROLL_SPEC,
-            _KEYBOARD_TYPE_SPEC, _KEYBOARD_PRESS_SPEC,
-            _WINDOW_LIST_SPEC, _WINDOW_FOCUS_SPEC,
-            # Vision-grounding (2026-05-12)
-            _SCREEN_OCR_SPEC, _FIND_ON_SCREEN_SPEC,
-            _CLICK_ON_TEXT_SPEC, _WAIT_FOR_TEXT_SPEC,
-            _REGION_CAPTURE_SPEC,
-            # Image template + scroll + native Windows UIA (2026-05-12 r2)
-            _FIND_IMAGE_SPEC, _CLICK_IMAGE_SPEC, _SCROLL_TO_TEXT_SPEC,
-            _UI_INSPECT_SPEC, _UI_CLICK_SPEC,
-            # 2026-05-12 r3: atomic compose-and-send for chat apps
-            _GUI_SEND_CHAT_SPEC,
-        ]
+        return [_COMPUTER_USE_SPEC]
 
     async def invoke(self, call: ToolCall) -> ToolResult:
         t0 = time.perf_counter()
@@ -837,6 +988,20 @@ class ComputerUseTools(ToolProvider):
                 await asyncio.to_thread(_release_topmost, prev)
             except Exception:  # noqa: BLE001 — never block the new tool
                 pass
+        # 2026-06-18 refactor: backward-compat deprecation layer
+        if name in _LEGACY_TOOL_MAP:
+            warnings.warn(
+                f"Tool {name!r} is deprecated; use "
+                f"computer_use(action={_LEGACY_TOOL_MAP[name][0]!r})",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            action, defaults = _LEGACY_TOOL_MAP[name]
+            merged = {**defaults, **args, "action": action}
+            return await self._computer_use(call, t0, merged)
+        if name == "computer_use":
+            return await self._computer_use(call, t0, args)
+        # Fallback: old direct dispatch (kept for safety/tests)
         try:
             if name == "screen_capture":   return await self._screen_capture(call, t0, args)
             if name == "screen_size":      return await self._screen_size(call, t0)
@@ -865,6 +1030,421 @@ class ComputerUseTools(ToolProvider):
         except Exception as exc:  # noqa: BLE001 — surface as ok=False
             return _fail(call, t0, f"{type(exc).__name__}: {exc}")
         return _fail(call, t0, f"unknown tool: {name!r}")
+
+    # ── 2026-06-18 unified action dispatcher ────────────────────────────
+
+    def _danger_check(self, action: str, args: dict) -> str | None:
+        """Hard-block dangerous shortcuts / shell commands."""
+        if action in ("key", "keyboard_press"):
+            keys = str(args.get("keys", "")).strip().lower().replace(" ", "+")
+            # Exact blacklist
+            for blocked in ("alt+f4", "win+l", "ctrl+alt+del", "ctrl+alt+delete"):
+                if blocked in keys:
+                    return f"blacklisted keyboard shortcut: {keys!r}"
+            # Part-based checks
+            parts = [p.strip() for p in keys.split("+") if p.strip()]
+            if "alt" in parts and "f4" in parts:
+                return "blacklisted keyboard shortcut: alt+f4"
+            if "win" in parts and "l" in parts:
+                return "blacklisted keyboard shortcut: win+l"
+            if "ctrl" in parts and "alt" in parts and ("del" in parts or "delete" in parts):
+                return "blacklisted keyboard shortcut: ctrl+alt+del"
+        if action in ("type", "keyboard_type"):
+            text = str(args.get("text", "")).lower()
+            # Shell pipe patterns
+            for a, b, c in (("curl", "|", "bash"), ("curl", "|", "sh"),
+                            ("wget", "|", "bash"), ("wget", "|", "sh")):
+                if a in text and b in text and c in text:
+                    return f"dangerous shell pipe pattern: {a} ... {b} ... {c}"
+            if "rm -rf /" in text or "rm -rf /" in text.replace(" ", ""):
+                return "dangerous command: rm -rf /"
+            if "dd if=" in text and "of=" in text:
+                return "dangerous disk command: dd"
+        return None
+
+    async def _quick_capture(self) -> str:
+        """Lightweight screenshot for capture_after / sticky state."""
+        import mss
+        _ensure_dpi_aware()
+        self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"{int(time.time())}_post.png"
+        out = self._screenshot_dir / fname
+
+        def _do() -> None:
+            with mss.mss() as sct:
+                mon = sct.monitors[1]
+                grab = sct.grab(mon)
+                mss.tools.to_png(grab.rgb, grab.size, output=str(out))
+        await asyncio.to_thread(_do)
+        return str(out)
+
+    async def _maybe_capture_after(
+        self, result: ToolResult, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """If capture_after is enabled, attach a post-action screenshot."""
+        try:
+            path = await self._quick_capture()
+        except Exception as exc:  # noqa: BLE001
+            content = json.loads(result.content) if result.content else {}
+            content["capture_after_warning"] = f"post-capture failed: {exc}"
+            return ToolResult(
+                call_id=call.id, ok=result.ok,
+                content=json.dumps(content, ensure_ascii=False),
+                error=result.error,
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+                metadata=result.metadata,
+            )
+        content = json.loads(result.content) if result.content else {}
+        content["capture_after"] = True
+        content["post_capture_path"] = path
+        metadata = dict(result.metadata or {})
+        metadata["attach_image"] = path
+        return ToolResult(
+            call_id=call.id, ok=result.ok,
+            content=json.dumps(content, ensure_ascii=False),
+            error=result.error,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata=metadata,
+        )
+
+    async def _update_sticky_window(self) -> None:
+        """Record foreground window into sticky state (Windows only)."""
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            if hwnd:
+                self._active_hwnd = int(hwnd)
+                pid = ctypes.c_ulong()
+                ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                self._active_pid = int(pid.value)
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                    self._last_window_title = buf.value
+                else:
+                    self._last_window_title = ""
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _build_som_overlay(self, img_path: str, elements: list[dict]) -> str:
+        """Draw numbered circles on screenshot for SOM mode.
+
+        Each element gets a 1-indexed numbered badge in electric lime
+        (#E5FF00) with a semi-transparent dark background for readability.
+        """
+        from PIL import Image, ImageDraw, ImageFont
+        base = Image.open(img_path).convert("RGBA")
+        # Overlay layer for alpha-blended rectangle highlights
+        overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        draw_overlay = ImageDraw.Draw(overlay)
+        try:
+            font = ImageFont.truetype("arial.ttf", 14)
+        except Exception:
+            try:
+                font = ImageFont.truetype("DejaVuSans.ttf", 14)
+            except Exception:
+                font = ImageFont.load_default()
+        # Electric lime (#E5FF00) — deep-space theme
+        LIME = (229, 255, 0, 255)
+        LIME_FILL = (229, 255, 0, 40)
+        DARK_BG = (0, 0, 0, 180)
+        for i, el in enumerate(elements, start=1):
+            bbox = el.get("bbox", [0, 0, 0, 0])
+            if len(bbox) != 4:
+                continue
+            x, y, w, h = bbox
+            if w <= 0 or h <= 0:
+                continue
+            # Semi-transparent rectangle highlight on overlay layer
+            draw_overlay.rectangle(
+                [x, y, x + w, y + h],
+                outline=LIME, fill=LIME_FILL, width=2,
+            )
+        # Composite highlights onto base image
+        img = Image.alpha_composite(base, overlay)
+        draw = ImageDraw.Draw(img)
+        # Draw numbered circles on top of composited image
+        for i, el in enumerate(elements, start=1):
+            bbox = el.get("bbox", [0, 0, 0, 0])
+            if len(bbox) != 4:
+                continue
+            x, y, w, h = bbox
+            if w <= 0 or h <= 0:
+                continue
+            radius = max(10, min(16, min(w, h) // 3))
+            cx = x + radius
+            cy = y + radius
+            draw.ellipse(
+                [cx - radius, cy - radius, cx + radius, cy + radius],
+                fill=DARK_BG, outline=LIME, width=2,
+            )
+            text = str(i)
+            try:
+                tb = draw.textbbox((0, 0), text, font=font)
+                tw, th = tb[2] - tb[0], tb[3] - tb[1]
+            except Exception:
+                tw, th = 8, 8
+            tx = cx - tw // 2
+            ty = cy - th // 2
+            draw.text((tx, ty), text, fill=LIME, font=font)
+        overlay_path = str(Path(img_path).with_suffix(".som.png"))
+        img.save(overlay_path)
+        return overlay_path
+
+    def _resize_screenshot(self, img_path: str, max_w: int = 1920, max_h: int = 1080) -> tuple[str, float]:
+        """Resize screenshot if it exceeds max dimensions. Returns (path, scale)."""
+        from PIL import Image
+        try:
+            img = Image.open(img_path)
+        except Exception:  # noqa: BLE001 — invalid image, skip resize
+            return img_path, 1.0
+        if img.width <= max_w and img.height <= max_h:
+            img.close()
+            return img_path, 1.0
+        scale = min(max_w / img.width, max_h / img.height)
+        new_w = int(img.width * scale)
+        new_h = int(img.height * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        img.save(img_path)
+        img.close()
+        return img_path, scale
+
+    async def _capture_with_som(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        """capture + ui_inspect + SOM overlay."""
+        cap_args = {"monitor": args.get("monitor", 1)}
+        cap_result = await self._screen_capture(call, t0, cap_args)
+        if not cap_result.ok:
+            return cap_result
+        cap_data = json.loads(cap_result.content)
+        img_path = cap_data["path"]
+
+        # Resize screenshot to avoid context explosion
+        img_path, scale = await asyncio.to_thread(self._resize_screenshot, img_path)
+
+        inspect_args = {
+            "window_title": args.get("window_title", ""),
+            "max_depth": args.get("max_depth", 6),
+            "control_type": args.get("control_type", ""),
+            "name_contains": args.get("name_contains", ""),
+            "max_elements": _clamp(int(args.get("max_elements", 50)), 1, 200),
+        }
+        inspect_result = await self._ui_inspect(call, t0, inspect_args)
+        if not inspect_result.ok:
+            elements: list[dict] = []
+        else:
+            inspect_data = json.loads(inspect_result.content)
+            elements = inspect_data.get("elements", [])
+
+        # Add 1-based index and scale bboxes for overlay drawing
+        for idx, el in enumerate(elements, start=1):
+            el["index"] = idx
+
+        overlay_elements = []
+        for el in elements:
+            bbox = el.get("bbox", [0, 0, 0, 0])
+            if len(bbox) == 4 and scale != 1.0:
+                overlay_elements.append({
+                    **el,
+                    "bbox": [
+                        int(bbox[0] * scale),
+                        int(bbox[1] * scale),
+                        int(bbox[2] * scale),
+                        int(bbox[3] * scale),
+                    ],
+                })
+            else:
+                overlay_elements.append(el)
+
+        try:
+            overlay_path = self._build_som_overlay(img_path, overlay_elements)
+        except Exception as exc:  # noqa: BLE001
+            overlay_path = img_path
+            # Do NOT wipe elements when overlay draw fails; the agent still
+            # needs the element list even if the image overlay couldn't be drawn.
+            pass
+
+        self._last_som_elements = elements
+        self._last_som_overlay_path = overlay_path
+
+        result = {
+            "path": overlay_path,
+            "original_path": cap_data["path"],
+            "size": cap_data.get("size"),
+            "elements": elements,
+            "mode": "som",
+            "element_count": len(elements),
+        }
+        if scale != 1.0:
+            result["scale"] = round(scale, 4)
+        return ToolResult(
+            call_id=call.id, ok=True,
+            content=json.dumps(result, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"attach_image": overlay_path},
+        )
+
+    async def _capture_fallback_text(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        """Non-vision fallback: capture → OCR → return text description."""
+        cap_result = await self._screen_capture(call, t0, args)
+        if not cap_result.ok:
+            return cap_result
+        cap_data = json.loads(cap_result.content)
+        img_path = cap_data["path"]
+        try:
+            blocks = await asyncio.to_thread(
+                _run_ocr_full_pipeline, None,
+                float(args.get("min_confidence", 0.5)),
+            )
+        except _NoOCREngineError as exc:
+            return _fail(call, t0, str(exc))
+        except Exception as exc:
+            return _fail(call, t0, f"OCR fallback failed: {exc}")
+        texts = [b["text"] for b in blocks]
+        result = {
+            "text_description": "\n".join(texts),
+            "blocks": blocks,
+            "path": img_path,
+            "size": cap_data.get("size"),
+            "vision_attached": False,
+            "fallback": "non_vision_ocr",
+        }
+        return _ok(call, t0, json.dumps(result, ensure_ascii=False))
+
+    async def _computer_use(self, call: ToolCall, t0: float, args: dict) -> ToolResult:
+        action = str(args.get("action", "")).strip().lower()
+        if not action:
+            return _fail(call, t0, "action parameter is required for computer_use")
+
+        block_reason = self._danger_check(action, args)
+        if block_reason:
+            return _fail(call, t0, f"BLOCKED: {block_reason}")
+
+        capture_after = args.get("capture_after", action in _MUTATING_ACTIONS)
+        if isinstance(capture_after, str):
+            capture_after = capture_after.lower() in ("true", "1", "yes")
+        capture_after = bool(capture_after)
+
+        # Resolve element index -> coordinate (1-indexed, matched by `index` field)
+        element_idx = args.get("element")
+        if element_idx is not None:
+            try:
+                element_idx = int(element_idx)
+            except (TypeError, ValueError):
+                return _fail(call, t0, "element must be an integer")
+            if not self._last_som_elements:
+                return _fail(
+                    call, t0,
+                    "先调用 capture(mode='som') 以获取元素索引",
+                )
+            el = None
+            for e in self._last_som_elements:
+                if e.get("index") == element_idx:
+                    el = e
+                    break
+            if el is None:
+                return _fail(
+                    call, t0,
+                    f"element {element_idx} 不存在 "
+                    f"(当前有 {len(self._last_som_elements)} 个 SOM 元素)",
+                )
+            bbox = el.get("bbox", [0, 0, 0, 0])
+            if len(bbox) == 4:
+                cx = bbox[0] + bbox[2] // 2
+                cy = bbox[1] + bbox[3] // 2
+                args = {**args, "x": cx, "y": cy}
+
+        # Resolve coordinate array -> x, y
+        coordinate = args.get("coordinate")
+        if coordinate is not None and isinstance(coordinate, (list, tuple)) and len(coordinate) >= 2:
+            try:
+                x = int(coordinate[0])
+                y = int(coordinate[1])
+                args = {**args, "x": x, "y": y}
+            except (TypeError, ValueError):
+                return _fail(call, t0, "coordinate must be [x, y] integers")
+
+        result: ToolResult | None = None
+
+        if action == "capture":
+            mode = args.get("mode", "vision")
+            if mode == "som":
+                result = await self._capture_with_som(call, t0, args)
+            else:
+                if not args.get("vision", True):
+                    result = await self._capture_fallback_text(call, t0, args)
+                else:
+                    result = await self._screen_capture(call, t0, args)
+        elif action == "screen_size":
+            result = await self._screen_size(call, t0)
+        elif action == "cursor_position":
+            result = await self._cursor_position(call, t0)
+        elif action in ("move", "mouse_move"):
+            result = await self._mouse_move(call, t0, args)
+        elif action in ("click", "mouse_click", "double_click", "right_click"):
+            click_args = dict(args)
+            if action == "double_click":
+                click_args["count"] = 2
+            elif action == "right_click":
+                click_args["button"] = "right"
+            result = await self._mouse_click(call, t0, click_args)
+        elif action in ("drag", "mouse_drag"):
+            result = await self._mouse_drag(call, t0, args)
+        elif action in ("scroll", "mouse_scroll"):
+            result = await self._mouse_scroll(call, t0, args)
+        elif action in ("type", "keyboard_type"):
+            result = await self._keyboard_type(call, t0, args)
+        elif action in ("key", "keyboard_press"):
+            result = await self._keyboard_press(call, t0, args)
+        elif action in ("list_windows", "window_list"):
+            result = await self._window_list(call, t0, args)
+        elif action in ("focus_window", "window_focus"):
+            result = await self._window_focus(call, t0, args)
+            if result and result.ok:
+                await self._update_sticky_window()
+        elif action == "ocr":
+            result = await self._screen_ocr(call, t0, args)
+        elif action in ("find_text", "find_on_screen"):
+            result = await self._find_on_screen(call, t0, args)
+        elif action in ("click_text", "click_on_text"):
+            result = await self._click_on_text(call, t0, args)
+        elif action == "wait_for_text":
+            result = await self._wait_for_text(call, t0, args)
+        elif action in ("region_capture", "screen_region_capture"):
+            result = await self._screen_region_capture(call, t0, args)
+        elif action in ("find_image", "find_image_on_screen"):
+            result = await self._find_image_on_screen(call, t0, args)
+        elif action in ("click_image", "click_on_image"):
+            result = await self._click_on_image(call, t0, args)
+        elif action == "scroll_to_text":
+            result = await self._scroll_to_text(call, t0, args)
+        elif action in ("ui_inspect",):
+            result = await self._ui_inspect(call, t0, args)
+        elif action in ("ui_click",):
+            result = await self._ui_click(call, t0, args)
+        elif action in ("gui_send_chat",):
+            result = await self._gui_send_chat(call, t0, args)
+        else:
+            return _fail(call, t0, f"unknown action: {action!r}")
+
+        # Post-action capture for mutating actions (except capture itself)
+        if capture_after and result and result.ok and action not in (
+            "capture", "screen_size", "cursor_position", "list_windows", "ocr",
+        ):
+            result = await self._maybe_capture_after(result, call, t0)
+
+        # Update sticky window after capture
+        if action == "capture" and result and result.ok:
+            await self._update_sticky_window()
+
+        return result
+
 
     # ── pyautogui import gate ──────────────────────────────────────
 
@@ -1947,6 +2527,7 @@ class ComputerUseTools(ToolProvider):
         name_contains = (args.get("name_contains") or "").strip().lower()
         window_title = (args.get("window_title") or "").strip()
         max_depth = _clamp(int(args.get("max_depth", 6)), 1, 12)
+        max_elements = _clamp(int(args.get("max_elements", 100)), 1, 200)
 
         def _do_inspect() -> dict[str, Any]:
             # COM threading: uiautomation needs CoInitialize() per thread.
@@ -1982,7 +2563,7 @@ class ComputerUseTools(ToolProvider):
                 elements: list[dict[str, Any]] = []
 
                 def _walk(ctrl, depth: int) -> None:
-                    if depth > max_depth or len(elements) >= 100:
+                    if depth > max_depth or len(elements) >= max_elements:
                         return
                     try:
                         name = getattr(ctrl, "Name", "") or ""
@@ -2019,7 +2600,7 @@ class ComputerUseTools(ToolProvider):
                     try:
                         for child in ctrl.GetChildren():
                             _walk(child, depth + 1)
-                            if len(elements) >= 100:
+                            if len(elements) >= max_elements:
                                 return
                     except Exception:  # noqa: BLE001
                         return
