@@ -81,7 +81,7 @@ class MockLLM(LLMProvider):
         on_thinking_chunk: Any = None,
         on_tool_block: Any = None,
         on_stream_fallback: Any = None,
-        cancel: asyncio.Event | None = None,
+        cancel: asyncio.Event | None = None, extended_thinking: Any = None, **_kw: Any,
     ) -> LLMResponse:
         # Inject wall-clock latency so the benchmark isn't measuring
         # only coroutine switch cost.

@@ -183,6 +183,7 @@ async def test_tool_random_raise_is_caught() -> None:
         raise_rate=1.0,
     )
     agent = AgentLoop(llm=llm, tools=tools, bus=bus)
+    agent._mode_instant_enabled = False  # force normal mode so tools are offered
     result = await agent.run_turn("s1", "hello")
     await bus.drain()
 
@@ -229,6 +230,7 @@ async def test_parallel_tool_calls_with_partial_failures() -> None:
 
     tools = _PartialProvider()
     agent = AgentLoop(llm=llm, tools=tools, bus=bus)
+    agent._mode_instant_enabled = False  # force normal mode so tools are offered
     result = await agent.run_turn("s1", "hello")
     await bus.drain()
 
@@ -269,6 +271,7 @@ async def test_high_fanout_tools_do_not_deadlock() -> None:
 
     tools = _SlowProvider()
     agent = AgentLoop(llm=llm, tools=tools, bus=bus)
+    agent._mode_instant_enabled = False  # force normal mode so tools are offered
     result = await agent.run_turn("s1", "hello")
     await bus.drain()
 
@@ -300,6 +303,7 @@ async def test_mixed_chaos_survives() -> None:
         garbage_rate=0.1,
     )
     agent = AgentLoop(llm=llm, tools=tools, bus=bus)
+    agent._mode_instant_enabled = False  # force normal mode so tools are offered
 
     # Run several turns — probability says at least one will hit a fault.
     for _ in range(10):

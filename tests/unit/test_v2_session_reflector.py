@@ -101,6 +101,45 @@ async def test_reflect_skips_thin_sessions(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_noise_sessions_do_not_starve_real_ones(tmp_path):
+    """Regression: a session with only NON-salient events (memory_op etc.)
+    must not occupy the per-tick slots and starve a real chat session.
+
+    Pre-fix ``_changed_sessions`` gated "changed" on ALL event types while
+    ``_events_since`` only read salient ones, so noise sessions passed the
+    gate, yielded 0 events → SKIP without bumping their watermark, and were
+    re-picked every tick — the real session never got processed and the
+    daemon logged ``sessions=0 facts=0`` indefinitely.
+    """
+    db = tmp_path / "events.db"
+    bus = SqliteEventBus(db_path=db)
+    # Many noise sessions, each full of non-salient events only.
+    for n in range(30):
+        for _ in range(5):
+            await bus.publish(make_event(
+                session_id=f"chat-noise-{n}", agent_id="a",
+                type=EventType.MEMORY_OP, payload={"op": "put"},
+            ))
+    # One real session with salient content.
+    await _seed(bus, "chat-real")
+
+    llm = _ScriptedLLM([
+        {"text": "缺依赖会 ModuleNotFoundError", "kind": "lesson", "confidence": 0.9},
+    ])
+    mem = _StubMemory()
+    refl = SessionReflector(
+        llm=llm, memory_service=mem,
+        events_db_path=db, state_path=tmp_path / "state.json",
+        max_sessions_per_tick=20,
+    )
+    r = await refl.reflect_once()
+    # The real session is reached and distilled despite 30 noise sessions.
+    assert r["facts"] == 1
+    assert any(m["text"].startswith("缺依赖") for m in mem.remembered)
+    bus.close()
+
+
+@pytest.mark.asyncio
 async def test_internal_sessions_excluded(tmp_path):
     db = tmp_path / "events.db"
     bus = SqliteEventBus(db_path=db)

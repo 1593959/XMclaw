@@ -1152,7 +1152,8 @@ async def test_failed_tool_content_is_error_string_not_None_str() -> None:
             return r
 
         @property
-        def tool_call_shape(self) -> ToolCallShape:
+        def tool_call_shape(self, extended_thinking: Any = None, **_kw: Any,
+    ) -> ToolCallShape:
             return ToolCallShape.ANTHROPIC_NATIVE
 
         @property

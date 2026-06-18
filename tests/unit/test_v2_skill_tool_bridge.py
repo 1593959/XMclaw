@@ -25,6 +25,7 @@ from xmclaw.skills.manifest import SkillManifest
 from xmclaw.skills.registry import SkillRegistry
 from xmclaw.skills.tool_bridge import (
     META_BROWSE_TOOL_NAME,
+    META_COMPOSE_TOOL_NAME,
     META_DIFF_TOOL_NAME,
     META_INSTALL_TOOL_NAME,
     META_PROPOSE_TOOL_NAME,
@@ -52,6 +53,8 @@ _META_TOOL_NAMES = frozenset({
     META_ROLLBACK_TOOL_NAME,
     # Epic #27 G-08 (2026-05-19) — self-evolving skills.
     META_PROPOSE_TOOL_NAME,
+    # skill_compose — sequential-workflow dispatcher (always-on meta-tool).
+    META_COMPOSE_TOOL_NAME,
 })
 
 
