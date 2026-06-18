@@ -49,7 +49,7 @@ def default_pid_path() -> Path:
 
 
 def _resolve_python_executable() -> str:
-    """Return the real Python interpreter, not a Windows launcher stub.
+    r"""Return the real Python interpreter, not a Windows launcher stub.
 
     On Windows with a venv created from a conda/base environment,
     ``sys.executable`` points at ``.venv\Scripts\python.exe`` which is
@@ -71,11 +71,20 @@ def _resolve_python_executable() -> str:
     Fix: on Windows, if ``sys._base_executable`` exists and differs from
     ``sys.executable``, use the base executable directly so the PID we
     record is the PID of the process that actually owns the socket.
+
+    2026-06-19: Guard against venv escape. ``uv`` / ``venv`` set
+    ``sys._base_executable`` to the global interpreter (e.g.
+    ``AppData\Roaming\uv\python\...``). That interpreter has its own
+    ``sys.path`` and does NOT see the venv's site-packages — spawning
+    it causes ``ModuleNotFoundError: No module named 'xmclaw'``. When
+    we detect a venv (``sys.prefix != sys.base_prefix``), stay inside
+    it and use ``sys.executable`` directly.
     """
     exe = sys.executable
     if sys.platform == "win32" and hasattr(sys, "_base_executable"):
         base = sys._base_executable
-        if base and base != exe and Path(base).exists():
+        in_venv = getattr(sys, "prefix", "") != getattr(sys, "base_prefix", "")
+        if not in_venv and base and base != exe and Path(base).exists():
             return base
     return exe
 
