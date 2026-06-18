@@ -900,7 +900,12 @@ class BuiltinToolsMemoryMixin:
         ``_memory_multi_action(action='forget', query=...)``. Pre-
         cleanup the loop was implemented in both places — drift
         risk on any future change to forget semantics. Returns the
-        ``forgotten`` list (one dict per successful forget)."""
+        ``forgotten`` list (one dict per successful forget).
+
+        B-425: after a successful forget, if the removed fact was a
+        commitment we also clean up its one-shot cron job so it can
+        never fire as a phantom reminder.
+        """
         hits = await svc.recall(
             query, k=max_matches,
             min_confidence=0.0,
@@ -915,6 +920,19 @@ class BuiltinToolsMemoryMixin:
                     "text": (h.fact.text or "")[:200],
                     "distance": round(float(h.distance), 3),
                 })
+                # B-425: clean up commitment cron jobs on forget.
+                _text = (h.fact.text or "")
+                if _text.startswith("[due:") or getattr(h.fact, "bucket", "") == "commitment":
+                    try:
+                        from xmclaw.core.scheduler.cron import default_cron_store
+                        _store = default_cron_store()
+                        _prefix = f"commitment-{h.fact.id[:8]}"
+                        for _job in _store.list_jobs():
+                            if _job.id.startswith(_prefix):
+                                _store.remove(_job.id)
+                                break
+                    except Exception:  # noqa: BLE001
+                        pass
         return forgotten
 
     def _build_due_marker(self, text: str, due_ts: Any) -> str:

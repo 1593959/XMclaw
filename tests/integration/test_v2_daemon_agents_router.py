@@ -44,7 +44,7 @@ def llm_config() -> dict[str, Any]:
     return {
         "llm": {
             "anthropic": {
-                "api_key": "sk-ant-test",
+                "api_key": "sk-ant-api03-testkey1",
                 "default_model": "claude-haiku-4-5",
             },
         },

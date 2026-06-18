@@ -218,8 +218,18 @@ def run_onboard(
     # Step 2: API key (store in secrets.json, not config)
     api_key = _ask_api_key()
     if api_key:
-        secret_name = f"llm.{provider}.api_key"
-        set_secret(secret_name, api_key)
+        # B-425: reject test/placeholder keys so they never pollute the
+        # secrets layer and synthesise a phantom legacy "default" profile.
+        from xmclaw.daemon.factory import _is_placeholder_api_key
+        if _is_placeholder_api_key(api_key):
+            typer.echo(
+                "  [!]  API key 看起来是测试/占位值，跳过写入。"
+                "请提供真实 key 或留空稍后通过 'xmclaw config set-secret' 设置。",
+                err=True,
+            )
+        else:
+            secret_name = f"llm.{provider}.api_key"
+            set_secret(secret_name, api_key)
 
     # Step 3: workspace
     workspace = _ask_workspace()

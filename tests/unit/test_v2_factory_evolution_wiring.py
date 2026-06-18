@@ -248,7 +248,7 @@ def test_agent_factory_wires_strategy_bank_when_enabled(
     cfg = {
         "llm": {
             "anthropic": {
-                "api_key": "sk-ant-test",
+                "api_key": "sk-ant-api03-testkey1",
                 "default_model": "claude-sonnet-4-20250514",
             },
         },
@@ -275,7 +275,7 @@ def test_agent_factory_leaves_strategy_bank_none_when_disabled(
     cfg = {
         "llm": {
             "anthropic": {
-                "api_key": "sk-ant-test",
+                "api_key": "sk-ant-api03-testkey1",
                 "default_model": "claude-sonnet-4-20250514",
             },
         },

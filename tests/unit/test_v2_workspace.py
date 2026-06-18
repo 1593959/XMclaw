@@ -51,7 +51,7 @@ def llm_config() -> dict[str, object]:
     return {
         "llm": {
             "anthropic": {
-                "api_key": "sk-ant-test",
+                "api_key": "sk-ant-api03-testkey1",
                 "default_model": "claude-haiku-4-5",
             },
         },
@@ -127,7 +127,7 @@ def test_build_workspace_caller_agent_id_wins_over_config(bus: InProcessEventBus
     # caller's explicit arg must override it — the manager owns the ID.
     cfg = {
         "agent_id": "stale-id",
-        "llm": {"anthropic": {"api_key": "sk-ant-test", "default_model": "claude-haiku-4-5"}},
+        "llm": {"anthropic": {"api_key": "sk-ant-api03-testkey1", "default_model": "claude-haiku-4-5"}},
     }
     ws = build_workspace("fresh-id", cfg, bus)
     assert ws.agent_id == "fresh-id"

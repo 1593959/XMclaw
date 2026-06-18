@@ -20,7 +20,7 @@ def _call(args: dict) -> ToolCall:
 
 
 @pytest.fixture
-def tools_with_mock_svc(monkeypatch):
+def tools_with_mock_svc(monkeypatch, tmp_path):
     svc = MagicMock()
     svc.remember = AsyncMock()
     svc.forget = AsyncMock(return_value=True)
@@ -30,6 +30,16 @@ def tools_with_mock_svc(monkeypatch):
     monkeypatch.setattr(
         BuiltinTools, "_resolve_memory_v2_service",
         staticmethod(lambda: svc),
+    )
+    # B-425: isolate the cron store so commitment tests don't write
+    # phantom jobs into the real ~/.xmclaw/cron/jobs.json.
+    _isolated_store = MagicMock()
+    _isolated_store.add = MagicMock(return_value=None)
+    _isolated_store.remove = MagicMock(return_value=True)
+    _isolated_store.list_jobs = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        "xmclaw.core.scheduler.cron.default_cron_store",
+        lambda: _isolated_store,
     )
     return tools, svc
 

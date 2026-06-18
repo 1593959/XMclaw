@@ -455,7 +455,13 @@ class MemoryCurator:
             include_relations=False,
             include_superseded=False,
         )
-        protected = {"identity", "persona_manual", "commitment"}
+        protected = {"identity", "persona_manual"}
+        # B-425: commitment removed from protected set.  Previously it
+        # was immortal — extracted commitments from any conversation
+        # (including false positives from tests) could never be pruned,
+        # so they accumulated forever and their associated cron jobs
+        # kept firing as phantom reminders.  Now they age out like any
+        # other fact.
         pruned = 0
         for h in hits:
             if time.perf_counter() >= deadline:

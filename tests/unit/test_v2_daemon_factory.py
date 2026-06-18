@@ -80,12 +80,12 @@ def test_structural_error_when_llm_not_a_dict() -> None:
 def test_builds_anthropic_when_only_anthropic_configured() -> None:
     llm = build_llm_from_config({
         "llm": {"anthropic": {
-            "api_key": "sk-ant-test", "default_model": "claude-haiku-4-5",
+            "api_key": "sk-ant-api03-testkey1", "default_model": "claude-haiku-4-5",
         }},
     })
     assert isinstance(llm, AnthropicLLM)
     assert llm.model == "claude-haiku-4-5"
-    assert llm.api_key == "sk-ant-test"
+    assert llm.api_key == "sk-ant-api03-testkey1"
 
 
 def test_builds_openai_when_only_openai_configured() -> None:

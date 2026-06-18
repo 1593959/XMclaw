@@ -20,7 +20,7 @@ from xmclaw.daemon.app import create_app
 _LLM_CONFIG: dict[str, Any] = {
     "llm": {
         "anthropic": {
-            "api_key": "sk-ant-test",
+            "api_key": "sk-ant-api03-testkey1",
             "default_model": "claude-haiku-4-5",
         },
     },

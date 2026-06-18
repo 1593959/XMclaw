@@ -213,7 +213,7 @@ class TestRunOnboard:
 
             m_confirm.return_value.ask.return_value = True
             m_select.return_value.ask.return_value = "anthropic"
-            m_password.return_value.ask.return_value = "sk-ant-test"
+            m_password.return_value.ask.return_value = "sk-ant-api03-testkey1"
             m_text.return_value.ask.return_value = str(tmp_path / "workspace")
             m_checkbox.return_value.ask.return_value = ["bash", "web"]
             m_smoke.return_value = (True, "")
@@ -233,7 +233,7 @@ class TestRunOnboard:
         # file inspection (Phase 2 writes to the encrypted store by
         # default so the plaintext file is not created).
         from xmclaw.utils.secrets import get_secret
-        assert get_secret("llm.anthropic.api_key") == "sk-ant-test"
+        assert get_secret("llm.anthropic.api_key") == "sk-ant-api03-testkey1"
 
     def test_user_denies_overwrite_returns_zero(
         self, tmp_path: Path,
