@@ -38,6 +38,9 @@ xmclaw/              Python package — see per-subdir AGENTS.md for contracts
 ├── utils/           Path / log / redact / cost helpers     → xmclaw/utils/AGENTS.md
 ├── memory/          MemoryService (V2, LanceDB-backed) — V1 retired 2026-05-24
 │                    → xmclaw/memory/AGENTS.md
+├── eval/            A/B benchmark harness — BenchmarkSuite ABC + Runner +
+│                    SUITE_REGISTRY (LongMemEval/SWE-bench/…). Driven by
+│                    `xmclaw eval`.                          → xmclaw/eval/AGENTS.md
 └── plugins/         Third-party plugins
 
 xmclaw/daemon/static/ 旧 Web UI (Preact + htm via ESM, no build step) — served at

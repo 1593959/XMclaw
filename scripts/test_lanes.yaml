@@ -75,6 +75,7 @@ lanes:
       - tests/unit/test_v2_agent_inter_tools.py
       - tests/unit/test_v2_phase9_canvas_bridge.py
       - tests/unit/test_v2_phase9_computer_use_loop.py
+      - tests/unit/test_v2_android_tools.py
       - tests/integration/test_v2_mcp_bridge.py
       - tests/integration/test_v2_tool_loop.py
 
