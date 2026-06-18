@@ -79,8 +79,7 @@ class _ScriptedLLM(LLMProvider):
         return ToolCallShape.ANTHROPIC_NATIVE
 
     @property
-    def pricing(self, extended_thinking: Any = None, **_kw: Any,
-    ) -> Pricing:
+    def pricing(self) -> Pricing:
         return Pricing()
 
 
