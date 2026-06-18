@@ -87,14 +87,15 @@ interface AppState {
   tasks: TaskSnapshot[];
   hud: HudStatus | null;
   draft: string;
-  // Composer 选项（与旧 UI 的 WS 帧字段一致：plan_mode / ultrathink /
-  // llm_profile_id，missing = 默认）。
+  // Composer 选项（与旧 UI 的 WS 帧字段一致：plan_mode / ultrathink / team_mode / llm_profile_id，missing = 默认）。
   planMode: boolean;
   ultrathink: boolean;
+  teamMode: boolean;
   llmProfileId: string;
   profiles: LlmProfile[];
   togglePlan(): void;
   toggleUltrathink(): void;
+  toggleTeam(): void;
   setLlmProfile(id: string): void;
   // 多模态输入：粘贴/拖拽/选择的附件（随用户帧 images 字段发送）。
   attachments: Attachment[];
@@ -286,6 +287,7 @@ export const useApp = create<AppState>((set, get) => {
     },
     planMode: false,
     ultrathink: false,
+    teamMode: false,
     llmProfileId: "",
     profiles: [],
     togglePlan() {
@@ -293,6 +295,9 @@ export const useApp = create<AppState>((set, get) => {
     },
     toggleUltrathink() {
       set((s) => ({ ultrathink: !s.ultrathink }));
+    },
+    toggleTeam() {
+      set((s) => ({ teamMode: !s.teamMode }));
     },
     setLlmProfile(id: string) {
       set({ llmProfileId: id });
@@ -403,8 +408,11 @@ export const useApp = create<AppState>((set, get) => {
         // missing = 默认（与后端约定一致），只在非默认时带字段。
         plan_mode: s.planMode || undefined,
         ultrathink: s.ultrathink || undefined,
+        team_mode: s.teamMode || undefined,
         // 永远发具体模型 id（兜底第一个）— 不再依赖 daemon 的默认。
         llm_profile_id: s.llmProfileId || s.profiles[0]?.id || undefined,
+        // 2026-06-19: 派专家团开关 → 强制 swarm 模式。
+        forced_mode: s.teamMode ? "swarm" : undefined,
       });
     },
 

@@ -1344,6 +1344,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         user_images: "tuple[str, ...] | None" = None,
         channel_name: str | None = None,
         ultrathink: bool = False,
+        forced_mode: str | None = None,
         output_schema: dict[str, Any] | None = None,
     ) -> AgentTurnResult:
         # B-38: register a fresh per-session cancel event. Cleared via
@@ -3577,7 +3578,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 enable_instant=bool(getattr(self, "_mode_instant_enabled", True)),
                 enable_swarm=bool(getattr(self, "_mode_swarm_enabled", True)),
             )
-            _route = _mode_router.route(user_message)
+            _route = _mode_router.route(user_message, forced_mode=forced_mode)
             self._active_run_modes[session_id] = _route.mode.value
             await publish(EventType.INNER_MONOLOGUE, {
                 "kind": "mode_routed",

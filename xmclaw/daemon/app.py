@@ -2540,7 +2540,7 @@ def create_app(
                 if frame is None:
                     break
                 # Frame shape: {"type": "user", "content": "...",
-                #                "ultrathink": bool?}
+                #                "ultrathink": bool?, "plan_mode": bool?}
                 if frame.get("type") == "user":
                     content = str(frame.get("content", ""))
                     ultrathink = bool(frame.get("ultrathink", False))
@@ -2550,6 +2550,13 @@ def create_app(
                     # level plan-mode set so any tool call this turn
                     # makes is gated. ``False`` / missing clears.
                     plan_mode_active = bool(frame.get("plan_mode", False))
+                    # 2026-06-19: Expert Team (P2). The frontend sends
+                    # ``forced_mode: "swarm"`` when the user toggles the
+                    # Team chip. Forward it to the agent_loop so
+                    # ModeRouter honours it.
+                    forced_mode = frame.get("forced_mode")
+                    if isinstance(forced_mode, str) and not forced_mode.strip():
+                        forced_mode = None
                     try:
                         from xmclaw.providers.tool.builtin_planmode import (
                             set_plan_mode as _set_plan_mode,
@@ -2760,6 +2767,7 @@ def create_app(
                             ),
                             _allow: "Any" = md_tools_allowlist,
                             _ultra: bool = ultrathink,
+                            _forced: "str | None" = forced_mode,
                             _agent_id: str = resolved_agent_id,
                         ) -> None:
                             with use_current_agent_id(_agent_id):
@@ -2786,6 +2794,7 @@ def create_app(
                                         user_images=_imgs,
                                         tools_allowlist=_allow,
                                         ultrathink=_ultra,
+                                        forced_mode=_forced,
                                     )
 
                         active_turn_cancelled.discard(session_id)

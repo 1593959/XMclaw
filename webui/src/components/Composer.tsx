@@ -53,6 +53,8 @@ export default function Composer() {
   const ultrathink = useApp((s) => s.ultrathink);
   const togglePlan = useApp((s) => s.togglePlan);
   const toggleUltrathink = useApp((s) => s.toggleUltrathink);
+  const teamMode = useApp((s) => s.teamMode);
+  const toggleTeam = useApp((s) => s.toggleTeam);
   const profiles = useApp((s) => s.profiles);
   const llmProfileId = useApp((s) => s.llmProfileId);
   const setLlmProfile = useApp((s) => s.setLlmProfile);
@@ -96,6 +98,9 @@ export default function Composer() {
         </Chip>
         <Chip active={ultrathink} onClick={toggleUltrathink} title="延长思考预算，难题更稳">
           ✦ 深思
+        </Chip>
+        <Chip active={teamMode} onClick={toggleTeam} title="强制派专家团并行执行（swarm 模式）">
+          👥 专家团
         </Chip>
         {profiles.length > 0 && (
           <select
