@@ -565,6 +565,13 @@ async def test_web_fetch_403_with_cloudflare_body_hints_browser_open(
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     tools = BuiltinTools()
+    # 2026-05-28: a bot-blocked 403 first tries the headless-Chromium fallback
+    # (_fetch_via_browser). Stub it to FAIL so we exercise the "both raw HTTP
+    # and browser fallback failed → return the browser_open hint" path. Without
+    # this the test launches a real browser and fetches example.com for real.
+    async def _no_browser(url, max_chars):  # noqa: ANN001, ARG001
+        return ("", 403, "no browser available in test")
+    tools._fetch_via_browser = _no_browser  # type: ignore[attr-defined]
     r = await tools.invoke(_call("web_fetch", {"url": "https://example.com/"}))
     assert r.ok is False
     assert "403" in r.error
