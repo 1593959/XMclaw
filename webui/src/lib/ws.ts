@@ -149,6 +149,14 @@ export function createWsClient({
         send({ type: "pong", payload: {} });
         return;
       }
+      // 2026-06-19: skip server-replayed history frames. The frontend already
+      // hydrates history via REST (`hydrateHistory` in store/app.ts) on
+      // session switch / reconnect. Replayed WS frames share the same
+      // content but carry different ids, so without this guard they
+      // duplicate every message in the chat transcript.
+      if (envelope.replayed === true) {
+        return;
+      }
       try {
         onEvent(envelope);
       } catch (err) {

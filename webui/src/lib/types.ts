@@ -7,6 +7,8 @@ export interface Envelope {
   id?: string;
   correlation_id?: string;
   payload?: Record<string, unknown>;
+  // server-side historical replay marker (app.py agent_ws)
+  replayed?: boolean;
 }
 
 export type EntryStatus =
