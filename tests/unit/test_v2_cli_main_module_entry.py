@@ -34,6 +34,10 @@ def _run_cli(*args: str, timeout: float = 15.0) -> subprocess.CompletedProcess:
         [sys.executable, "-u", "-m", "xmclaw.cli.main", *args],
         capture_output=True,
         text=True,
+        # The CLI forces UTF-8 stdout (main.py) so help glyphs like ↔ render
+        # on CN-locale consoles; decode with the same codec here, otherwise
+        # subprocess.run's default (gbk on Windows) can't decode the output.
+        encoding="utf-8",
         timeout=timeout,
     )
 

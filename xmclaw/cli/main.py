@@ -22,9 +22,21 @@ v1 was deleted wholesale in Phase 4.10; there's now only one CLI.
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any
 
 import typer
+
+# Windows-first: the Typer/rich help page contains box-drawing + arrow glyphs
+# (e.g. ↔ U+2194). On a CN-locale console (gbk codepage) writing those raises
+# UnicodeEncodeError and `python -m xmclaw --help` crashes. Force UTF-8 on the
+# std streams so help/output is encoding-safe regardless of the active codepage.
+if sys.platform == "win32":  # pragma: no cover - platform-specific
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001 - older streams may lack reconfigure
+            pass
 
 from xmclaw import __version__
 from xmclaw.core.bus import (

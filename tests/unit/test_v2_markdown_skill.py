@@ -165,8 +165,10 @@ def test_canonical_root_shadows_extra_root(tmp_path: Path) -> None:
         registry, canonical, extra_roots=[extra],
     ).load_all()
 
-    # Only canonical loaded (first-wins rule).
-    ok_results = [r for r in results if r.ok]
+    # Only canonical loaded (first-wins rule). The loader now ALSO emits a
+    # ``kind='duplicate'`` shadow-notice LoadResult for the extra-root copy
+    # (ok=True but not an actual load) — exclude it; count real loads only.
+    ok_results = [r for r in results if r.ok and r.kind != "duplicate"]
     assert len(ok_results) == 1
     assert ok_results[0].skill_id == "duplicate"
     assert str(canonical) in (ok_results[0].source_root or "")
