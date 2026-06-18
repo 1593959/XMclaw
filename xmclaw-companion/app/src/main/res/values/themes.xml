@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.XMclawCompanion" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/xmclaw_primary</item>
+        <item name="colorOnPrimary">@color/xmclaw_on_primary</item>
+        <item name="colorPrimaryContainer">@color/xmclaw_primary</item>
+        <item name="colorOnPrimaryContainer">@color/xmclaw_on_primary</item>
+        <item name="colorSecondary">@color/xmclaw_secondary</item>
+        <item name="colorOnSecondary">@color/xmclaw_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/xmclaw_secondary</item>
+        <item name="colorOnSecondaryContainer">@color/xmclaw_on_secondary</item>
+        <item name="colorTertiary">@color/xmclaw_accent</item>
+        <item name="colorOnTertiary">@color/xmclaw_on_accent</item>
+        <item name="colorTertiaryContainer">@color/xmclaw_accent</item>
+        <item name="colorOnTertiaryContainer">@color/xmclaw_on_accent</item>
+        <item name="colorError">@color/xmclaw_error</item>
+        <item name="colorOnError">@color/xmclaw_on_error</item>
+        <item name="colorErrorContainer">@color/xmclaw_error</item>
+        <item name="colorOnErrorContainer">@color/xmclaw_on_error</item>
+        <item name="android:colorBackground">@color/xmclaw_background</item>
+        <item name="colorOnBackground">@color/xmclaw_on_background</item>
+        <item name="colorSurface">@color/xmclaw_surface</item>
+        <item name="colorOnSurface">@color/xmclaw_on_surface</item>
+        <item name="colorSurfaceVariant">@color/xmclaw_surface</item>
+        <item name="colorOnSurfaceVariant">@color/xmclaw_on_surface</item>
+        <item name="colorOutline">@color/xmclaw_divider</item>
+        <item name="colorOutlineVariant">@color/xmclaw_divider</item>
+        <item name="android:statusBarColor">@color/xmclaw_status_bar</item>
+        <item name="android:navigationBarColor">@color/xmclaw_navigation_bar</item>
+        <item name="android:windowBackground">@color/xmclaw_window_background</item>
+    </style>
+</resources>
