@@ -95,15 +95,19 @@ class TestBuildRegistry:
         assert r.default_id == "fast"  # first online when no legacy block
         assert r.get("smart").label == "smart"  # label falls back to id
 
-    def test_legacy_plus_named_profiles_coexist(self) -> None:
+    def test_named_profiles_suppress_legacy_default(self) -> None:
+        # Phase 10 (2026-06-13): when named profiles exist, the legacy
+        # ``llm.<provider>`` block is NOT synthesised into a "default" profile
+        # — the user is explicitly managing their model list, so the derived
+        # entry would just be clutter. Only the named profiles load.
         cfg = {"llm": {
             "anthropic": {"api_key": "sk-default", "default_model": "claude-haiku-4-5-20251001"},
             "profiles": [{"id": "extra", "provider": "openai",
                           "model": "gpt-4o-mini", "api_key": "sk-x"}],
         }}
         r = build_llm_registry_from_config(cfg)
-        assert r.ids() == ["default", "extra"]
-        assert r.default_id == "default"  # legacy wins
+        assert r.ids() == ["extra"]
+        assert r.default_id == "extra"  # first (only) named profile
 
     def test_profile_without_api_key_is_dropped(self) -> None:
         cfg = {"llm": {"profiles": [
@@ -373,9 +377,9 @@ class TestB146DefaultProfileId:
             ],
         }}
         r = build_llm_registry_from_config(cfg)
-        # Both legacy and named profile load
-        assert "default" in r.ids() and "smart" in r.ids()
-        # But the explicit pin wins
+        # Phase 10: named profile present → legacy "default" is not synthesised;
+        # only "smart" loads and the explicit pin selects it.
+        assert r.ids() == ["smart"]
         assert r.default_id == "smart"
 
     def test_default_profile_id_falls_back_when_id_unknown(self) -> None:
