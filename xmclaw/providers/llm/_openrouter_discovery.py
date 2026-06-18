@@ -51,13 +51,15 @@ def _norm_name(s: str) -> str:
 
 
 def _cache_path() -> Path:
-    p = Path.home() / ".xmclaw" / "cache"
+    from xmclaw.utils.paths import data_dir
+    p = data_dir() / "cache"
     p.mkdir(parents=True, exist_ok=True)
     return p / _CACHE_FILENAME
 
 
 def _default_xmclaw_dir() -> Path:
-    return Path.home() / ".xmclaw"
+    from xmclaw.utils.paths import data_dir
+    return data_dir()
 
 
 class _OpenRouterCache:

@@ -13,14 +13,14 @@ import asyncio
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 from xmclaw.utils.log import get_logger
+from xmclaw.utils.paths import data_dir
 
 _log = get_logger(__name__)
 
-_HISTORY_FILE = Path.home() / ".xmclaw" / "chat_history.txt"
+_HISTORY_FILE = data_dir() / "chat_history.txt"
 _HISTORY_SIZE = 1000
 
 

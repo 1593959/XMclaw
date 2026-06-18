@@ -599,7 +599,9 @@ def _handle_xmclaw_health(args: dict) -> dict:
 def _load_config() -> dict:
     import os
     from pathlib import Path
-    paths = [os.environ.get("XMC_CONFIG_PATH"), Path.home() / ".xmclaw" / "daemon" / "config.json", Path("daemon") / "config.json"]
+
+    from xmclaw.utils.paths import data_dir
+    paths = [os.environ.get("XMC_CONFIG_PATH"), data_dir() / "daemon" / "config.json", Path("daemon") / "config.json"]
     for p in paths:
         if p and Path(p).exists():
             return json.loads(Path(p).read_text(encoding="utf-8"))

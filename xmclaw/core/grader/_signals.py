@@ -315,7 +315,8 @@ class HoldoutTestSignal:
     name = "holdout_test"
 
     def __init__(self, holdout_dir: Path | None = None) -> None:
-        self._holdout_dir = holdout_dir or Path.home() / ".xmclaw" / "holdout"
+        from xmclaw.utils.paths import data_dir
+        self._holdout_dir = holdout_dir or data_dir() / "holdout"
         self._holdout_dir.mkdir(parents=True, exist_ok=True)
         self._examples: list[HoldoutExample] = []
         self._load_examples()
