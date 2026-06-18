@@ -1833,6 +1833,9 @@ def make_lifespan(
         # ("Application startup failed. Exiting."). Mirror the
         # ``_cognitive_daemon = None`` guard right above.
         _experiment_loop = None
+        # 2026-06-14: same fix for ``_reflection_cycle`` — read at
+        # memory-gateway wiring (~line 2562) when continuous_loop is off.
+        _reflection_cycle = None
         _cont_loop_cfg = ((config or {}).get("cognition") or {}).get(
             "continuous_loop"
         ) or {}
@@ -3557,21 +3560,15 @@ def make_lifespan(
                 )
                 proactive_agent = None
 
-        # Cognitive wiring (audit 2026-06-11): start ReflectionCycle +
-        # optional PerceptionBus/GoalGenerator. Previously the wiring gap
-        # left these fully-implemented modules disconnected at startup.
-        # ProactiveAgent is wired separately above; this starts the rest.
-        try:
-            from xmclaw.cognition.cognitive_wiring import start_cognition
-            _cog_tasks = await start_cognition(
-                _app, config if isinstance(config, dict) else {},
-                agent=agent,
-            )
-            if _cog_tasks:
-                _app.state.cognitive_tasks = _cog_tasks
-                log.info("cognition.wiring started: %d subsystems", len(_cog_tasks))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("cognition.wiring.failed err=%s", exc)
+        # 2026-06-18: removed the legacy ``start_cognition`` bridge. It was
+        # built (audit 2026-06-11) against an outdated ReflectionCycle /
+        # GoalGenerator / FileWatcher API (wrong kwargs + non-existent
+        # ``.run()`` methods) and every subsystem it tried to start either
+        # raised inside its try/except or duplicated wiring the main
+        # ``continuous_loop`` block + the ``cognition.enabled`` FileWatcher
+        # (above, ~line 1641) already own. FileWatcher / PerceptionBus /
+        # AttentionFilter / ReflectionCycle / GoalGenerator are all wired
+        # natively in this lifespan — no separate bridge needed.
 
         # Wave-27 fix-LAT2: spin up the persistent IPython kernel pool
         # used by ``code_python`` so the LLM gets Jupyter-style state
@@ -3664,14 +3661,6 @@ def make_lifespan(
                     await proactive_agent.stop()
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s failed during shutdown", type(exc).__name__, exc_info=True)
-            # Stop cognitive wiring (audit 2026-06-11)
-            _cog_tasks = getattr(_app.state, "cognitive_tasks", None)
-            if _cog_tasks:
-                from xmclaw.cognition.cognitive_wiring import stop_cognition
-                try:
-                    await stop_cognition(_cog_tasks)
-                except Exception as exc:
-                    log.warning("cognition.stop_failed err=%s", exc)
             # Close intent_store (short-connection mode: no-op, but keeps
             # the lifecycle contract explicit).
             _intent_store = getattr(_app.state, "intent_engine", None)

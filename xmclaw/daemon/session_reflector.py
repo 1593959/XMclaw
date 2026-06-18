@@ -146,10 +146,21 @@ class SessionReflector:
             _log.warning("session_reflector.db_open_failed err=%s", exc)
             return []
         try:
+            # IMPORTANT: gate "changed" on the SAME salient event types that
+            # ``_events_since`` actually consumes. Pre-fix this counted ALL
+            # event types, so noise sessions (``_memory`` memory_op,
+            # ``eval-fix-*``, ``cron:*``) with zero salient events passed the
+            # gate, got picked first (watermark 0.0), yielded 0 events →
+            # SKIP(<4) without ever bumping their watermark (line below only
+            # bumps when ``events`` is non-empty), and so re-occupied all
+            # ``max_sessions`` slots every tick — starving real chat sessions
+            # forever (the daemon logged ``sessions=0 facts=0`` all day).
+            placeholders = ",".join("?" * len(_SALIENT_TYPES))
             rows = con.execute(
-                "SELECT session_id, MAX(ts) FROM events WHERE ts >= ? "
-                "GROUP BY session_id",
-                (now - self._lookback_s,),
+                f"SELECT session_id, MAX(ts) FROM events "
+                f"WHERE ts >= ? AND type IN ({placeholders}) "
+                f"GROUP BY session_id",
+                (now - self._lookback_s, *_SALIENT_TYPES),
             ).fetchall()
         except Exception as exc:  # noqa: BLE001
             _log.warning("session_reflector.scan_failed err=%s", exc)

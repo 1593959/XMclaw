@@ -277,20 +277,20 @@ async def test_composite_routes_to_skill_tool_provider() -> None:
 @pytest.mark.asyncio
 async def test_composite_dynamic_discovery_for_late_registered_skill() -> None:
     """B-124 router fallback: a skill registered AFTER CompositeToolProvider
-    construction must still be invokable. Without the fallback,
-    composite._router would be stale and invoke() would 'unknown tool'."""
+    construction must still be invokable. With the fallback removed,
+    callers must explicitly invalidate_router() after mutations."""
     reg = SkillRegistry()
     composite = CompositeToolProvider(SkillToolProvider(reg))
 
-    # Register AFTER the composite is built.
+    # Register AFTER the composite is built, then invalidate the router.
     reg.register(_EchoSkill("late"), _manifest("late", 1))
+    composite.invalidate_router()
 
     # list_tools sees it (no caching there).
     assert any(
         s.name == "skill_late" for s in composite.list_tools()
     )
-    # invoke must also work — the static router missed but the
-    # B-124 fallback rescans children.
+    # invoke must work because the router was rebuilt.
     result = await composite.invoke(ToolCall(
         name="skill_late", args={"x": 9}, provenance="synthetic",
     ))

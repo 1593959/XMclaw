@@ -183,10 +183,11 @@ async def test_memory_inspect_returns_oldest_and_largest_top5(
 
 
 def test_memory_inspect_advertised_to_llm():
-    """The agent must SEE this tool to autonomously call it. Wiring
-    regression would silently lose the self-grooming capability."""
+    """The agent must SEE the unified memory tool to autonomously call
+    memory_inspect. Wiring regression would silently lose the
+    self-grooming capability."""
     names = {s.name for s in BuiltinTools().list_tools()}
-    assert "memory_inspect" in names
+    assert "memory" in names
 
 
 def test_memory_inspect_spec_is_zero_arg():

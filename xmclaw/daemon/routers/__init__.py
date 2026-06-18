@@ -10,6 +10,6 @@ New routers are registered in ``app.py`` via
 """
 from __future__ import annotations
 
-from xmclaw.daemon.routers import files, llm_profiles, memory, profiles, skills, workspaces
+from xmclaw.daemon.routers import device, files, llm_profiles, memory, profiles, skills, workspaces
 
-__all__ = ["files", "llm_profiles", "memory", "profiles", "skills", "workspaces"]
+__all__ = ["device", "files", "llm_profiles", "memory", "profiles", "skills", "workspaces"]
