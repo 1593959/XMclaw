@@ -470,6 +470,10 @@ class EventType(str, Enum):
     # synthesised flow that hid intermediate progress.
     SUBAGENT_STARTED = "subagent_started"
     SUBAGENT_COMPLETED = "subagent_completed"
+    # 2026-06-17: Expert Team (P0). Emitted once per top-level fanout so the
+    # Mission Control "TeamView" can render a leader card with the goal,
+    # plan, and synthesis strategy before the per-leaf subagent events.
+    FANOUT_STARTED = "fanout_started"
     # 2026-05-26: memory curation events. Pre-fix the new
     # forget / correct / dedup_scope service methods only logged to
     # stdlib — the "记忆活动" UI tab + audit replay had no way to

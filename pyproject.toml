@@ -245,3 +245,9 @@ asyncio_mode = "auto"
 markers = [
     "real_secrets: test exercises the real get_secret resolver (opts out of unit-suite secrets isolation)",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+]

@@ -370,6 +370,21 @@ class SubagentToolProvider(ToolProvider):
             specialists.append(str(s).strip().lower() if isinstance(s, str) else "")
 
         t0 = time.perf_counter()
+        await self._publish_subagent_event(
+            "fanout_started",
+            goal=goal,
+            total=len(subtasks),
+            synthesis=synthesis,
+            plan=[
+                {
+                    "index": i,
+                    "role": roles[i],
+                    "subtask": subtasks[i],
+                    "specialist": specialists[i],
+                }
+                for i in range(len(subtasks))
+            ],
+        )
         try:
             results = await asyncio.wait_for(
                 self._fanout(

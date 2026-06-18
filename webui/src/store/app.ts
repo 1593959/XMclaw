@@ -1,4 +1,4 @@
-﻿// Mission Control — 全局 store（zustand）。
+// Mission Control — 全局 store（zustand）。
 // boot 流程移植自旧 app.js：pair token → 选 sid（localStorage）→ WS 连接
 // + 历史水化（B-60）+ pending question 恢复（B-99）。
 
@@ -105,7 +105,7 @@ interface AppState {
   openLightbox(url: string, kind?: "image" | "video"): void;
   closeLightbox(): void;
   // 四域导航（10.M3）：任务=主视图，其余为驾驶舱仪表域（模型配置在系统域子标签）。
-  view: "tasks" | "memory" | "skills" | "system" | "files";
+  view: "tasks" | "memory" | "skills" | "system" | "files" | "team";
   setView(v: AppState["view"]): void;
   // 工作区联动：时间线点击 → 右栏聚焦文件；nonce 触发重渲染。
   workspaceFocus: { path: string; nonce: number } | null;

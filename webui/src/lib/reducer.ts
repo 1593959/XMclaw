@@ -1,4 +1,4 @@
-﻿// Mission Control — 事件 reducer。语义移植自旧 static/lib/chat_reducer.js
+// Mission Control — 事件 reducer。语义移植自旧 static/lib/chat_reducer.js
 // + chat_reducer_streaming.js（B-89 弃流收尾 / B-232 call_id 键名 /
 // B-267 工具事件乱序竞态 / B-269 取消回合守卫 / seq 去重 / 多 hop 不清
 // pending / 截断 finalText 不覆盖更长流式文本），并新增 Mission Control
@@ -781,6 +781,26 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
         };
       }
       return { ...chat, entries: upsertById(chat.entries, id, patch) };
+    }
+
+    case "fanout_started": {
+      const id = `fanout_${ts}_${Math.random().toString(36).slice(2, 6)}`;
+      if (chat.entries.some((e) => e.id === id)) return chat;
+      return {
+        ...chat,
+        entries: chat.entries.concat({
+          id,
+          role: "system",
+          kind: "fanout",
+          content: `组长拆解了 ${(payload.total as number) || 0} 个任务，策略：${str(payload.synthesis)}`,
+          status: "running",
+          ts,
+          goal: str(payload.goal),
+          total: (payload.total as number) || 0,
+          synthesis: str(payload.synthesis),
+          plan: (payload.plan as Entry["plan"]) || [],
+        }),
+      };
     }
 
     case "subagent_started": {

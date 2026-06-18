@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -84,10 +85,22 @@ class _StubTools(ToolProvider):
         )
 
 
-def _make_call(args: dict, name: str = "parallel_subagents") -> ToolCall:
-    return ToolCall(
+def _make_call(args: dict, name: str = "parallel_subagents", session_id: str | None = None) -> ToolCall | Any:
+    call = ToolCall(
         id="t-fanout", name=name, args=args, provenance="synthetic",
     )
+    if session_id is not None:
+        # ToolCall is frozen/slotted; wrap in a lightweight proxy so
+        # builtin_subagent.invoke() can read session_id via getattr.
+        class _Proxy:
+            def __init__(self, target, **extra):
+                self._target = target
+                for k, v in extra.items():
+                    setattr(self, k, v)
+            def __getattr__(self, name):
+                return getattr(self._target, name)
+        return _Proxy(call, session_id=session_id)
+    return call
 
 
 # ── Disable / passthrough cases ──────────────────────────────────
@@ -133,6 +146,66 @@ async def test_rejects_invalid_subtasks(bad_subtasks):
     r = await wrap.invoke(_make_call({"subtasks": bad_subtasks}))
     assert r.ok is False
     assert "2-8" in r.error or "non-empty" in r.error
+
+
+# ── Fanout lifecycle events ─────────────────────────────────────
+
+
+async def test_fanout_started_event():
+    """A top-level fanout emits exactly one fanout_started event before
+    the per-leaf subagent_started events."""
+    from xmclaw.core.bus.events import EventType, make_event
+
+    captured: list = []
+
+    class _Bus:
+        async def publish(self, event):
+            captured.append(event)
+
+    llm = _ScriptedLLM(responses=[
+        _LLMResp(content="leaf-A"),
+        _LLMResp(content="leaf-B"),
+    ])
+    wrap = SubagentToolProvider(llm=llm, tools=None)
+    wrap._bus = _Bus()
+    # Build a call with session_id so invoke() binds it.
+    call = _make_call({
+        "subtasks": ["task1", "task2"],
+        "goal": "compare A and B",
+        "synthesis": "llm",
+    }, session_id="sess-42")
+    r = await wrap.invoke(call)
+    assert r.ok is True
+
+    fanout_events = [e for e in captured if e.type == EventType.FANOUT_STARTED]
+    sub_started = [e for e in captured if e.type == EventType.SUBAGENT_STARTED]
+    sub_completed = [e for e in captured if e.type == EventType.SUBAGENT_COMPLETED]
+    assert len(fanout_events) == 1
+    assert len(sub_started) == 2
+    assert len(sub_completed) == 2
+
+    payload = fanout_events[0].payload
+    assert payload["goal"] == "compare A and B"
+    assert payload["total"] == 2
+    assert payload["synthesis"] == "llm"
+    assert len(payload["plan"]) == 2
+    assert payload["plan"][0]["index"] == 0
+    assert payload["plan"][0]["role"] == "general"
+    assert payload["plan"][0]["subtask"] == "task1"
+    assert payload["plan"][1]["index"] == 1
+
+
+async def test_fanout_started_no_bus_is_noop():
+    """When bus or parent_session_id is unset, fanout_started is silently
+    skipped (best-effort) — no exception."""
+    llm = _ScriptedLLM(responses=[
+        _LLMResp(content="leaf-A"),
+        _LLMResp(content="leaf-B"),
+    ])
+    wrap = SubagentToolProvider(llm=llm, tools=None)
+    # bus and session_id are None by default; invoke() resets session_id from call
+    r = await wrap.invoke(_make_call({"subtasks": ["task1", "task2"]}))
+    assert r.ok is True
 
 
 # ── Pure-reasoning fanout ────────────────────────────────────────

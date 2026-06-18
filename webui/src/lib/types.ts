@@ -40,7 +40,7 @@ export interface Question {
 export interface Entry {
   id: string;
   role: "user" | "assistant" | "system";
-  kind?: "tool_use" | "question" | "worker" | "subagent" | "security";
+  kind?: "tool_use" | "question" | "worker" | "subagent" | "security" | "fanout";
   severity?: string;
   content: string;
   status: EntryStatus;
@@ -63,6 +63,11 @@ export interface Entry {
   // proactive
   proactive?: boolean;
   proactiveTrigger?: string;
+  // 2026-06-17: Expert Team (P0) — fanout leader card
+  goal?: string;
+  plan?: Array<{ index: number; role: string; subtask: string; specialist: string }>;
+  total?: number;
+  synthesis?: string;
   // worker / subagent（并行子代理执行组）
   workerId?: string;
   taskId?: string;

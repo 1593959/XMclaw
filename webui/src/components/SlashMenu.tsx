@@ -21,6 +21,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/skills", desc: "打开能力域", run: (a) => a.setView("skills") },
   { cmd: "/files", desc: "打开文件域（工作区 md 编辑）", run: (a) => a.setView("files") },
   { cmd: "/system", desc: "打开系统域", run: (a) => a.setView("system") },
+  { cmd: "/team", desc: "打开专家团", run: (a) => a.setView("team") },
   { cmd: "/tasks", desc: "回到任务视图", run: (a) => a.setView("tasks") },
 ];
 
