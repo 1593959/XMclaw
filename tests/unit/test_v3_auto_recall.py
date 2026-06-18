@@ -44,7 +44,10 @@ class _StubHit:
 
 def _hit(
     fid: str, text: str, distance: float = 0.2,
-    bucket: str = "misc", kind: str = "fact",
+    # ``misc`` is in _DEFAULT_EXCLUDE_BUCKETS (v3 signal-quality filter), so a
+    # default of misc would make every hit get dropped before the floor/cap/
+    # sort logic these tests exercise. Default to a non-excluded bucket.
+    bucket: str = "project_fact", kind: str = "fact",
 ) -> _StubHit:
     return _StubHit(
         fact=_StubFact(id=fid, text=text, bucket=bucket, kind=kind),
@@ -123,17 +126,17 @@ async def test_recall_returns_empty_on_timeout():
 
 
 @pytest.mark.asyncio
-async def test_recall_skips_hybrid_path_by_default():
-    """Default path is plain ``recall``, NOT ``recall_hybrid``. The
-    hybrid leg rebuilds a Python BM25 index per query and can stall
-    on large stores — keep it opt-in until Phase 5's background
-    prefetch / native FTS lands."""
+async def test_recall_uses_hybrid_path_by_default():
+    """Wave-2 (2026-06-06) flipped the default to hybrid: when the service
+    exposes ``recall_hybrid``, fuse vector + BM25 by default. The hybrid leg
+    is internally guarded by rank_bm25 availability + a 500ms deadline, so it
+    degrades to pure vector safely on large stores."""
     svc = MagicMock(spec=["recall", "recall_hybrid"])
     svc.recall = AsyncMock(return_value=[])
     svc.recall_hybrid = AsyncMock(return_value=[])
     await recall_for_message(svc, "a query long enough to embed")
-    svc.recall.assert_awaited_once()
-    svc.recall_hybrid.assert_not_awaited()
+    svc.recall_hybrid.assert_awaited_once()
+    svc.recall.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -227,7 +230,9 @@ async def test_recall_sorted_by_similarity_desc():
     # The mock returns them in [a, b, c] order; recall preserves
     # backend ordering and just filters. Backend usually sorts by
     # distance ASC. We trust that contract here.
-    out = await recall_for_message(svc, "anything")
+    # min_similarity below 0.70 so all three survive the floor (the default
+    # floor is 0.72, which would drop the 0.70 hit and defeat the order check).
+    out = await recall_for_message(svc, "anything", min_similarity=0.5)
     sims = [r.similarity for r in out]
     # Backend gave us ascending distance ([a:0.30, b:0.10, c:0.20]) —
     # so similarities arrive in [0.70, 0.90, 0.80]. We trust the
@@ -243,10 +248,10 @@ def test_render_recalled_block_empty_returns_empty_string():
     assert render_recalled_block([]) == ""
 
 
-def test_render_recalled_block_format_is_xml_ish():
-    """Each fact: ``- (sim | bucket) text [fid:xxx]``. The wrapper
-    tags help the LLM recognize this as auxiliary context, not
-    user-authored content."""
+def test_render_recalled_block_format_is_markdown():
+    """Wave-28: stripped the XML tags + fid/sim noise (token cost without
+    comprehension gain). Now a ``【相关记忆】`` header + plain ``• text``
+    bullets so the block survives UI newline-collapsing."""
     block = render_recalled_block([
         RecalledFact(
             fid="abc123",
@@ -257,24 +262,23 @@ def test_render_recalled_block_format_is_xml_ish():
             similarity=0.92,
         ),
     ])
-    assert block.startswith("<recalled")
-    assert block.rstrip().endswith("</recalled>")
-    assert "- (0.92 | project_fact) 项目用 FastAPI [fid:abc123]" in block
+    assert block.startswith("【相关记忆】")
+    assert "• 项目用 FastAPI" in block
 
 
-def test_render_recalled_block_escapes_newlines_in_fact_text():
+def test_render_recalled_block_collapses_newlines_in_fact_text():
     """Multi-line fact text mustn't break the bullet structure."""
     block = render_recalled_block([
         RecalledFact(
             fid="xy",
             text="line1\nline2\nline3",
-            bucket="misc", kind="fact",
+            bucket="project_fact", kind="fact",
             ts_first=0.0, similarity=0.7,
         ),
     ])
     assert "line1 line2 line3" in block
     # Exactly one bullet line for one fact.
-    assert block.count("- (") == 1
+    assert block.count("• ") == 1
 
 
 # ─── prepend_recalled_block ───────────────────────────────────────
@@ -291,10 +295,10 @@ def test_prepend_puts_block_above_user_message():
     BEFORE user's actual ask."""
     hits = [RecalledFact(
         fid="x", text="recalled fact",
-        bucket="misc", kind="fact",
+        bucket="project_fact", kind="fact",
         ts_first=0.0, similarity=0.8,
     )]
     result = prepend_recalled_block("user asks something", hits)
-    assert result.index("<recalled") < result.index("user asks")
+    assert result.index("【相关记忆】") < result.index("user asks")
     assert "recalled fact" in result
     assert "user asks something" in result

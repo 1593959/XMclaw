@@ -160,6 +160,10 @@ async def test_curator_contradiction_invalidates_older():
     report = await curator.curate(
         scopes=["user"], do_dedup=False, do_prune=False,
         do_crystallize=False, dry_run=False,
+        # The LLM passes are gated behind a "≥N changed facts" cost guard
+        # (default 10); this 2-fact test exercises the contradiction logic
+        # itself, so force the gate open.
+        min_changes_for_llm=0,
     )
     assert report.contradictions_found == 1
     # The OLDER fact (北京) is invalidated; the newer (上海) wins.

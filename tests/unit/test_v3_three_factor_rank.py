@@ -67,22 +67,25 @@ def test_importance_contributes_when_no_query():
     assert s_imp > s_triv
 
 
-def test_fresh_strong_outranks_stale_ontopic():
-    """The whole point of ⑦: a stale-but-on-topic fact should NOT
-    automatically beat a fresh high-confidence one (the pre-Phase-8
-    relevance-only behaviour)."""
+def test_fresh_strong_breaks_tie_over_stale_weak_at_equal_relevance():
+    """⑦ + 乱召回 fix (RANK_W_RELEVANCE=3.0): relevance dominates — a
+    perfectly-on-topic fact SHOULD beat a totally-irrelevant one even if
+    the latter is fresher (that's the whole point of the 3× relevance
+    weight). What recency + importance buy us is a TIE-BREAK *among
+    comparably-relevant* facts: given two equally on-topic facts, the
+    fresh high-confidence one wins. Pin that contract."""
     now = time.time()
-    # query vector aligned with the stale fact's embedding.
     qvec = [1.0, 0.0, 0.0, 0.0]
-    stale_ontopic = _fact("ontopic", conf=0.2, age_s=RANK_RECENCY_HALFLIFE_S * 4)
-    stale_ontopic.embedding = (1.0, 0.0, 0.0, 0.0)  # perfect relevance
-    fresh_strong = _fact("fresh", conf=0.95, age_s=0.0)
-    fresh_strong.embedding = (0.0, 1.0, 0.0, 0.0)  # zero relevance
     qnorm = 1.0
-    s_stale = _three_factor_score(stale_ontopic, query_vec=qvec, query_norm=qnorm, now=now)
+    # Both equally on-topic (same embedding aligned with the query).
+    stale_weak = _fact("stale", conf=0.2, age_s=RANK_RECENCY_HALFLIFE_S * 4)
+    stale_weak.embedding = (1.0, 0.0, 0.0, 0.0)
+    fresh_strong = _fact("fresh", conf=0.95, age_s=0.0)
+    fresh_strong.embedding = (1.0, 0.0, 0.0, 0.0)
+    s_stale = _three_factor_score(stale_weak, query_vec=qvec, query_norm=qnorm, now=now)
     s_fresh = _three_factor_score(fresh_strong, query_vec=qvec, query_norm=qnorm, now=now)
-    # stale: relevance 1.0 + recency≈0.06 + importance 0.2 ≈ 1.26
-    # fresh: relevance 0.0 + recency≈1.0  + importance 0.95 ≈ 1.95
+    # Equal relevance (3.0 each); fresh wins on recency (≈1.0 vs ≈0.06)
+    # + importance (0.95 vs 0.2).
     assert s_fresh > s_stale
 
 
