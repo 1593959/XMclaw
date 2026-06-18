@@ -216,6 +216,7 @@ def test_full_report_shape() -> None:
     report = m.get_full_report()
     assert set(report.keys()) == {
         "timestamp", "llm", "tools", "agents", "tokens", "events", "conversations",
+        "turn_metrics_count", "generic",
     }
     assert report["events"]["evt"] == 1
 

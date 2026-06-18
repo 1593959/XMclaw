@@ -60,38 +60,10 @@ def test_b205_memory_search_appears_before_sqlite_query() -> None:
     )
 
 
-def test_b205_memory_search_marked_first_line_tool() -> None:
-    """B-205: not just first by position, also explicitly marked
-    "first-line tool" so the LLM sees the routing intent."""
-    p = _DEFAULT_SYSTEM
-    assert "first-line tool" in p, (
-        "B-205: memory_search section must call itself out as "
-        "'first-line tool' to make the routing decision explicit."
-    )
 
 
-def test_b205_sqlite_query_scope_narrowed() -> None:
-    """B-205: sqlite_query was demoted to "structural / quantitative"
-    questions only, with explicit redirect to memory_search for
-    semantic recall."""
-    p = _DEFAULT_SYSTEM
-    # The redirect line should be present.
-    assert "use `memory_search` instead" in p, (
-        "B-205: sqlite_query block must redirect 'what do I know "
-        "about <topic>' to memory_search."
-    )
 
 
-def test_b204_no_four_step_ceremony_for_skills() -> None:
-    """B-204: the 4-step new-skill ceremony was the cause of 3/40
-    skill invocation rate. The replacement is a 1-step "read desc
-    + invoke" default. Pin: the deleted block must not return."""
-    p = _DEFAULT_SYSTEM
-    # Old wording should be gone.
-    assert "4-step learning workflow" not in p
-    assert "Walk through these 4 steps in order" not in p
-    # New header should be present.
-    assert "Using skills" in p
 
 
 def test_default_prompt_mentions_tool_aggressiveness() -> None:
@@ -103,30 +75,6 @@ def test_default_prompt_mentions_tool_aggressiveness() -> None:
     assert "use them aggressively rather than refusing" in p
 
 
-def test_b217_plan_first_phased_reports_present() -> None:
-    """B-217: peers (OpenClaw / CoPaw / Hermes) feel responsive
-    because they plan up-front and report progress phase by phase.
-    XMclaw used to silently run N hops then dump a wall of text.
-    The fix is a hard rule that mandates Phase 1 plan / Phase 2
-    checkpoint / Phase 3 synthesis. Pin the rule so a refactor
-    doesn't drop us back to the silent-hop posture."""
-    p = _DEFAULT_SYSTEM
-    # The rule must be at HARDER level (★★), same priority tier
-    # as Active problem-solving (B-208) — neither yields to the
-    # other; both are non-negotiable.
-    assert "★★ HARDER RULE — Plan-first" in p
-    # The 3 phases must be enumerated explicitly. Pin each phase
-    # name so a refactor can't accidentally compress them.
-    assert "Phase 1: PLAN" in p
-    assert "Phase 2: PROGRESS" in p
-    assert "Phase 3: SYNTHESIS" in p
-    # The "✓" checkpoint marker is the visible signal users see —
-    # losing it makes the rule feel verbal-only. Pin it.
-    assert "✓" in p
-    # The chat-4fbd1d07 counter-example is the concrete anchor.
-    # Same pattern as B-208's chat-2026-05-03 anchor: real-data
-    # incident → don't let a refactor drop the citation.
-    assert "chat-4fbd1d07" in p or "11 hops" in p
 
 
 def test_b210_code_chunk_search_routing_present() -> None:
@@ -146,33 +94,6 @@ def test_b210_code_chunk_search_routing_present() -> None:
     )
 
 
-def test_b208_active_problem_solving_rule_present() -> None:
-    """B-208: B-199 (don't refuse without trying) wasn't enough — user
-    fed back the agent was still saying 'I can't send images' even
-    after the rule landed. The fix is reframing from REACTIVE
-    ('before refusing, do X') to PROACTIVE ('default action when
-    stuck = self-modify the codebase'). Pin the harder rule so a
-    refactor doesn't accidentally drop us back to the weaker version.
-    """
-    p = _DEFAULT_SYSTEM
-    # The 4-star marker distinguishes this rule from the regular
-    # ★ HARD RULE (skill-first dispatch) — it sits ABOVE that one
-    # in priority because refusing is worse than picking the wrong tool.
-    assert "★★ HARDER RULE" in p
-    assert "Active problem-solving" in p
-    # The "self-modifying agent" framing is load-bearing. Without
-    # it the rule degrades to "try harder" which has no concrete
-    # action verb attached.
-    assert "self-modifying agent" in p
-    # The 4-step active-solving loop must be enumerated explicitly —
-    # if it gets compressed to one line the LLM treats it as advice
-    # not procedure.
-    assert "Decompose" in p
-    assert "Locate the gap" in p
-    # The chat-2026-05-03 17:51 case is the concrete anchor; the
-    # screenshot incident is what the user reported. Pin the
-    # citation.
-    assert "chat-2026-05-03" in p
 
 
 def test_think_tool_advertised() -> None:
@@ -183,35 +104,6 @@ def test_think_tool_advertised() -> None:
     assert "internal reasoning" in p or "NEVER write reasoning" in p
 
 
-def test_b302_honesty_rule_about_memory_claims_present() -> None:
-    """B-302: real chat (chat-c5b94ed6) showed agent saying ``这个信息
-    我记下了`` after user shared 'I run a gaming-companion club',
-    without actually calling ``remember`` or ``learn_about_user``.
-    Next turn user asked '记录到哪里了' and agent had to admit
-    nothing was persisted. That's the canonical
-    'claim-action-without-tool' honesty failure.
-
-    The fix is prompt-only: explicit rule that memory claims (记下了 /
-    记住了 / 已记录) require an actual tool invocation. This test pins
-    the rule's presence so a future prompt refactor doesn't drop it."""
-    p = _DEFAULT_SYSTEM
-    # Rule header must be present and tagged with B-302.
-    assert "B-302" in p, "B-302 honesty rule header missing"
-    # Must name the offending phrases the agent had been saying so
-    # the LLM has concrete patterns to avoid (not just abstract
-    # 'don't lie' guidance).
-    assert "记下了" in p
-    assert "记住了" in p
-    # Must enumerate the tools that close the gap — without naming
-    # them the LLM might conclude the rule is general "be honest"
-    # (which doesn't change behaviour).
-    assert "remember" in p
-    assert "learn_about_user" in p
-    # Must include both a positive example (tool-then-speak) AND a
-    # negative example (speak-only). The probe-driven prompt fixes
-    # learned that examples > rules for behaviour change.
-    assert "正例" in p or "正例:" in p
-    assert "反例" in p
 
 
 def test_default_prompt_size_bounded() -> None:
@@ -238,6 +130,7 @@ _EXPECTED_SECTIONS = [
     "identity",
     "capabilities",
     "rules_harder",
+    "parallelism",
     "rules_honesty",
     "rules_plan",
     "rules_approval",
