@@ -602,7 +602,6 @@ def create_app(
         session_workspaces as _session_workspaces_router,  # F1 2026-05-30
     )
     from xmclaw.daemon.routers import tasks as _tasks_router  # Phase 10.M1.3
-    from xmclaw.daemon.routers import device as _device_router  # Phase 12 — Android Companion
     app.include_router(_files_router.router)
     app.include_router(_llm_discovery_router.router)
     app.include_router(_llm_profiles_router.router)
@@ -631,7 +630,6 @@ def create_app(
     app.include_router(_sync_router.router)  # Sprint 2 Wave 13
     app.include_router(_tasks_router.router)  # Phase 10.M1.3 — Mission Control 任务聚合
     app.include_router(_session_workspaces_router.router)  # F1 — per-session live workspace
-    app.include_router(_device_router.router, prefix="/device")  # Phase 12 — Android Companion WS
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
     # (the upstream agent multi-agent convention #1). Stays a no-op for the
@@ -692,12 +690,6 @@ def create_app(
 
     app.state.agents = agents_manager
 
-    # Phase 12: Android Companion device registry. Eagerly constructed so
-    # the /device/v1 WebSocket route can resolve it from app.state.
-    from xmclaw.daemon.device_registry import DeviceRegistry
-    device_registry = DeviceRegistry()
-    app.state.device_registry = device_registry
-
     if agent is None and config is not None:
         # Local import avoids a circular dep (factory imports from this
         # module's sibling packages).
@@ -706,7 +698,6 @@ def create_app(
             config, bus,
             approval_service=app.state.approval_service,
             auditor=getattr(app.state, "security_auditor", None),
-            device_registry=device_registry,
         )
 
     # Epic #17 Phase 5: attach the agent-to-agent tools to the primary

@@ -1134,7 +1134,6 @@ def build_tools_from_config(
     approval_service: Any | None = None,
     auditor: Any | None = None,
     session_store: Any | None = None,
-    device_registry: Any | None = None,
 ) -> ToolProvider | None:
     """Return a ``ToolProvider`` built from ``cfg['tools']``.
 
@@ -1696,26 +1695,6 @@ def build_tools_from_config(
         get_aggregator().record(ErrorSeverity.WARNING, __name__, "_media_tools", _exc)
         pass
 
-    # Phase 12: Android Companion remote tools. When the user has
-    # enabled ``tools.android_companion.enabled`` and a device registry
-    # is wired, expose phone_* tools so the agent can control the
-    # paired Android device via WebSocket.
-    try:
-        _ac_cfg = tools_section.get("android_companion") if tools_section else None
-        if _ac_cfg and _ac_cfg.get("enabled", False) and device_registry is not None:
-            from xmclaw.providers.tool.android_remote import AndroidRemoteToolProvider
-            from xmclaw.providers.tool.composite import CompositeToolProvider
-            from xmclaw.security.device_redactor import DeviceRedactor
-            _redactor = DeviceRedactor() if _ac_cfg.get("redact_pii", True) else None
-            provider = CompositeToolProvider(
-                provider, AndroidRemoteToolProvider(device_registry, redactor=_redactor)
-            )
-    except Exception as _exc:  # noqa: BLE001
-        get_aggregator().record(
-            ErrorSeverity.WARNING, __name__, "_android_companion", _exc
-        )
-        pass
-
     # Epic #3: optionally wrap with security guardians
     security_cfg = cfg.get("security", {})
     guardians_cfg = security_cfg.get("guardians", {})
@@ -2118,7 +2097,6 @@ def build_agent_from_config(
     cognitive_state: Any | None = None,
     auditor: Any | None = None,
     perception_bus: Any | None = None,
-    device_registry: Any | None = None,
 ) -> AgentLoop | None:
     """Assemble an AgentLoop from config. Returns None if no LLM is set.
 
@@ -2188,7 +2166,7 @@ def build_agent_from_config(
         return None
     tools = build_tools_from_config(
         cfg, bus=bus, approval_service=approval_service, auditor=auditor,
-        session_store=session_store, device_registry=device_registry,
+        session_store=session_store,
     )
     _build_status["tools"] = "ok"
     # 2026-05-12 Batch B.2: plumb the LLM into the ErrorAwareRetryProvider
