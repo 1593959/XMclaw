@@ -140,6 +140,32 @@ class GraphBackend(Protocol):
         """
         ...
 
+    async def neighbors_batch(
+        self,
+        fact_ids: list[str],
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> dict[str, list[tuple[Relation, str]]]:
+        """Batch outgoing-edge query.
+
+        Returns a dict mapping each input ``fact_id`` to the same
+        shape as :meth:`neighbors` — ``[(Relation, target_fact_id), ...]``.
+        The default implementation may fall back to individual calls;
+        LanceDB backend overrides with a single ``WHERE IN`` query.
+        """
+        ...
+
+    async def reverse_neighbors_batch(
+        self,
+        fact_ids: list[str],
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> dict[str, list[tuple[Relation, str]]]:
+        """Batch incoming-edge query (dual of :meth:`neighbors_batch`)."""
+        ...
+
     async def find_related(
         self,
         fact_ids: list[str],

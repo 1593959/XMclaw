@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
+import json as _json
 import logging
 import time
 from typing import Any, Awaitable, Callable, Optional
@@ -150,7 +152,9 @@ def _is_synthetic_message(text: str) -> bool:
     return any(stripped.startswith(p) for p in _SYNTHETIC_MESSAGE_PREFIXES)
 
 
-def estimate_messages_tokens_rough(messages: list[Message]) -> int:
+def estimate_messages_tokens_rough(
+    messages: list[Message], *, cache: dict[str, int] | None = None
+) -> int:
     """Rough token count, CJK-aware (B-233 + Wave 26 fix-4).
 
     Real tokenisation is provider-specific and too expensive to run on
@@ -171,33 +175,13 @@ def estimate_messages_tokens_rough(messages: list[Message]) -> int:
     so a session with 5 history screenshots was hiding ~7500 real
     tokens from the compressor → same shape of bug as the base64
     inlining one fixed in e6062ca.
+
+    2026-06-19: added optional ``cache`` dict. When provided, per-message
+    results are memoised by content hash so unchanged messages are skipped.
     """
     total = 0
     for m in messages:
-        content = m.content or ""
-        if isinstance(content, list):
-            text = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-        else:
-            text = str(content)
-        if _is_synthetic_message(text):
-            # Skip the entire message — content + per-msg overhead +
-            # any tool_calls (scaffolding messages don't carry them
-            # in practice but be defensive).
-            continue
-        total += _count_tokens_in_text(text) + 10
-        for tc in m.tool_calls or ():
-            args = getattr(tc, "args", {}) or {}
-            if isinstance(args, dict):
-                total += _estimate_args_tokens_cjk(args)
-            elif isinstance(args, str):
-                total += _count_tokens_in_text(args)
-        # B-Vision: count attached images. Conservative 1500 / image —
-        # below Anthropic's ~1568 cap for an in-budget image, above
-        # the lower bound for tiny thumbnails. Same order of magnitude
-        # works for Kimi / OpenAI vision pricing.
-        images = getattr(m, "images", None) or ()
-        if images:
-            total += 1500 * len(images)
+        total += _count_tokens_in_message(m, cache=cache)
     return total
 
 
@@ -226,6 +210,75 @@ def _estimate_args_chars(args: Any) -> int:
     if isinstance(args, list):
         return sum(_estimate_args_chars(v) for v in args)
     return 0
+
+
+def _get_message_cache_key(msg: Message) -> str:
+    """Stable cache key over the fields that affect token counting.
+
+    Covers content (str or list-of-dicts), tool_call args, images count,
+    and thinking text so that any change which alters the token estimate
+    invalidates the cached value.
+    """
+    parts: list[str] = []
+    content = msg.content or ""
+    if isinstance(content, list):
+        for p in content:
+            if isinstance(p, dict):
+                parts.append(p.get("text", ""))
+    else:
+        parts.append(str(content))
+
+    for tc in msg.tool_calls or ():
+        args = getattr(tc, "args", {}) or {}
+        try:
+            parts.append(_json.dumps(args, sort_keys=True, ensure_ascii=False))
+        except (TypeError, ValueError):
+            parts.append(str(args))
+
+    images = getattr(msg, "images", None) or ()
+    parts.append(str(len(images)))
+
+    if msg.thinking:
+        parts.append(msg.thinking)
+
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _count_tokens_in_message(msg: Message, *, cache: dict[str, int] | None = None) -> int:
+    """Per-message token estimate with optional dict cache.
+
+    When ``cache`` is provided the result is memoised by a content hash so
+    that unchanged messages are skipped on subsequent calls.
+    """
+    if cache is not None:
+        key = _get_message_cache_key(msg)
+        if key in cache:
+            return cache[key]
+
+    content = msg.content or ""
+    if isinstance(content, list):
+        text = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    else:
+        text = str(content)
+
+    if _is_synthetic_message(text):
+        return 0
+
+    total = _count_tokens_in_text(text) + 10
+    for tc in msg.tool_calls or ():
+        args = getattr(tc, "args", {}) or {}
+        if isinstance(args, dict):
+            total += _estimate_args_tokens_cjk(args)
+        elif isinstance(args, str):
+            total += _count_tokens_in_text(args)
+
+    images = getattr(msg, "images", None) or ()
+    if images:
+        total += 1500 * len(images)
+
+    if cache is not None:
+        cache[key] = total
+    return total
 
 
 # ── Per-session state ────────────────────────────────────────────────
@@ -336,6 +389,7 @@ class ContextCompressor:
         self.compression_count = 0
 
         self._states: dict[str, _SessionState] = {}
+        self._token_cache: dict[str, int] = {}
 
         if not quiet_mode:
             logger.info(
@@ -345,6 +399,38 @@ class ContextCompressor:
                 threshold_percent * 100, self.tail_token_budget,
                 self.protect_last_ratio * 100, self.protect_last_n,
             )
+
+    # ── Token cache helpers ──────────────────────────────────────────
+
+    def estimate_messages_tokens_rough(self, messages: list[Message]) -> int:
+        """Instance-level token estimate with internal cache reuse."""
+        return estimate_messages_tokens_rough(messages, cache=self._token_cache)
+
+    def estimate_incremental_tokens(self, new_messages: list[Message]) -> int:
+        """Count tokens for messages that are NOT yet in the cache.
+
+        Returns the sum of token counts for newly-seen messages only.
+        """
+        total = 0
+        for msg in new_messages:
+            key = _get_message_cache_key(msg)
+            if key not in self._token_cache:
+                total += _count_tokens_in_message(msg, cache=self._token_cache)
+        return total
+
+    def remove_messages_from_cache(self, messages: list[Message]) -> int:
+        """Remove cached entries for ``messages`` and return the removed token sum."""
+        removed_tokens = 0
+        for msg in messages:
+            key = _get_message_cache_key(msg)
+            count = self._token_cache.pop(key, None)
+            if count is not None:
+                removed_tokens += count
+        return removed_tokens
+
+    def invalidate_token_cache(self) -> None:
+        """Clear the entire token cache (e.g. on session reset)."""
+        self._token_cache.clear()
 
     # ── Per-session API ──────────────────────────────────────────────
 
@@ -485,7 +571,7 @@ class ContextCompressor:
                 )
             return list(messages)
 
-        display_tokens = current_tokens or estimate_messages_tokens_rough(messages)
+        display_tokens = current_tokens or self.estimate_messages_tokens_rough(messages)
         st = self._state(session_id)
 
         try:
@@ -590,7 +676,7 @@ class ContextCompressor:
             compressed = self._sanitize_tool_pairs(compressed)
 
             # Update anti-thrashing state.
-            new_estimate = estimate_messages_tokens_rough(compressed)
+            new_estimate = self.estimate_messages_tokens_rough(compressed)
             saved = display_tokens - new_estimate
             savings_pct = (saved / display_tokens * 100) if display_tokens > 0 else 0
             st.last_savings_pct = savings_pct
@@ -773,16 +859,7 @@ class ContextCompressor:
 
         for i in range(n - 1, head_end - 1, -1):
             m = messages[i]
-            content = m.content or ""
-            if isinstance(content, list):
-                content_len = sum(
-                    len(p.get("text", "")) for p in content if isinstance(p, dict)
-                )
-            else:
-                content_len = len(content)
-            msg_tokens = _count_tokens_in_text(content) + 10
-            for tc in m.tool_calls or ():
-                msg_tokens += _estimate_args_tokens_cjk(getattr(tc, "args", {}) or {})
+            msg_tokens = _count_tokens_in_message(m, cache=self._token_cache)
 
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -803,7 +880,7 @@ class ContextCompressor:
 
     def _compute_summary_budget(self, turns: list[Message]) -> int:
         """Scale the summary token budget to the content size."""
-        content_tokens = estimate_messages_tokens_rough(turns)
+        content_tokens = self.estimate_messages_tokens_rough(turns)
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 

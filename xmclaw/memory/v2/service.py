@@ -2248,36 +2248,34 @@ class MemoryService:
         ]
 
         # Enrich with relations.
-        # Epic #27 sweep #4 (2026-05-19): the pre-fix loop ran
-        # `await self._graph.neighbors(fact.id)` N times sequentially
-        # for k=8 hits — daemon.log showed `memory_recall` at 175s
-        # on a 902-fact store. LanceDB serves concurrent reads fine;
-        # fan-out via asyncio.gather + Semaphore(20) cuts the worst
-        # case to a single round-trip's worth of latency. Same pattern
-        # llm_topic.py uses for its `_neighbors_many` batch helper.
+        # Epic #27 sweep #4 (2026-05-19): pre-fix loop ran
+        # `await self._graph.neighbors(fact.id)` N times sequentially.
+        # Fix: batch `neighbors_batch` + `reverse_neighbors_batch` cuts
+        # 2×k individual LanceDB queries to exactly 2 round-trips.
         related_map: dict[str, list[Relation]] = {}
         if include_relations and hits:
-            import asyncio as _asyncio
-            sem = _asyncio.Semaphore(20)
-
-            async def _one(fid: str) -> tuple[str, list[Relation]]:
-                async with sem:
-                    try:
-                        pairs = await self._graph.neighbors(
-                            fid, max_hops=1,
-                        )
-                        return fid, [rel for rel, _ in pairs]
-                    except Exception as exc:  # noqa: BLE001
-                        _log.warning(
-                            "memory_service.recall_relations_failed err=%s",
-                            exc,
-                        )
-                        return fid, []
-
-            results = await _asyncio.gather(
-                *(_one(f.id) for f in hits)
-            )
-            related_map = dict(results)
+            hit_ids = [f.id for f in hits]
+            try:
+                out_batch = await self._graph.neighbors_batch(
+                    hit_ids, max_hops=1,
+                )
+                in_batch = await self._graph.reverse_neighbors_batch(
+                    hit_ids, max_hops=1,
+                )
+                for fid in hit_ids:
+                    rels: list[Relation] = []
+                    for rel, _ in out_batch.get(fid, []):
+                        rels.append(rel)
+                    for rel, _ in in_batch.get(fid, []):
+                        rels.append(rel)
+                    related_map[fid] = rels
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "memory_service.recall_relations_failed err=%s",
+                    exc,
+                )
+                for f in hits:
+                    related_map[f.id] = []
 
         out: list[RecallHit] = []
         for fact in hits:

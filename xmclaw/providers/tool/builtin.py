@@ -146,6 +146,25 @@ _BASH_DEFAULT_TIMEOUT = 30.0
 _BASH_MAX_OUTPUT = 100_000
 _VALID_TODO_STATUSES = {"pending", "in_progress", "done"}
 
+# 2026-06-18: backward-compat map for the 10 legacy memory tool names
+# that are now unified under the single ``memory`` tool.  Each old name
+# maps to the ``action`` parameter it should become.  ``invoke()`` emits
+# a DeprecationWarning and rewrites the call before dispatching.
+_LEGACY_MEMORY_TOOL_MAP: dict[str, str] = {
+    "memory_search": "search",
+    "memory_compact": "compact",
+    "memory_forget": "forget",
+    "memory_correct": "correct",
+    "memory_dedup": "dedup",
+    "memory_inspect": "inspect",
+    "memory_get": "get",
+    "memory_graph_neighbors": "graph_neighbors",
+    "memory_pin": "pin",
+    # memory_multi_action was the internal handler name for the v3
+    # ``memory`` tool itself — no remap needed because it already IS
+    # the unified tool name.
+}
+
 
 def list_pending_questions() -> list[dict]:
     """B-99: return snapshots of every in-flight question."""
@@ -431,11 +450,6 @@ class BuiltinTools(
         # (fresh install), in which case the tool reports that
         # cleanly.
         specs.append(_SQLITE_QUERY_SPEC)
-        # B-40: unified memory_search across every wired provider.
-        # Only advertised when a MemoryManager is wired — without one
-        # the tool would be a no-op.
-        if self._memory_manager is not None:
-            specs.append(_MEMORY_SEARCH_SPEC)
         # B-45: agent-facing tools to write to the user's Notes +
         # Journal panels — both are evolution surfaces (workflow notes,
         # lessons learned, daily logs). Path-only ops, always available.
@@ -473,31 +487,11 @@ class BuiltinTools(
         # Wave-32+ OutputStyles tool — agent can switch tone presets
         # based on user signals ("explain as you go" → Explanatory).
         specs.append(_SET_OUTPUT_STYLE_SPEC)
-        # B-52: memory_compact triggers an immediate Auto-Dream pass.
-        # Always advertised; the handler refuses cleanly when no LLM
-        # is wired (which is the only failure mode).
-        specs.append(_MEMORY_COMPACT_SPEC)
-        # 2026-05-26: agent curation surface — forget / correct / dedup.
-        # Always advertised; handlers fail-loud when memory_v2_service
-        # isn't wired so the agent gets a clear "no memory backend"
-        # error rather than silent no-op.
-        specs.append(_MEMORY_FORGET_SPEC)
-        specs.append(_MEMORY_CORRECT_SPEC)
-        specs.append(_MEMORY_DEDUP_SPEC)
-        # 2026-05-28: memory_inspect — read-only health probe.
-        # Agent calls this autonomously to decide whether forget /
-        # dedup is warranted. Read-only so always advertised.
-        specs.append(_MEMORY_INSPECT_SPEC)
-        # 2026-05-28 memory v3 phase 4: preferred multi-action
-        # memory tool + memory_get for file reads. Replaces the
-        # 4 legacy single-purpose tools (``remember`` /
-        # ``memory_correct`` / ``memory_forget`` / ``memory_pin``)
-        # which remain registered for backward compat. Always
-        # advertised; handlers fail-loud when memory_v2_service
-        # isn't wired so the agent gets a clean diagnostic.
+        # 2026-06-18: unified memory tool — all memory operations in one
+        # surface.  Backward-compatible with the 10 legacy single-purpose
+        # tools (memory_search, memory_compact, …) which are still wired
+        # but hidden from list_tools.
         specs.append(_MEMORY_SPEC)
-        specs.append(_MEMORY_GET_SPEC)
-        specs.append(_MEMORY_GRAPH_NEIGHBORS_SPEC)
         # B-ContextLoss: chronological history browser.
         # Only advertised when a session_store is wired.
         if self._session_store is not None:
@@ -506,12 +500,6 @@ class BuiltinTools(
         # reasoning. The thought is recorded in session logs but not
         # shown to the user — keeping the chat stream clean.
         specs.append(_THINK_SPEC)
-        # B-53: memory_pin lands in MEMORY.md's `## Pinned` section.
-        # Gated on persona_dir wiring (same as ``remember``); the
-        # actual write reuses _append_under_section so pinned bullets
-        # share dedup behaviour.
-        if self._persona_dir_provider is not None:
-            specs.append(_MEMORY_PIN_SPEC)
         # B-388: voice tools. Each direction gates independently, so
         # a transcribe-only setup (faster-whisper installed but no
         # edge-tts) advertises voice_transcribe and hides
@@ -613,10 +601,6 @@ class BuiltinTools(
                 return await self._schedule_followup(call, t0)
             if call.name == "sqlite_query":
                 return await self._sqlite_query(call, t0)
-            if call.name == "memory_search":
-                if self._memory_manager is None:
-                    return _fail(call, t0, "memory_search not configured (no MemoryManager wired)")
-                return await self._memory_search(call, t0)
             if call.name == "note_write":
                 return await self._note_write(call, t0)
             if call.name == "journal_append":
@@ -633,22 +617,41 @@ class BuiltinTools(
                 return await self._recall_user_preferences(call, t0)
             if call.name == "agent_status":
                 return await self._agent_status(call, t0)
-            if call.name == "memory_compact":
-                return await self._memory_compact(call, t0)
-            if call.name == "memory_forget":
-                return await self._memory_forget(call, t0)
-            if call.name == "memory_correct":
-                return await self._memory_correct(call, t0)
-            if call.name == "memory_dedup":
-                return await self._memory_dedup(call, t0)
-            if call.name == "memory_inspect":
-                return await self._memory_inspect(call, t0)
+            # 2026-06-18: unified memory tool.  All legacy memory tool
+            # names are still wired below for backward compat but the
+            # preferred surface is ``memory(action=...)``.
             if call.name == "memory":
-                return await self._memory_multi_action(call, t0)
-            if call.name == "memory_get":
-                return await self._memory_get(call, t0)
-            if call.name == "memory_graph_neighbors":
-                return await self._memory_graph_neighbors(call, t0)
+                return await self._memory(call, t0)
+            # Backward compat: old memory tool names → memory(action=...)
+            if call.name in _LEGACY_MEMORY_TOOL_MAP:
+                import warnings as _warnings
+                _action = _LEGACY_MEMORY_TOOL_MAP[call.name]
+                _warnings.warn(
+                    f"{call.name!r} is deprecated; use "
+                    f"memory(action={_action!r})",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                # Rewrite the call so the unified dispatcher can handle it.
+                from dataclasses import replace as _dc_replace
+                new_args = dict(call.args)
+                new_args["action"] = _action
+                new_call = _dc_replace(call, name="memory", args=new_args)
+                return await self._memory(new_call, t0)
+            if call.name == "note_write":
+                return await self._note_write(call, t0)
+            if call.name == "journal_append":
+                return await self._journal_append(call, t0)
+            if call.name == "journal_recall":
+                return await self._journal_recall(call, t0)
+            if call.name == "recall_user_preferences":
+                if self._persona_dir_provider is None:
+                    return _fail(
+                        call, t0,
+                        "recall_user_preferences not configured "
+                        "(no persona dir)",
+                    )
+                return await self._recall_user_preferences(call, t0)
             if call.name == "read_conversation_history":
                 if self._session_store is None:
                     return _fail(
@@ -657,10 +660,6 @@ class BuiltinTools(
                         "(no session_store wired)",
                     )
                 return await self._read_conversation_history(call, t0)
-            if call.name == "memory_pin":
-                if self._persona_dir_provider is None:
-                    return _fail(call, t0, "memory_pin not configured (no persona dir)")
-                return await self._memory_pin(call, t0)
             if call.name == "ask_user_question":
                 return await self._ask_user_question(call, t0)
             if call.name == "send_media":
@@ -711,6 +710,61 @@ class BuiltinTools(
             return _fail(call, t0, f"file not found: {exc}")
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"{type(exc).__name__}: {exc}")
+
+    async def _memory(
+        self, call: ToolCall, t0: float,
+    ) -> ToolResult:
+        """2026-06-18 unified memory dispatcher.
+
+        Routes the single ``memory`` tool to every existing private
+        handler so nothing is duplicated.  ``action`` is the only
+        required argument; the handler validates its own required
+        sub-args.
+
+        Backward compat: the legacy tool names (memory_search,
+        memory_compact, …) are rewritten to ``memory(action=...)``
+        inside ``invoke()`` before reaching this method.
+        """
+        action = str(call.args.get("action") or "").strip()
+        if action == "multi_action":
+            sub = str(call.args.get("sub_action") or "").strip()
+            if sub not in ("add", "replace", "forget", "pin"):
+                return _fail(
+                    call, t0,
+                    f"sub_action must be add/replace/forget/pin, got {sub!r}",
+                )
+            # Pass a synthetic call to the v3 multi-action handler so it
+            # sees the sub-action as its own ``action`` parameter.
+            from dataclasses import replace as _dc_replace
+            new_call = _dc_replace(call, args={**call.args, "action": sub})
+            return await self._memory_multi_action(new_call, t0)
+        if action in ("add", "replace", "forget", "pin"):
+            return await self._memory_multi_action(call, t0)
+        if action == "search":
+            if self._memory_manager is None:
+                return _fail(
+                    call, t0,
+                    "memory_search not configured (no MemoryManager wired)",
+                )
+            return await self._memory_search(call, t0)
+        if action == "compact":
+            return await self._memory_compact(call, t0)
+        if action == "correct":
+            return await self._memory_correct(call, t0)
+        if action == "dedup":
+            return await self._memory_dedup(call, t0)
+        if action == "inspect":
+            return await self._memory_inspect(call, t0)
+        if action == "get":
+            return await self._memory_get(call, t0)
+        if action == "graph_neighbors":
+            return await self._memory_graph_neighbors(call, t0)
+        return _fail(
+            call, t0,
+            f"unknown memory action: {action!r}. "
+            f"Valid: search, compact, forget, correct, dedup, inspect, "
+            f"add, replace, get, graph_neighbors, pin, multi_action",
+        )
 
     async def _set_output_style(self, call: ToolCall, t0: float) -> ToolResult:
         """Wave-32+ — switch the session's output style.

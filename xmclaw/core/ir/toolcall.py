@@ -53,6 +53,21 @@ class ToolCall:
     # None for provider-decoded calls; the agent loop fills this in.
     session_id: str | None = None
     schema_version: int = 1
+    # Cached JSON serialization of ``args`` (populated lazily on first
+    # call to ``args_json()``).  Used by the OpenAI translator to avoid
+    # re-serialising the same dict on every hop.
+    _args_json_cache: str | None = field(
+        default=None, repr=False, compare=False, hash=False,
+    )
+
+    def args_json(self) -> str:
+        """JSON serialization of ``args``, cached after first call."""
+        if self._args_json_cache is not None:
+            return self._args_json_cache
+        import json
+        result = json.dumps(self.args)
+        object.__setattr__(self, "_args_json_cache", result)
+        return result
 
 
 @dataclass(frozen=True, slots=True)

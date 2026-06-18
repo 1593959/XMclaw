@@ -29,7 +29,7 @@ def encode_to_provider(call: ToolCall) -> dict[str, Any]:
         "type": "function",
         "function": {
             "name": call.name,
-            "arguments": json.dumps(call.args),
+            "arguments": call.args_json(),
         },
     }
 

@@ -122,6 +122,38 @@ class SkillRegistry:
         # by ``record_usage``; never raises on missing keys.
         self._usage_stats: dict[str, SkillUsageStats] = {}
 
+        # 2026-06-17: router invalidation listeners. CompositeToolProvider
+        # instances register here so they rebuild their static router when
+        # the registry mutates (new skill, promote, rollback, hot_replace).
+        self._router_listeners: set[Any] = set()
+
+    def add_router_listener(self, callback: Any) -> None:
+        """Register a callback to be invoked when the registry mutates.
+
+        The callback receives no arguments; callers typically call
+        ``composite.invalidate_router()`` inside it. Idempotent — adding
+        the same callable twice is a no-op.
+        """
+        with self._lock:
+            self._router_listeners.add(callback)
+
+    def remove_router_listener(self, callback: Any) -> None:
+        """Unregister a previously-added router listener."""
+        with self._lock:
+            self._router_listeners.discard(callback)
+
+    def _notify_router_listeners(self) -> None:
+        """Fan-out invalidation to every registered listener."""
+        # Snapshot under lock so a listener that mutates the set doesn't
+        # affect this iteration.
+        with self._lock:
+            listeners = list(self._router_listeners)
+        for cb in listeners:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001
+                pass
+
     # ── usage statistics ──
 
     def record_usage(
@@ -213,6 +245,7 @@ class SkillRegistry:
             if set_head and skill_id not in self._head:
                 self._head[skill_id] = version
 
+            self._notify_router_listeners()
             return SkillRef(skill_id=skill_id, version=version, manifest=manifest)
 
     # ── lookup ──
@@ -420,6 +453,7 @@ class SkillRegistry:
             )
             self._history[skill_id].append(record)
             self._persist(record)
+            self._notify_router_listeners()
             return record
 
     def rollback(
@@ -462,6 +496,7 @@ class SkillRegistry:
             )
             self._history[skill_id].append(record)
             self._persist(record)
+            self._notify_router_listeners()
             return record
 
     # ── audit ──
@@ -541,6 +576,7 @@ class SkillRegistry:
                     updates["triggers"] = triggers
                 self._manifests[key] = _replace(old_manifest, **updates)
 
+            self._notify_router_listeners()
             return True
 
     def hot_replace(
@@ -598,6 +634,7 @@ class SkillRegistry:
                 return False
             self._skills[key] = new_skill
             self._manifests[key] = new_manifest
+            self._notify_router_listeners()
             return True
 
     # ── persistence ──

@@ -180,6 +180,10 @@ class SqliteEventBus(InProcessEventBus):
         self._read_lock = threading.Lock()
         self._configure_connection()
         self._run_migrations()
+        # Batch write state for high-frequency event types
+        self._batch_buffer: dict[str, list[BehavioralEvent]] = {}
+        self._batch_flush_pending: set[str] = set()
+        self._batch_flush_tasks: set[asyncio.Task] = set()
 
     # ---- lifecycle ------------------------------------------------------- #
 
@@ -223,6 +227,18 @@ class SqliteEventBus(InProcessEventBus):
             self._conn.execute("COMMIT;")
 
     def close(self) -> None:
+        # Flush any pending batch writes before closing the connection
+        if self._batch_flush_tasks:
+            for task in list(self._batch_flush_tasks):
+                if not task.done():
+                    try:
+                        asyncio.get_running_loop()
+                        # In an async context we can't await synchronously,
+                        # so cancel and let the caller drain separately if needed.
+                        task.cancel()
+                    except RuntimeError:
+                        pass
+            self._batch_flush_tasks.clear()
         try:
             self._conn.close()
         except sqlite3.Error:
@@ -292,34 +308,59 @@ class SqliteEventBus(InProcessEventBus):
 
     # ---- write path ------------------------------------------------------ #
 
+    _BATCHABLE_EVENTS = {EventType.LLM_CHUNK, EventType.LLM_THINKING_CHUNK}
+    _BATCH_FLUSH_INTERVAL_MS = 100
+
     async def publish(self, event: BehavioralEvent) -> None:
         """Append then fan out. Append failures are not swallowed — the
         agent loop needs to know if the durable log breaks.
 
-        2026-05-24 user-report: under WorkerSwarm fanout (4-8 concurrent
-        agents emitting llm_chunk / tool_call_emitted / tool_invocation_
-        finished hundreds of events / sec) the inline sync execute was
-        observed to block the event loop long enough that worker_
-        completed → WebSocket fanout fell minutes behind real time. The
-        user saw "完成 160s" appear on the page seconds AFTER the task
-        actually finished, and intermediate "执行中" status frames
-        stayed frozen.
-        Fix: bounce the sync insert to a worker thread via
-        ``asyncio.to_thread``. ``_write_lock`` (asyncio.Lock) still
-        serialises so concurrent publishes don't race on the sqlite3
-        connection. ``check_same_thread=False`` is already set at
-        ``__init__`` (line 175) so threaded use is sanctioned.
-        Throughput / per-insert latency unchanged; what changes is the
-        event loop now keeps spinning during the I/O wait, so the
-        WebSocket forwarder + heartbeat ticks + LLM streams all stay
-        responsive.
+        High-frequency event types (LLM_CHUNK, LLM_THINKING_CHUNK) are
+        coalesced into a write-behind batch flushed every 100ms via
+        ``executemany()``. Low-frequency events retain the original
+        immediate single-row write path.
         """
+        if event.type in self._BATCHABLE_EVENTS:
+            type_str = event.type.value
+            async with self._write_lock:
+                self._batch_buffer.setdefault(type_str, []).append(event)
+                if type_str not in self._batch_flush_pending:
+                    self._batch_flush_pending.add(type_str)
+                    task = asyncio.create_task(self._flush_after_delay(type_str))
+                    self._batch_flush_tasks.add(task)
+                    task.add_done_callback(self._batch_flush_tasks.discard)
+            return
+        # Low-frequency path: immediate single-row write
         import asyncio as _asyncio
         async with self._write_lock:
             await _asyncio.to_thread(
                 self._conn.execute, _INSERT_SQL, _event_to_row(event),
             )
         await super().publish(event)
+
+    async def _flush_after_delay(self, event_type: str) -> None:
+        await asyncio.sleep(self._BATCH_FLUSH_INTERVAL_MS / 1000)
+        await self._flush_batch(event_type)
+
+    async def _flush_batch(self, event_type: str) -> None:
+        import asyncio as _asyncio
+        async with self._write_lock:
+            events = self._batch_buffer.get(event_type, [])
+            if not events:
+                self._batch_flush_pending.discard(event_type)
+                return
+            self._batch_buffer[event_type] = []
+            self._batch_flush_pending.discard(event_type)
+            rows = [_event_to_row(e) for e in events]
+
+            def _do_executemany() -> None:
+                with self._txn():
+                    self._conn.executemany(_INSERT_SQL, rows)
+
+            await _asyncio.to_thread(_do_executemany)
+        # Fan out individually so subscribers see un-batched events
+        for e in events:
+            await super().publish(e)
 
     async def publish_many(self, events: Sequence[BehavioralEvent]) -> None:
         """Batch-append multiple events in a single transaction, then fan

@@ -48,21 +48,26 @@ class CompositeToolProvider(ToolProvider):
             out.extend(child.list_tools())
         return out
 
+    def invalidate_router(self) -> None:
+        """Rebuild the name → child router from fresh child scans.
+
+        Called when a child (e.g. SkillToolProvider) advertises tools
+        that change after construction — new skill registration, promotion,
+        rollback, or uninstall. After invalidation ``invoke()`` routes
+        via the rebuilt table without falling back to a live re-scan.
+        """
+        self._router.clear()
+        for child in self._children:
+            for spec in child.list_tools():
+                if spec.name in self._router:
+                    # Collision policy: first child wins (same as __init__).
+                    # In practice this shouldn't happen post-invalidation
+                    # unless two children advertise the same name.
+                    continue
+                self._router[spec.name] = child
+
     async def invoke(self, call: ToolCall) -> ToolResult:
         child = self._router.get(call.name)
-        # B-124: fall back to a live re-scan when the static router
-        # misses. The router is built once at construction, but some
-        # children (e.g. SkillToolProvider) advertise tools that come
-        # and go as the SkillRegistry's HEAD changes. ``list_tools``
-        # already polls children fresh; ``invoke`` should match —
-        # otherwise a freshly-registered skill would appear in the
-        # LLM's tool spec but fail on invocation.
-        if child is None:
-            for c in self._children:
-                if any(s.name == call.name for s in c.list_tools()):
-                    self._router[call.name] = c
-                    child = c
-                    break
         if child is None:
             t0 = time.perf_counter()
             return ToolResult(

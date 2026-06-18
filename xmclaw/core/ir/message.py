@@ -17,7 +17,8 @@ Message`` and re-export it, so the existing
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from xmclaw.core.ir.toolcall import ToolCall
 
@@ -46,6 +47,50 @@ class Message:
     # Empty string for non-thinking turns / providers.
     thinking: str = ""
     thinking_signature: str = ""
+    # Provider-dict cache: key = provider name ("anthropic" / "openai"),
+    # value = the canonical (un-mutated) dict produced by per-message
+    # conversion.  Post-processing (cache_control injection, tool-pairing
+    # repair) is done on *copies* so the canonical entry stays clean.
+    _provider_dict_cache: dict[str, dict] = field(
+        default_factory=dict, repr=False, compare=False, hash=False,
+    )
+
+    def to_provider_dict(self, provider_name: str, compute: Callable[[], dict]) -> dict:
+        """Return a fresh copy of the provider-specific dict for this message.
+
+        ``compute`` is called only on the first request for a given
+        ``provider_name``.  The result is stored in
+        ``_provider_dict_cache`` and returned on every subsequent call.
+        The returned dict is always a copy so provider-level post-
+        processing (e.g. cache_control injection) cannot pollute the
+        cached canonical version.
+        """
+        cache = self._provider_dict_cache
+        cached = cache.get(provider_name)
+        if cached is not None:
+            return _copy_message_dict(cached)
+        result = compute()
+        cache[provider_name] = result
+        return _copy_message_dict(result)
+
+
+def _copy_message_dict(d: dict) -> dict:
+    """Shallow-ish copy of a provider message dict.
+
+    Copies the top-level dict and any nested block lists one level deep
+    so provider post-processing (cache_control injection, tool-pairing
+    repair) cannot mutate the cached canonical version.
+    """
+    out = dict(d)
+    if not any(isinstance(v, list) for v in out.values()):
+        return out
+    for key, val in out.items():
+        if isinstance(val, list):
+            out[key] = [
+                dict(b) if isinstance(b, dict) else b
+                for b in val
+            ]
+    return out
 
 
 __all__ = ["Message"]

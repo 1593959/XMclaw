@@ -797,6 +797,12 @@ def create_app(
                 unified_threshold=_unified_threshold,
             )
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
+            # 2026-06-17: register the composite provider so it rebuilds its
+            # static router when skills are added / promoted / rolled back.
+            # Without this, invoke() falls back to a live re-scan on every
+            # call after a registry mutation.
+            if hasattr(agent._tools, "invalidate_router"):
+                orchestrator.registry.add_router_listener(agent._tools.invalidate_router)
             # Jarvis Phase 6.3: inject the registry into AgentLoop so
             # run_turn can do active skill intent routing (find_multi).
             # This is a post-construction injection because the registry

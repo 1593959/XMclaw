@@ -40,8 +40,11 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
+
+from pathlib import Path
 
 from xmclaw.core.bus import (
     BehavioralEvent,
@@ -443,6 +446,14 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # after that point (via the UndoCabinet, keyed by ts). One is
         # auto-created at the top of every turn; the user can rewind to any.
         self._checkpoints: dict[str, list[dict[str, Any]]] = {}
+        # Incremental inflight checkpoint state (B-RESUME-2 incremental).
+        # Tracks directory creation, turn counters, and last-full indices so
+        # we only write new messages to disk instead of the full list every
+        # turn.  Full snapshots are written every 10 turns as a recovery point.
+        self._checkpoint_dirs_initialized: set[Any] = set()
+        self._checkpoint_turn_counters: dict[str, int] = {}
+        self._last_checkpoint_indices: dict[str, int] = {}
+        self._last_full_checkpoint_paths: dict[str, Any] = {}
         # Wave-32+: rolling buffer of recently finished runs. Lets
         # ``/api/v2/agent_tasks`` surface DONE entries for autonomous
         # session spawns (GoalGenerator / TaskScheduler / Proactive)
@@ -609,6 +620,17 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # round-trips for semantically-similar queries.
         self._plan_cache: dict[str, tuple[list[str], float]] = {}
         self._plan_cache_ttl_s = 300.0  # 5 minutes
+        # 2026-06-17: per-session skill-prefilter LRU cache. Avoids
+        # re-scoring 400+ skills every turn when the user's query is
+        # semantically stable (same first-10-word key). Cache invalidates
+        # when the skill registry changes (signature mismatch).
+        self._skill_prefilter_cache: OrderedDict[str, list[Any]] = OrderedDict()
+        self._skill_prefilter_cache_maxsize = 20
+        self._skill_prefilter_cache_sig: str = ""
+        # 2026-06-17: output_schema → schema_block cache. Avoids
+        # re-serializing the same JSON schema every turn for callers
+        # that pass a stable schema (e.g., cron jobs, structured APIs).
+        self._schema_block_cache: dict[str, str] = {}
         # Jarvis Phase 1-2: cache metrics aggregator. Subscribes to
         # COST_TICK events and maintains per-session running totals.
         # Lightweight — no I/O, pure in-memory counters.
@@ -630,6 +652,91 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
     def set_performance_monitor(self, monitor: Any) -> None:
         """Wire a PerformanceMonitor instance post-construction."""
         self._perf_monitor = monitor
+
+    # ── Schema-block cache helpers ─────────────────────────────────────────
+
+    def _get_schema_block(self, output_schema: dict) -> str:
+        """Return the injected schema instruction block, with caching.
+
+        The cache key is a SHA-256 truncated hash of the canonical JSON
+        representation so large stable schemas (e.g. cron job shapes) only
+        pay the ``json.dumps`` cost once per process lifetime.
+        """
+        import hashlib as _hashlib
+        import json as _json
+        canonical = _json.dumps(output_schema, sort_keys=True, ensure_ascii=False)
+        cache_key = _hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+        cached = self._schema_block_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        _schema_str = _json.dumps(output_schema, ensure_ascii=False, indent=2)
+        block = (
+            "\n\n<output_schema>\n"
+            "You MUST respond with a single JSON object matching "
+            "this JSON Schema. Do NOT wrap the JSON in markdown "
+            "code fences. Do NOT add any text before or after "
+            "the JSON object. The JSON object must be the entire "
+            "content of your response.\n"
+            "Schema:\n"
+            + _schema_str +
+            "\n</output_schema>"
+        )
+        self._schema_block_cache[cache_key] = block
+        return block
+
+    # ── Skill-prefilter cache helpers ───────────────────────────────────────
+
+    def _get_skill_prefilter_key(self, user_message: str) -> str:
+        """Return the cache key for a user message (first 10 words, lowercased)."""
+        return " ".join(user_message.split()[:10]).lower()
+
+    def _get_skill_prefilter_signature(self, tool_specs: list[Any]) -> str:
+        """Compute a stable signature of the skill registry.
+
+        Used to invalidate the per-session skill-prefilter cache when
+        skills are installed or removed. Sorting makes the signature
+        order-independent so filesystem/dict iteration differences don't
+        spuriously clear the cache.
+        """
+        names: list[str] = []
+        for spec in tool_specs:
+            name = getattr(spec, "name", "") or ""
+            if name.startswith("skill_") and name != "skill_browse":
+                names.append(name)
+        return f"{len(names)}:{hash(tuple(sorted(names)))}"
+
+    def _try_skill_prefilter_cache(
+        self, user_message: str, tool_specs: list[Any],
+        *, sig: str | None = None,
+    ) -> list[Any] | None:
+        """Return cached tool_specs if the key is warm and signature matches.
+
+        LRU: a hit moves the entry to the end of the OrderedDict.
+        When ``sig`` is provided, the caller has already computed the
+        registry signature (avoiding a second iteration over all specs).
+        """
+        _current_sig = sig if sig is not None else self._get_skill_prefilter_signature(tool_specs)
+        if _current_sig != self._skill_prefilter_cache_sig:
+            # Registry changed — wipe the cache.
+            self._skill_prefilter_cache.clear()
+            self._skill_prefilter_cache_sig = _current_sig
+            return None
+        _key = self._get_skill_prefilter_key(user_message)
+        if _key not in self._skill_prefilter_cache:
+            return None
+        # Move to end (most-recently-used).
+        _cached = self._skill_prefilter_cache.pop(_key)
+        self._skill_prefilter_cache[_key] = _cached
+        return _cached
+
+    def _store_skill_prefilter_cache(
+        self, user_message: str, result: list[Any],
+    ) -> None:
+        """Store a prefilter result, evicting the oldest entry if at capacity."""
+        _key = self._get_skill_prefilter_key(user_message)
+        if len(self._skill_prefilter_cache) >= self._skill_prefilter_cache_maxsize:
+            self._skill_prefilter_cache.popitem(last=False)
+        self._skill_prefilter_cache[_key] = result
 
     async def clear_session(self, session_id: str) -> None:
         """Drop a session's conversation history. Called by the WS gateway
@@ -812,6 +919,76 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             "messages_removed": messages_removed,
             "history_len": int(cp["history_len"]),
         }
+
+    # ── incremental inflight checkpoint (B-RESUME-2) ─────────────────
+
+    async def _write_inflight_checkpoint(
+        self, session_id: str, messages: list[Message],
+    ) -> None:
+        """Write incremental inflight checkpoint to disk.
+
+        Every 10 turns a full snapshot is written to a side file so
+        recovery can survive a corrupted incremental chain.  All other
+        turns only persist the messages added since the last full
+        checkpoint.  Disk I/O runs in a background thread so the
+        event loop is not blocked.
+        """
+        try:
+            import json
+            from xmclaw.utils.paths import data_dir
+            from xmclaw.daemon.session_store import _message_to_dict
+
+            _inf_dir = data_dir() / "v2" / "inflight"
+            # Ensure directory once per process lifetime.
+            if _inf_dir not in self._checkpoint_dirs_initialized:
+                await asyncio.to_thread(
+                    _inf_dir.mkdir, parents=True, exist_ok=True,
+                )
+                self._checkpoint_dirs_initialized.add(_inf_dir)
+
+            _turn_counter = self._checkpoint_turn_counters.get(session_id, 0) + 1
+            self._checkpoint_turn_counters[session_id] = _turn_counter
+
+            _is_full = (_turn_counter % 10) == 0
+            _last_idx = self._last_checkpoint_indices.get(session_id, 0)
+            _inf_path = _inf_dir / f"{session_id}.json"
+
+            if _is_full:
+                # Full snapshot to a side file.
+                _full_path = _inf_dir / f"{session_id}.full.{_turn_counter}.json"
+                _snapshot = [_message_to_dict(m) for m in messages]
+                _full_json = json.dumps(_snapshot, ensure_ascii=False)
+                _full_tmp = _full_path.with_suffix(".tmp")
+                await asyncio.to_thread(
+                    _full_tmp.write_text, _full_json, encoding="utf-8",
+                )
+                await asyncio.to_thread(_full_tmp.replace, _full_path)
+
+                # Main file points to the full snapshot with empty incremental.
+                _payload = {
+                    "checkpoint_at": len(messages),
+                    "full_checkpoint": str(_full_path),
+                    "incremental": [],
+                }
+                self._last_checkpoint_indices[session_id] = len(messages)
+                self._last_full_checkpoint_paths[session_id] = _full_path
+            else:
+                _new_messages = messages[_last_idx:]
+                _full_path_ref = self._last_full_checkpoint_paths.get(session_id)
+                _payload = {
+                    "checkpoint_at": _last_idx,
+                    "full_checkpoint": str(_full_path_ref) if _full_path_ref else None,
+                    "incremental": [_message_to_dict(m) for m in _new_messages],
+                }
+
+            _json = json.dumps(_payload, ensure_ascii=False)
+            _tmp = _inf_path.with_suffix(".tmp")
+            await asyncio.to_thread(
+                _tmp.write_text, _json, encoding="utf-8",
+            )
+            await asyncio.to_thread(_tmp.replace, _inf_path)
+        except Exception:
+            pass
 
     def set_hook_engine(self, engine: Any | None) -> None:
         """Wave-32: attach the user-defined HookEngine. Lifecycle
@@ -1545,6 +1722,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             )
         else:
             effective_tools = self._tools
+        # 2026-06-17: cache tool_specs once per turn so the curriculum
+        # hint check and the main tool assembly both reuse the same list.
+        # This eliminates duplicate ``list_tools()`` calls on the same turn.
+        _cached_tool_specs = effective_tools.list_tools() if effective_tools else []
         events: list[BehavioralEvent] = []
         tool_calls_made: list[dict[str, Any]] = []
         # PERF-RECALL-2026-06-04: unified recall budget + shared embed.
@@ -2698,9 +2879,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             # Only inject when the tool is actually wired — saving a
             # hint string for sessions where the tool isn't reachable
             # would be misleading and waste tokens.
-            tool_specs_check = (
-                effective_tools.list_tools() if effective_tools else []
-            )
+            tool_specs_check = _cached_tool_specs
             has_propose_tool = any(
                 getattr(t, "name", "") == "propose_curriculum_edit"
                 or (isinstance(t, dict) and t.get("name") == "propose_curriculum_edit")
@@ -2999,7 +3178,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             + _working_context_block
         ).join(_parts)
 
-        tool_specs = effective_tools.list_tools() if effective_tools else None
+        # Reuse the turn-level cached tool_specs to avoid a second
+        # ``list_tools()`` scan.
+        tool_specs = _cached_tool_specs if _cached_tool_specs else None
 
         # B-238: skill prefilter. Real-data: 404 skills installed →
         # tool_specs runs ~80K tokens before the user message, LLM's
@@ -3011,99 +3192,112 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # (default 30) the prefilter is a no-op — small setups don't
         # have the noise problem.
         registry_total = 0
+        _skill_prefilter_sig = ""
         if tool_specs:
-            registry_total = sum(
-                1 for s in tool_specs
-                if (s.name or "").startswith("skill_")
-                and s.name != "skill_browse"
-            )
+            _skill_names: list[str] = []
+            for s in tool_specs:
+                name = (s.name or "")
+                if name.startswith("skill_") and name != "skill_browse":
+                    registry_total += 1
+                    _skill_names.append(name)
+            _skill_prefilter_sig = f"{len(_skill_names)}:{hash(tuple(sorted(_skill_names)))}"
             try:
                 from xmclaw.skills.prefilter import (
                     extract_recent_paths,
                     select_relevant_skills,
                 )
-                # Epic #27 G-05 (2026-05-19): conditional skill
-                # activation. Harvest paths from the last few file-op
-                # tool calls in the running messages list; skills whose
-                # manifest declares ``paths: [...]`` get boosted when
-                # their globs match and gated otherwise. Returns []
-                # safely when messages haven't been built yet.
-                try:
-                    # ``prior`` (line 1099 above) is the per-session
-                    # message history at this point in run_turn — the
-                    # full ``messages`` list isn't assembled yet
-                    # (built below at line ~1857) so we read from
-                    # prior, which is what gets prepended into it
-                    # anyway.
-                    active_paths = extract_recent_paths(
-                        prior, lookback=8, max_paths=20,
-                    )
-                except Exception:  # noqa: BLE001
-                    active_paths = []
-                # §⑫ autonomous-invocation fix (2026-05-31): compute a
-                # LANGUAGE-AGNOSTIC semantic score per skill so the
-                # prefilter surfaces the right skill even when the user's
-                # (e.g. Chinese) query shares ZERO tokens with the
-                # English skill description — the exact case the
-                # token-overlap prefilter drops, leaving the agent unable
-                # to autonomously call a skill it can't see. Reuses the
-                # memory system's EmbeddingService; best-effort (any
-                # failure → None → pure token fallback, no regression).
-                # Config: skills.semantic_discovery.{enabled,floor}.
-                semantic_scores = None
-                try:
-                    _sem_cfg = (
-                        (self._cfg or {}).get("skills", {})
-                        .get("semantic_discovery", {})
-                        if isinstance(self._cfg, dict) else {}
-                    ) or {}
-                    if _sem_cfg.get("enabled", True):
-                        _emb = getattr(
-                            getattr(self, "_memory_service", None),
-                            "_embedder", None,
+                # Save the original full registry before filtering so the
+                # trigger engine can look up fired skills later.
+                all_specs = tool_specs
+                # Cache hot-path: if the signature matches and the key is
+                # warm, skip the expensive token-overlap + semantic scoring.
+                _cached = self._try_skill_prefilter_cache(user_message, tool_specs, sig=_skill_prefilter_sig)
+                if _cached is not None:
+                    tool_specs = _cached
+                else:
+                    # Epic #27 G-05 (2026-05-19): conditional skill
+                    # activation. Harvest paths from the last few file-op
+                    # tool calls in the running messages list; skills whose
+                    # manifest declares ``paths: [...]`` get boosted when
+                    # their globs match and gated otherwise. Returns []
+                    # safely when messages haven't been built yet.
+                    try:
+                        # ``prior`` (line 1099 above) is the per-session
+                        # message history at this point in run_turn — the
+                        # full ``messages`` list isn't assembled yet
+                        # (built below at line ~1857) so we read from
+                        # prior, which is what gets prepended into it
+                        # anyway.
+                        active_paths = extract_recent_paths(
+                            prior, lookback=8, max_paths=20,
                         )
-                        if _emb is not None:
-                            _idx = getattr(
-                                self, "_skill_semantic_index", None,
-                            )
-                            if _idx is None:
-                                from xmclaw.skills.semantic_index import (
-                                    SkillSemanticIndex,
-                                )
-                                _idx = SkillSemanticIndex(_emb)
-                                self._skill_semantic_index = _idx
-                            _skill_only = [
-                                s for s in tool_specs
-                                if (getattr(s, "name", "") or "")
-                                .startswith("skill_")
-                            ]
-                            # Warm the description embeddings in the
-                            # BACKGROUND (only when there's new/changed
-                            # work) so the hot path never blocks on
-                            # embedding hundreds of descriptions. The
-                            # first skill turn scores token-only (cache
-                            # cold); semantic kicks in once warm finishes.
-                            if _idx.has_pending(_skill_only):
-                                import asyncio as _sem_aio
-                                _sem_aio.create_task(
-                                    _idx.warm(list(_skill_only))
-                                )
-                            semantic_scores = await _idx.scores(
-                                user_message, _skill_only,
-                                floor=float(
-                                    _sem_cfg.get("floor", 0.30)
-                                ),
-                            )
-                except Exception:  # noqa: BLE001 — never break a turn
+                    except Exception:  # noqa: BLE001
+                        active_paths = []
+                    # §⑫ autonomous-invocation fix (2026-05-31): compute a
+                    # LANGUAGE-AGNOSTIC semantic score per skill so the
+                    # prefilter surfaces the right skill even when the user's
+                    # (e.g. Chinese) query shares ZERO tokens with the
+                    # English skill description — the exact case the
+                    # token-overlap prefilter drops, leaving the agent unable
+                    # to autonomously call a skill it can't see. Reuses the
+                    # memory system's EmbeddingService; best-effort (any
+                    # failure → None → pure token fallback, no regression).
+                    # Config: skills.semantic_discovery.{enabled,floor}.
                     semantic_scores = None
-                tool_specs = select_relevant_skills(
-                    user_message,
-                    tool_specs,
-                    top_k=12,
-                    cognitive_state=self._cognitive_state,
-                    active_paths=active_paths,
-                    semantic_scores=semantic_scores,
-                )
+                    try:
+                        _sem_cfg = (
+                            (self._cfg or {}).get("skills", {})
+                            .get("semantic_discovery", {})
+                            if isinstance(self._cfg, dict) else {}
+                        ) or {}
+                        if _sem_cfg.get("enabled", True):
+                            _emb = getattr(
+                                getattr(self, "_memory_service", None),
+                                "_embedder", None,
+                            )
+                            if _emb is not None:
+                                _idx = getattr(
+                                    self, "_skill_semantic_index", None,
+                                )
+                                if _idx is None:
+                                    from xmclaw.skills.semantic_index import (
+                                        SkillSemanticIndex,
+                                    )
+                                    _idx = SkillSemanticIndex(_emb)
+                                    self._skill_semantic_index = _idx
+                                _skill_only = [
+                                    s for s in tool_specs
+                                    if (getattr(s, "name", "") or "")
+                                    .startswith("skill_")
+                                ]
+                                # Warm the description embeddings in the
+                                # BACKGROUND (only when there's new/changed
+                                # work) so the hot path never blocks on
+                                # embedding hundreds of descriptions. The
+                                # first skill turn scores token-only (cache
+                                # cold); semantic kicks in once warm finishes.
+                                if _idx.has_pending(_skill_only):
+                                    import asyncio as _sem_aio
+                                    _sem_aio.create_task(
+                                        _idx.warm(list(_skill_only))
+                                    )
+                                semantic_scores = await _idx.scores(
+                                    user_message, _skill_only,
+                                    floor=float(
+                                        _sem_cfg.get("floor", 0.30)
+                                    ),
+                                )
+                    except Exception:  # noqa: BLE001 — never break a turn
+                        semantic_scores = None
+                    tool_specs = select_relevant_skills(
+                        user_message,
+                        tool_specs,
+                        top_k=12,
+                        cognitive_state=self._cognitive_state,
+                        active_paths=active_paths,
+                        semantic_scores=semantic_scores,
+                    )
+                    self._store_skill_prefilter_cache(user_message, tool_specs)
                 # Force-inject triggered skills (keyword / event / cron).
                 # Evaluated after prefilter so the LLM always sees them.
                 try:
@@ -3281,19 +3475,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         _schema_block = ""
         if output_schema is not None:
             try:
-                import json as _json
-                _schema_str = _json.dumps(output_schema, ensure_ascii=False, indent=2)
-                _schema_block = (
-                    "\n\n<output_schema>\n"
-                    "You MUST respond with a single JSON object matching "
-                    "this JSON Schema. Do NOT wrap the JSON in markdown "
-                    "code fences. Do NOT add any text before or after "
-                    "the JSON object. The JSON object must be the entire "
-                    "content of your response.\n"
-                    "Schema:\n"
-                    + _schema_str +
-                    "\n</output_schema>"
-                )
+                _schema_block = self._get_schema_block(output_schema)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -3354,23 +3536,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # Fix Bug D (audit 2026-06-11): backup inflight to disk so
         # mid-turn progress survives daemon crash. JSON temp file
         # under ~/.xmclaw/v2/inflight/ — loaded on next startup.
-        try:
-            import json, os
-            from xmclaw.utils.paths import data_dir
-            _inf_dir = data_dir() / "v2" / "inflight"
-            _inf_dir.mkdir(parents=True, exist_ok=True)
-            _inf_path = _inf_dir / f"{session_id}.json"
-            from xmclaw.daemon.session_store import _message_to_dict
-            _inf_payload = json.dumps(
-                [_message_to_dict(m) for m in messages],
-                ensure_ascii=False,
-            )
-            # Atomic write: tmp file + rename
-            _tmp = _inf_path.with_suffix(".tmp")
-            _tmp.write_text(_inf_payload, encoding="utf-8")
-            _tmp.replace(_inf_path)
-        except Exception:
-            pass
+        # 2026-06-19: switched to incremental checkpointing — only new
+        # messages are written, with a full snapshot every 10 turns.
+        await self._write_inflight_checkpoint(session_id, messages)
 
         # Per-hop turn id so every LLM_CHUNK + LLM_RESPONSE event in this
         # hop shares a correlation_id. The chat reducer keys the assistant

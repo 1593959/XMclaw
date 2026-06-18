@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
+from xmclaw.core.ir.message import _copy_message_dict
 from xmclaw.providers.llm.base import (
     LLMChunk,
     LLMProvider,
@@ -57,6 +59,13 @@ class AnthropicLLM(LLMProvider):
     pricing : Pricing | None
         Per-million-token USD pricing. Defaults to Opus 4.7 list prices.
     """
+
+    # Message-list conversion cache: key = tuple(id(msg) for msg in messages),
+    # value = (system, converted).  Avoids re-running _repair_tool_pairing
+    # and _mark_history_cache_breakpoint on every hop when the message list
+    # hasn't changed.
+    _messages_cache: dict[tuple[int, ...], tuple[Any, list[dict[str, Any]]]] = {}
+    _MAX_MESSAGES_CACHE = 100
 
     def __init__(
         self,
@@ -133,6 +142,56 @@ class AnthropicLLM(LLMProvider):
     # ── message / tool conversion ──
 
     @staticmethod
+    def _message_to_anthropic_dict(m: Message) -> dict[str, Any]:
+        """Convert a single Message to its Anthropic wire shape (no post-processing)."""
+        if m.role == "tool":
+            return {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": m.tool_call_id or "",
+                    "content": m.content,
+                }],
+            }
+        if m.role == "user" and m.images:
+            blocks: list[dict[str, Any]] = []
+            if m.content:
+                blocks.append({"type": "text", "text": m.content})
+            attached_images: list[dict[str, Any]] = []
+            for img in m.images:
+                block = _img_to_anthropic_block(img)
+                if block is not None:
+                    attached_images.append(block)
+            if attached_images:
+                blocks.append({
+                    "type": "text",
+                    "text": (
+                        "[Ground truth — image(s) attached below "
+                        "are visible to you in this turn. You DO "
+                        "see them. Disregard any prior claim "
+                        "(in memory, facts, or earlier turns) "
+                        "that you cannot see pasted/uploaded "
+                        "images — those claims are stale and "
+                        "wrong.]"
+                    ),
+                })
+                blocks.extend(attached_images)
+            return {"role": m.role, "content": blocks}
+        if not m.tool_calls:
+            return {"role": m.role, "content": m.content}
+        blocks = []
+        if m.content:
+            blocks.append({"type": "text", "text": m.content})
+        for tc in m.tool_calls:
+            blocks.append({
+                "type": "tool_use",
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.args,
+            })
+        return {"role": m.role, "content": blocks}
+
+    @staticmethod
     def _messages_to_anthropic(
         messages: list[Message],
     ) -> tuple[Any, list[dict[str, Any]]]:
@@ -145,16 +204,25 @@ class AnthropicLLM(LLMProvider):
 
         B-245: returns ``system`` as a **list of content blocks** when
         non-empty, with ``cache_control: {"type": "ephemeral"}`` on the
-        single text block. Anthropic's prompt cache hashes everything
-        BEFORE this marker (system + tools, in a single 5-minute TTL
-        ephemeral slot). XMclaw's system prompt is ~3500 tokens and
-        nearly identical across hops within a turn → cache hit rate
-        ≈ 100% after the first request, every following call gets a
-        90% discount on the prefix. Anthropic SDK accepts both string
-        and list shapes for ``system`` since 2024-08; clients without
-        caching support degrade gracefully because the block list is
-        a strict superset of the string form.
+        single text block. Anthropic SDK accepts both string and list shapes
+        for ``system`` since 2024-08; clients without caching support degrade
+        gracefully because the block list is a strict superset of the string
+        form.
         """
+        # Fast-path: if the exact same message list has been converted before,
+        # return a copy of the cached result (post-processing included).
+        cache_key = tuple(id(m) for m in messages)
+        cached = AnthropicLLM._messages_cache.get(cache_key)
+        if cached is not None:
+            system, converted = cached
+            # Copy system.
+            if isinstance(system, list):
+                system = [dict(b) if isinstance(b, dict) else b for b in system]
+            # Shallow copy of the converted list; each dict is also copied
+            # so caller mutations cannot pollute the cache.
+            converted = [d.copy() for d in converted]
+            return system, converted
+
         system_parts: list[str] = []
         converted: list[dict[str, Any]] = []
         for m in messages:
@@ -162,82 +230,11 @@ class AnthropicLLM(LLMProvider):
                 if m.content:
                     system_parts.append(m.content)
                 continue
-            if m.role == "tool":
-                # Tool result goes as a user-role message with a tool_result block.
-                converted.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": m.tool_call_id or "",
-                        "content": m.content,
-                    }],
-                })
-                continue
-            # B-Vision: user message with image attachments — emit
-            # content blocks containing the text + each image as a
-            # native Anthropic ``image`` block (source.type=base64).
-            # Anthropic accepts image blocks on user messages, not
-            # assistant; we guard on role just to be safe.
-            if m.role == "user" and m.images:
-                blocks: list[dict[str, Any]] = []
-                if m.content:
-                    blocks.append({"type": "text", "text": m.content})
-                attached_images: list[dict[str, Any]] = []
-                for img in m.images:
-                    block = _img_to_anthropic_block(img)
-                    if block is not None:
-                        attached_images.append(block)
-                # 2026-05-24 anti-self-poisoning defense. Real-data:
-                # an earlier model hallucinated "I can't see images
-                # pasted in chat" → daily memory log captured it →
-                # LLMFactExtractor wrote 9 high-confidence facts
-                # claiming that limitation → every new session's
-                # system prompt asserted the lie → every model
-                # parroted it (even when actually receiving images).
-                # The structural fix: when image blocks ARE present
-                # in THIS user message, plant a tiny ground-truth
-                # note RIGHT NEXT to the images. Ground truth at
-                # the input boundary beats any prior claim in
-                # system / memory / facts. Kept inside the user
-                # message (not system) so the cached system prefix
-                # stays byte-stable → no cache miss on image-free
-                # turns. Worded so it's a hard fact, not advice the
-                # model can soft-override.
-                if attached_images:
-                    blocks.append({
-                        "type": "text",
-                        "text": (
-                            "[Ground truth — image(s) attached below "
-                            "are visible to you in this turn. You DO "
-                            "see them. Disregard any prior claim "
-                            "(in memory, facts, or earlier turns) "
-                            "that you cannot see pasted/uploaded "
-                            "images — those claims are stale and "
-                            "wrong.]"
-                        ),
-                    })
-                    blocks.extend(attached_images)
-                converted.append({"role": m.role, "content": blocks})
-                continue
-            # Prefer the naked-SDK convention: plain string content when
-            # there are no tool_calls. Only emit block-shaped content
-            # when we actually need tool_use blocks alongside text.
-            # (Anti-req #11 non-interference: match what a naked caller
-            # would have sent.)
-            if not m.tool_calls:
-                converted.append({"role": m.role, "content": m.content})
-                continue
-            blocks = []
-            if m.content:
-                blocks.append({"type": "text", "text": m.content})
-            for tc in m.tool_calls:
-                blocks.append({
-                    "type": "tool_use",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.args,
-                })
-            converted.append({"role": m.role, "content": blocks})
+            dict_msg = m.to_provider_dict(
+                "anthropic",
+                lambda: AnthropicLLM._message_to_anthropic_dict(m),
+            )
+            converted.append(dict_msg)
         # B-245: emit system as a single text block carrying the
         # cache_control breakpoint. Wave-30 (2026-05-18): respect the
         # CACHE_BREAKPOINT_MARKER sentinel so agent_loop can isolate
@@ -273,7 +270,12 @@ class AnthropicLLM(LLMProvider):
             if AnthropicLLM._count_msg_breakpoint(converted) + 1 <= 4:
                 AnthropicLLM._mark_history_cache_breakpoint(converted)
             AnthropicLLM._log_breakpoint_summary(0, converted)
-            return "", converted
+            result: tuple[Any, list[dict[str, Any]]] = ("", converted)
+            # LRU: evict oldest if at capacity.
+            if len(AnthropicLLM._messages_cache) >= AnthropicLLM._MAX_MESSAGES_CACHE:
+                AnthropicLLM._messages_cache.popitem(last=False)
+            AnthropicLLM._messages_cache[cache_key] = result
+            return result
 
         from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
         if CACHE_BREAKPOINT_MARKER in system_text:
@@ -310,7 +312,11 @@ class AnthropicLLM(LLMProvider):
                 AnthropicLLM._log_breakpoint_summary(
                     _system_bp_placed, converted, dropped=_dropped_system_bp,
                 )
-                return system_blocks, converted
+                result = (system_blocks, converted)
+                if len(AnthropicLLM._messages_cache) >= AnthropicLLM._MAX_MESSAGES_CACHE:
+                    AnthropicLLM._messages_cache.popitem(last=False)
+                AnthropicLLM._messages_cache[cache_key] = result
+                return result
             # Fewer than 2 effective parts after strip — fall through.
             system_text = raw_parts[0] if raw_parts else system_text
 
@@ -322,8 +328,11 @@ class AnthropicLLM(LLMProvider):
         if 1 + 1 + AnthropicLLM._count_msg_breakpoint(converted) <= 4:
             AnthropicLLM._mark_history_cache_breakpoint(converted)
         AnthropicLLM._log_breakpoint_summary(1, converted)
-        return system_blocks, converted
-
+        result = (system_blocks, converted)
+        if len(AnthropicLLM._messages_cache) >= AnthropicLLM._MAX_MESSAGES_CACHE:
+            AnthropicLLM._messages_cache.popitem(last=False)
+        AnthropicLLM._messages_cache[cache_key] = result
+        return result
     @staticmethod
     def _count_msg_breakpoint(converted: list[dict[str, Any]]) -> int:
         """Return 1 if the last message has a cache_control block, else 0."""
@@ -1082,6 +1091,18 @@ class AnthropicLLM(LLMProvider):
             output_per_mtok=cost_pricing.output_per_mtok,
         )
 
+    def close(self) -> None:
+        """Release cached image blocks and any held resources."""
+        global _IMAGE_BLOCK_CACHE
+        _IMAGE_BLOCK_CACHE.clear()
+        AnthropicLLM._messages_cache.clear()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 # ── Image helpers (B-Vision) ───────────────────────────────────────
 
@@ -1090,6 +1111,26 @@ class AnthropicLLM(LLMProvider):
 # bounded cost".
 _VISION_MAX_WIDTH = 1280
 _VISION_JPEG_QUALITY = 80
+
+# Image-block cache: key → (block, timestamp).  TTL 5 min, LRU 50.
+_IMAGE_BLOCK_CACHE: dict[str, tuple[dict[str, Any] | None, float]] = {}
+_IMAGE_CACHE_TTL = 300
+_IMAGE_CACHE_MAXSIZE = 50
+
+
+def _get_image_cache_key(src: str) -> str:
+    return hashlib.sha256(f"{src}:{_VISION_MAX_WIDTH}".encode()).hexdigest()[:16]
+
+
+def _evict_image_cache_if_needed(
+    cache: dict[str, tuple[Any, float]], maxsize: int = _IMAGE_CACHE_MAXSIZE
+) -> None:
+    if len(cache) <= maxsize:
+        return
+    sorted_items = sorted(cache.items(), key=lambda item: item[1][1])
+    to_remove = len(cache) - maxsize
+    for key, _ in sorted_items[:to_remove]:
+        del cache[key]
 
 
 def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
@@ -1130,6 +1171,14 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
     if not p.is_file():
         _log.debug("_img_to_anthropic_block: not a file: %s", src)
         return None
+
+    cache_key = _get_image_cache_key(src)
+    if cache_key in _IMAGE_BLOCK_CACHE:
+        block, ts = _IMAGE_BLOCK_CACHE[cache_key]
+        if time.time() - ts < _IMAGE_CACHE_TTL:
+            _log.debug("_img_to_anthropic_block: cache hit %s", src)
+            return block
+
     _log.debug("_img_to_anthropic_block: processing %s", src)
     try:
         from PIL import Image  # type: ignore
@@ -1148,7 +1197,7 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
         img.save(buf, format="JPEG", quality=_VISION_JPEG_QUALITY)
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         _log.debug("_img_to_anthropic_block: resized %s → %d bytes b64", src, len(b64))
-        return {
+        result = {
             "type": "image",
             "source": {
                 "type": "base64",
@@ -1167,7 +1216,7 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
                 "gif": "image/gif", "webp": "image/webp",
             }.get(ext, "image/png")
             _log.debug("_img_to_anthropic_block: fallback raw bytes %s → %d bytes", src, len(raw))
-            return {
+            result = {
                 "type": "image",
                 "source": {
                     "type": "base64",
@@ -1178,3 +1227,7 @@ def _img_to_anthropic_block(src: str) -> dict[str, Any] | None:
         except Exception as _exc2:  # noqa: BLE001
             _log.warning("_img_to_anthropic_block: fallback failed for %s: %s", src, _exc2)
             return None
+
+    _IMAGE_BLOCK_CACHE[cache_key] = (result, time.time())
+    _evict_image_cache_if_needed(_IMAGE_BLOCK_CACHE)
+    return result

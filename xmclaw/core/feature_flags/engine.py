@@ -34,6 +34,7 @@ of the memory cache. Disk is loaded once at boot.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
@@ -103,6 +104,11 @@ class FeatureFlagEngine:
         self._remote: RemoteProvider = remote or NoopRemoteProvider()
         self._lock = threading.RLock()
         self._last_refresh_ts: float = 0.0
+        # Epic #27 sweep #8 (2026-06-19): debounce disk writes so rapid
+        # set() calls (e.g. feature-flag bulk updates) don't hammer the
+        # filesystem with a full tmp.write_text + os.replace per call.
+        self._pending_save = False
+        self._save_task: asyncio.Task | None = None
         # Load disk on construction so day-1 lookups see persisted
         # values without an explicit ``refresh()``.
         self._load_disk()
@@ -184,7 +190,7 @@ class FeatureFlagEngine:
             self._memory[name] = value
             if persist:
                 self._disk_cache[name] = value
-                self._save_disk()
+                self._schedule_save()
 
     def clear(self, name: str) -> None:
         """Forget a flag at all layers we own (memory + disk).
@@ -192,7 +198,7 @@ class FeatureFlagEngine:
         with self._lock:
             self._memory.pop(name, None)
             self._disk_cache.pop(name, None)
-            self._save_disk()
+            self._schedule_save()
 
     # ── Refresh / introspection ──────────────────────────────────
 
@@ -278,6 +284,30 @@ class FeatureFlagEngine:
                 "feature_flag.disk_load_failed path=%s err=%s",
                 self._disk_path, exc,
             )
+
+    def _schedule_save(self) -> None:
+        """Enqueue a debounced disk flush (500 ms).
+
+        Must be called while ``self._lock`` is held.
+        """
+        self._pending_save = True
+        if self._save_task is None or self._save_task.done():
+            try:
+                loop = asyncio.get_running_loop()
+                self._save_task = loop.create_task(self._debounced_save())
+            except RuntimeError:
+                # No event loop running — synchronous fallback for
+                # tests / CLI that call set() outside asyncio.
+                self._pending_save = False
+                self._save_disk()
+
+    async def _debounced_save(self) -> None:
+        """Wait 500 ms, then flush if any mutation arrived in the window."""
+        await asyncio.sleep(0.5)
+        with self._lock:
+            if self._pending_save:
+                self._pending_save = False
+                self._save_disk()
 
     def _save_disk(self) -> None:
         if self._disk_path is None:

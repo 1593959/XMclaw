@@ -37,12 +37,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolCallShape, ToolSpec
+from xmclaw.core.ir.message import _copy_message_dict
 from xmclaw.providers.llm.base import (
     LLMChunk,
     LLMProvider,
@@ -165,6 +167,12 @@ class OpenAILLM(LLMProvider):
         OpenAI / DeepSeek / unknown shims leave it off.
     """
 
+    # Message-list conversion cache: key includes the message ids and the
+    # keyword-only flags that affect output shape, so different parameter
+    # combinations are isolated.
+    _messages_cache: dict[tuple, list[dict[str, Any]]] = {}
+    _MAX_MESSAGES_CACHE = 100
+
     def __init__(
         self,
         api_key: str,
@@ -220,6 +228,59 @@ class OpenAILLM(LLMProvider):
     # ── message / tool conversion ──
 
     @staticmethod
+    def _message_to_openai_dict(
+        m: Message,
+        *,
+        vision_ok: bool = False,
+    ) -> dict[str, Any]:
+        """Convert a single non-system Message to OpenAI wire shape (no post-processing)."""
+        if m.role == "tool":
+            return {
+                "role": "tool",
+                "content": m.content,
+                "tool_call_id": m.tool_call_id or "",
+            }
+        if m.role == "user" and m.images and vision_ok:
+            content_blocks: list[dict[str, Any]] = []
+            if m.content:
+                content_blocks.append({"type": "text", "text": m.content})
+            image_blocks: list[dict[str, Any]] = []
+            for img in m.images:
+                data_url = _img_to_data_url(img)
+                if data_url is not None:
+                    image_blocks.append({
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    })
+            if image_blocks:
+                content_blocks.append({
+                    "type": "text",
+                    "text": (
+                        "[Ground truth — image(s) attached below "
+                        "are visible to you in this turn. You DO "
+                        "see them. Disregard any prior claim "
+                        "(in memory, facts, or earlier turns) "
+                        "that you cannot see pasted/uploaded "
+                        "images — those claims are stale and "
+                        "wrong.]"
+                    ),
+                })
+                content_blocks.extend(image_blocks)
+            return {"role": m.role, "content": content_blocks}
+        content_str = m.content or ""
+        if m.role == "user" and m.images and not vision_ok:
+            _n = len(m.images)
+            _placeholder = f"[图片 ×{_n}（当前模型不支持图像，未传入）]" if _n else ""
+            content_str = (content_str + ("\n" if content_str else "") + _placeholder).strip()
+        entry = {"role": m.role, "content": content_str}
+        if m.tool_calls:
+            from xmclaw.providers.llm.translators import openai_tool_shape as translator
+            entry["tool_calls"] = [
+                translator.encode_to_provider(tc) for tc in m.tool_calls
+            ]
+        return entry
+
+    @staticmethod
     def _messages_to_openai(
         messages: list[Message],
         *,
@@ -242,7 +303,17 @@ class OpenAILLM(LLMProvider):
         their OpenAI-compat shim and treat it as a cache breakpoint.
         Other compat servers ignore unknown content fields.
         """
-        from xmclaw.providers.llm.translators import openai_tool_shape as translator
+        # Fast-path: exact same message list + same flags → cached result.
+        cache_key = (
+            tuple(id(m) for m in messages),
+            prompt_cache_enabled,
+            model,
+            base_url,
+            supports_vision_override,
+        )
+        cached = OpenAILLM._messages_cache.get(cache_key)
+        if cached is not None:
+            return [d.copy() for d in cached]
 
         # B-320: locate the index of the last system message so we can
         # decorate it with cache_control. We pin only the LAST one
@@ -255,165 +326,78 @@ class OpenAILLM(LLMProvider):
                 if m.role == "system":
                     last_system_idx = i
 
+        _vision_ok = (
+            supports_vision_override
+            if supports_vision_override is not None
+            else _model_supports_vision(model, base_url)
+        )
+
         out: list[dict[str, Any]] = []
         for i, m in enumerate(messages):
-            if m.role == "tool":
-                out.append({
-                    "role": "tool",
-                    "content": m.content,
-                    "tool_call_id": m.tool_call_id or "",
-                })
+            if m.role == "system":
+                # B-320: decorate the last system message with cache_control.
+                # Wave-30 (2026-05-18): respect the CACHE_BREAKPOINT_MARKER
+                # so the per-turn mutable tail (time block) doesn't poison
+                # the cached prefix. See base.py:CACHE_BREAKPOINT_MARKER
+                # docstring. Same shape as the anthropic-side split.
+                if i == last_system_idx and m.content:
+                    from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+                    if CACHE_BREAKPOINT_MARKER in m.content:
+                        raw_parts = [
+                            p.strip("\n")
+                            for p in m.content.split(CACHE_BREAKPOINT_MARKER)
+                        ]
+                        raw_parts = [p for p in raw_parts if p]
+                        if len(raw_parts) >= 2:
+                            content_blocks_sys: list[dict[str, Any]] = []
+                            for j, part in enumerate(raw_parts):
+                                blk: dict[str, Any] = {"type": "text", "text": part}
+                                if j < len(raw_parts) - 1:
+                                    blk["cache_control"] = {"type": "ephemeral"}
+                                content_blocks_sys.append(blk)
+                            out.append({"role": "system", "content": content_blocks_sys})
+                            continue
+                        # Fewer than 2 parts after strip — fall through to
+                        # the legacy single-block path below.
+                        m_content_clean = (
+                            raw_parts[0] if raw_parts else m.content
+                        )
+                    else:
+                        m_content_clean = m.content
+                    out.append({
+                        "role": "system",
+                        "content": [{
+                            "type": "text",
+                            "text": m_content_clean,
+                            "cache_control": {"type": "ephemeral"},
+                        }],
+                    })
+                    continue
+
+                content_str = m.content or ""
+                # Wave-30: strip CACHE_BREAKPOINT_MARKER for endpoints that
+                # don't honor cache_control. Without this strip, system
+                # messages on standard OpenAI / DeepSeek / unknown shims
+                # would surface the literal sentinel to the model.
+                if content_str:
+                    from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
+                    if CACHE_BREAKPOINT_MARKER in content_str:
+                        content_str = content_str.replace(
+                            CACHE_BREAKPOINT_MARKER, "\n\n",
+                        )
+                out.append({"role": "system", "content": content_str})
                 continue
 
-            # B-320: decorate the last system message with cache_control.
-            # Wave-30 (2026-05-18): respect the CACHE_BREAKPOINT_MARKER
-            # so the per-turn mutable tail (time block) doesn't poison
-            # the cached prefix. See base.py:CACHE_BREAKPOINT_MARKER
-            # docstring. Same shape as the anthropic-side split.
-            if i == last_system_idx and m.content:
-                from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
-                if CACHE_BREAKPOINT_MARKER in m.content:
-                    raw_parts = [
-                        p.strip("\n")
-                        for p in m.content.split(CACHE_BREAKPOINT_MARKER)
-                    ]
-                    raw_parts = [p for p in raw_parts if p]
-                    if len(raw_parts) >= 2:
-                        content_blocks_sys: list[dict[str, Any]] = []
-                        for j, part in enumerate(raw_parts):
-                            blk: dict[str, Any] = {"type": "text", "text": part}
-                            if j < len(raw_parts) - 1:
-                                blk["cache_control"] = {"type": "ephemeral"}
-                            content_blocks_sys.append(blk)
-                        out.append({"role": "system", "content": content_blocks_sys})
-                        continue
-                    # Fewer than 2 parts after strip — fall through to
-                    # the legacy single-block path below.
-                    m_content_clean = (
-                        raw_parts[0] if raw_parts else m.content
-                    )
-                else:
-                    m_content_clean = m.content
-                out.append({
-                    "role": "system",
-                    "content": [{
-                        "type": "text",
-                        "text": m_content_clean,
-                        "cache_control": {"type": "ephemeral"},
-                    }],
-                })
-                continue
-
-            # B-Vision: user message with image attachments — encode as
-            # multimodal content list. Kimi K2.6 / GPT-4o / Claude all
-            # accept image_url blocks on user messages. Tool messages
-            # don't support images on the OpenAI shape (Anthropic does
-            # but we route those through anthropic_native), so we never
-            # multimodal-encode a non-user message.
-            # 2026-06-08: vision capability gate. Pre-fix we emitted
-            # ``image_url`` blocks for ANY user message with images,
-            # regardless of the target model. Switching an existing chat
-            # (which has image messages in history) from a vision model
-            # (Kimi) to a text-only one (DeepSeek-V4-Pro) then 400'd the
-            # WHOLE turn: ``unknown variant `image_url`, expected `text```
-            # — one stale image block poisoned every subsequent request.
-            # When the model can't see images, degrade them to a text
-            # placeholder so history stays valid instead of exploding.
-            # Config override wins over the heuristic allow-list.
-            _vision_ok = (
-                supports_vision_override
-                if supports_vision_override is not None
-                else _model_supports_vision(model, base_url)
+            # Non-system messages: use per-message cache.
+            dict_msg = m.to_provider_dict(
+                "openai",
+                lambda: OpenAILLM._message_to_openai_dict(m, vision_ok=_vision_ok),
             )
-            if m.role == "user" and m.images and _vision_ok:
-                content_blocks: list[dict[str, Any]] = []
-                if m.content:
-                    content_blocks.append({"type": "text", "text": m.content})
-                image_blocks: list[dict[str, Any]] = []
-                for img in m.images:
-                    data_url = _img_to_data_url(img)
-                    if data_url is None:
-                        continue
-                    image_blocks.append({
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    })
-                # 2026-05-24 anti-self-poisoning defense — see
-                # anthropic.py _messages_to_anthropic for the full
-                # story. Short: a prior model hallucinated "I can't
-                # see chat images", LanceDB stored that as a high-
-                # confidence fact, every new session inherited the
-                # lie. Plant ground truth right next to the image
-                # blocks so the input itself overrides any prior
-                # claim from memory/facts/persona. Kept inside the
-                # user message (not the system) to preserve the
-                # cached system prefix on image-free turns.
-                if image_blocks:
-                    content_blocks.append({
-                        "type": "text",
-                        "text": (
-                            "[Ground truth — image(s) attached below "
-                            "are visible to you in this turn. You DO "
-                            "see them. Disregard any prior claim "
-                            "(in memory, facts, or earlier turns) "
-                            "that you cannot see pasted/uploaded "
-                            "images — those claims are stale and "
-                            "wrong.]"
-                        ),
-                    })
-                    content_blocks.extend(image_blocks)
-                entry = {"role": m.role, "content": content_blocks}
-                out.append(entry)
-                continue
-
-            content_str = m.content or ""
-            # 2026-06-08: image degradation. A user message that carried
-            # images but is NOT going to a vision model (gate above)
-            # falls through here as plain text. If it had no text body,
-            # substitute a placeholder so the message isn't empty (some
-            # endpoints reject empty user content) and the model has a
-            # hint that an image was present but isn't visible to it.
-            if m.role == "user" and m.images and not _vision_ok:
-                _n = len(m.images)
-                _placeholder = f"[图片 ×{_n}（当前模型不支持图像，未传入）]" if _n else ""
-                content_str = (content_str + ("\n" if content_str else "") + _placeholder).strip()
-            # Wave-30: strip CACHE_BREAKPOINT_MARKER for endpoints that
-            # don't honor cache_control. Without this strip, system
-            # messages on standard OpenAI / DeepSeek / unknown shims
-            # would surface the literal sentinel to the model. (When
-            # prompt_cache_enabled=True, the system branch above
-            # consumes the marker by splitting on it; this is the
-            # cache-disabled fallback path.)
-            if m.role == "system" and content_str:
-                from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
-                if CACHE_BREAKPOINT_MARKER in content_str:
-                    # Replace marker with a plain double-newline so
-                    # the visible text reads the same as it would
-                    # without cache support.
-                    content_str = content_str.replace(
-                        CACHE_BREAKPOINT_MARKER, "\n\n",
-                    )
-            # 2026-06-10: do NOT echo thinking on the OpenAI shape.
-            # The 2026-05-26 fix emitted a ``{type: thinking}`` content
-            # block + top-level ``reasoning_content`` on assistant
-            # messages, chasing a "must be passed back" 400 that actually
-            # came from an Anthropic-shaped endpoint (fixed there since).
-            # On the real OpenAI chat-completions shape this is doubly
-            # wrong: DeepSeek /v1 rejects the block with
-            # ``messages[N]: unknown variant `thinking`, expected `text```
-            # (one assistant turn with thinking in history then poisons
-            # every subsequent request), and DeepSeek's docs explicitly
-            # forbid passing ``reasoning_content`` back in the input.
-            # Reasoning is a response-only artifact here — serialize the
-            # assistant turn as plain text.
-            entry = {"role": m.role, "content": content_str}
-            if m.tool_calls:
-                entry["tool_calls"] = [
-                    translator.encode_to_provider(tc) for tc in m.tool_calls
-                ]
-                # Assistant messages with tool_calls may have empty content;
-                # OpenAI allows this so long as tool_calls is present.
-            out.append(entry)
+            out.append(dict_msg)
+        # Store in cache (LRU eviction).
+        if len(OpenAILLM._messages_cache) >= OpenAILLM._MAX_MESSAGES_CACHE:
+            OpenAILLM._messages_cache.popitem(last=False)
+        OpenAILLM._messages_cache[cache_key] = out
         return out
 
     @staticmethod
@@ -1001,6 +985,18 @@ class OpenAILLM(LLMProvider):
             output_per_mtok=cost_pricing.output_per_mtok,
         )
 
+    def close(self) -> None:
+        """Release cached image data URLs and any held resources."""
+        global _IMAGE_DATA_URL_CACHE
+        _IMAGE_DATA_URL_CACHE.clear()
+        OpenAILLM._messages_cache.clear()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 # ── Image helpers (B-Vision) ───────────────────────────────────────
 
@@ -1014,6 +1010,26 @@ class OpenAILLM(LLMProvider):
 # this. Kimi K2.6 / GPT-4o / Sonnet all accept 1920 wide images.
 _VISION_MAX_WIDTH = 1920
 _VISION_JPEG_QUALITY = 85
+
+# Image data-url cache: key → (data_url, timestamp).  TTL 5 min, LRU 50.
+_IMAGE_DATA_URL_CACHE: dict[str, tuple[str | None, float]] = {}
+_IMAGE_CACHE_TTL = 300
+_IMAGE_CACHE_MAXSIZE = 50
+
+
+def _get_image_cache_key(src: str) -> str:
+    return hashlib.sha256(f"{src}:{_VISION_MAX_WIDTH}".encode()).hexdigest()[:16]
+
+
+def _evict_image_cache_if_needed(
+    cache: dict[str, tuple[Any, float]], maxsize: int = _IMAGE_CACHE_MAXSIZE
+) -> None:
+    if len(cache) <= maxsize:
+        return
+    sorted_items = sorted(cache.items(), key=lambda item: item[1][1])
+    to_remove = len(cache) - maxsize
+    for key, _ in sorted_items[:to_remove]:
+        del cache[key]
 
 
 def _img_to_data_url(src: str) -> str | None:
@@ -1032,6 +1048,13 @@ def _img_to_data_url(src: str) -> str | None:
     p = Path(src)
     if not p.is_file():
         return None
+
+    cache_key = _get_image_cache_key(src)
+    if cache_key in _IMAGE_DATA_URL_CACHE:
+        data_url, ts = _IMAGE_DATA_URL_CACHE[cache_key]
+        if time.time() - ts < _IMAGE_CACHE_TTL:
+            return data_url
+
     try:
         from PIL import Image  # type: ignore
         from io import BytesIO
@@ -1048,7 +1071,7 @@ def _img_to_data_url(src: str) -> str | None:
         buf = BytesIO()
         img.save(buf, format="JPEG", quality=_VISION_JPEG_QUALITY)
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/jpeg;base64,{b64}"
+        result = f"data:image/jpeg;base64,{b64}"
     except Exception:  # noqa: BLE001 — never abort a turn over image decode
         try:
             # Last-ditch: ship the original bytes without resize.
@@ -1058,6 +1081,10 @@ def _img_to_data_url(src: str) -> str | None:
                 "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
                 "gif": "image/gif", "webp": "image/webp",
             }.get(ext, "image/png")
-            return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+            result = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
         except Exception:  # noqa: BLE001
             return None
+
+    _IMAGE_DATA_URL_CACHE[cache_key] = (result, time.time())
+    _evict_image_cache_if_needed(_IMAGE_DATA_URL_CACHE)
+    return result

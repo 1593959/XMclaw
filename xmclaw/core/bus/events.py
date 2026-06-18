@@ -438,6 +438,9 @@ class EventType(str, Enum):
     #   "would_exceed_at_step": int  # the step index that triggered halt
     PLAN_BUDGET_EXCEEDED = "plan_budget_exceeded"
 
+    # Android companion device events (M1)
+    DEVICE_EVENT = "device_event"
+
     # Live Canvas / A2UI (Phase 6+): agent-generated visual artifacts.
     # Emitted when the agent calls canvas_create / canvas_update / canvas_close
     # so the frontend can render diagrams, charts, tables, and rich HTML

@@ -41,6 +41,33 @@ if TYPE_CHECKING:
 DEFAULT_EMBEDDING_DIM = 1536
 
 
+class _LanceDBConnectionManager:
+    """Singleton async connection manager per db_path.
+
+    Epic #27 sweep #8 (2026-06-19): LanceDBVectorBackend and
+    LanceDBGraphBackend used to call ``connect_async`` independently,
+    producing two connections + two open_table calls at boot. This
+    manager shares one AsyncConnection per db_path.
+    """
+
+    _connections: dict[str, Any] = {}
+
+    @classmethod
+    async def get_connection(cls, db_path: str) -> Any:
+        if db_path not in cls._connections:
+            import lancedb
+            cls._connections[db_path] = await lancedb.connect_async(db_path)
+        return cls._connections[db_path]
+
+    @classmethod
+    def reset(cls, db_path: str | None = None) -> None:
+        """Test helper: evict cached connection(s)."""
+        if db_path is None:
+            cls._connections.clear()
+        else:
+            cls._connections.pop(db_path, None)
+
+
 class LanceDBSchemaError(RuntimeError):
     """Epic #27 sweep #7 (2026-05-19): raised by upsert when the
     on-disk schema is known to be missing a required column.
@@ -209,11 +236,12 @@ class LanceDBVectorBackend:
         *,
         table_name: str = "facts",
         embedding_dim: int = DEFAULT_EMBEDDING_DIM,
+        db: Any | None = None,
     ) -> None:
         self._db_path = db_path
         self._table_name = table_name
         self._dim = embedding_dim
-        self._db: Any | None = None
+        self._db = db  # injected shared connection, or None → lazy via manager
         self._table: Any | None = None
         self._schema_cls: Any | None = None
         # Epic #27 sweep #7 (2026-05-19): track schema-migration state.
@@ -261,8 +289,7 @@ class LanceDBVectorBackend:
         if not self._corrupted:
             return True
         try:
-            import lancedb
-            db = await lancedb.connect_async(self._db_path)
+            db = await _LanceDBConnectionManager.get_connection(self._db_path)
             for name in await db.table_names():
                 tbl = await db.open_table(name)
                 await tbl.cleanup_old_versions()
@@ -310,11 +337,10 @@ class LanceDBVectorBackend:
     async def _ensure_ready(self) -> None:
         if self._corrupted:
             return
-        import lancedb
         try:
             if self._db is None:
                 self._db = await _with_timeout_and_retry(
-                    lancedb.connect_async(self._db_path),
+                    _LanceDBConnectionManager.get_connection(self._db_path),
                     timeout_s=10,
                     context="connect",
                     corrupted_flag=self,
@@ -711,10 +737,11 @@ class LanceDBGraphBackend:
         db_path: str,
         *,
         table_name: str = "relations",
+        db: Any | None = None,
     ) -> None:
         self._db_path = db_path
         self._table_name = table_name
-        self._db: Any | None = None
+        self._db = db  # injected shared connection, or None → lazy via manager
         self._table: Any | None = None
         self._schema_cls: Any | None = None
         # 2026-05-29 perf fix: mirror VectorBackend corruption guard.
@@ -762,11 +789,10 @@ class LanceDBGraphBackend:
     async def _ensure_ready(self) -> None:
         if self._corrupted:
             return
-        import lancedb
         try:
             if self._db is None:
                 self._db = await _with_timeout_and_retry(
-                    lancedb.connect_async(self._db_path),
+                    _LanceDBConnectionManager.get_connection(self._db_path),
                     timeout_s=10,
                     context="graph_connect",
                     corrupted_flag=self,
@@ -989,6 +1015,134 @@ class LanceDBGraphBackend:
                 exc,
             )
             return []
+
+    async def neighbors_batch(
+        self,
+        fact_ids: list[str],
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> dict[str, list[tuple[Relation, str]]]:
+        """Batch outgoing-edge query via a single ``WHERE IN`` query per hop."""
+        if not fact_ids or self._corrupted:
+            return {fid: [] for fid in fact_ids}
+        await self._ensure_ready()
+        if self._corrupted:
+            return {fid: [] for fid in fact_ids}
+        assert self._table is not None
+        from collections import defaultdict
+
+        all_out: dict[str, list[tuple[Relation, str]]] = {fid: [] for fid in fact_ids}
+        all_seen: dict[str, set[str]] = {fid: {fid} for fid in fact_ids}
+        all_frontiers: dict[str, list[str]] = {fid: [fid] for fid in fact_ids}
+        try:
+            for _ in range(max(1, max_hops)):
+                node_to_sources: dict[str, list[str]] = defaultdict(list)
+                for fid in fact_ids:
+                    for node in all_frontiers[fid]:
+                        node_to_sources[node].append(fid)
+                if not node_to_sources:
+                    break
+                quoted = ", ".join(
+                    f"'{f.replace(chr(39), chr(39) + chr(39))}'"
+                    for f in node_to_sources
+                )
+                where_parts = [f"source_fact_id IN ({quoted})"]
+                if relation_types:
+                    rels = ", ".join(f"'{r}'" for r in relation_types)
+                    where_parts.append(f"relation IN ({rels})")
+                where = " AND ".join(where_parts)
+                rows = await _with_timeout_and_retry(
+                    self._table.query().where(where).to_list(),
+                    timeout_s=10,
+                    context="graph_neighbors_batch",
+                    corrupted_flag=self,
+                )
+                next_frontiers: dict[str, list[str]] = {fid: [] for fid in fact_ids}
+                for row in rows:
+                    rel = _record_to_relation(row)
+                    src = rel.source_fact_id
+                    for fid in node_to_sources.get(src, []):
+                        all_out[fid].append((rel, rel.target_fact_id))
+                        if rel.target_fact_id not in all_seen[fid]:
+                            all_seen[fid].add(rel.target_fact_id)
+                            next_frontiers[fid].append(rel.target_fact_id)
+                all_frontiers = next_frontiers
+            return all_out
+        except RuntimeError as exc:
+            self._handle_lance_error(exc, "graph_neighbors_batch")
+            if not self._corrupted:
+                return {fid: [] for fid in fact_ids}
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted_neighbors_batch err=%s — disabling",
+                exc,
+            )
+            return {fid: [] for fid in fact_ids}
+
+    async def reverse_neighbors_batch(
+        self,
+        fact_ids: list[str],
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> dict[str, list[tuple[Relation, str]]]:
+        """Batch incoming-edge query via a single ``WHERE IN`` query per hop."""
+        if not fact_ids or self._corrupted:
+            return {fid: [] for fid in fact_ids}
+        await self._ensure_ready()
+        if self._corrupted:
+            return {fid: [] for fid in fact_ids}
+        assert self._table is not None
+        from collections import defaultdict
+
+        all_out: dict[str, list[tuple[Relation, str]]] = {fid: [] for fid in fact_ids}
+        all_seen: dict[str, set[str]] = {fid: {fid} for fid in fact_ids}
+        all_frontiers: dict[str, list[str]] = {fid: [fid] for fid in fact_ids}
+        try:
+            for _ in range(max(1, max_hops)):
+                node_to_sources: dict[str, list[str]] = defaultdict(list)
+                for fid in fact_ids:
+                    for node in all_frontiers[fid]:
+                        node_to_sources[node].append(fid)
+                if not node_to_sources:
+                    break
+                quoted = ", ".join(
+                    f"'{f.replace(chr(39), chr(39) + chr(39))}'"
+                    for f in node_to_sources
+                )
+                where_parts = [f"target_fact_id IN ({quoted})"]
+                if relation_types:
+                    rels = ", ".join(f"'{r}'" for r in relation_types)
+                    where_parts.append(f"relation IN ({rels})")
+                where = " AND ".join(where_parts)
+                rows = await _with_timeout_and_retry(
+                    self._table.query().where(where).to_list(),
+                    timeout_s=10,
+                    context="graph_reverse_neighbors_batch",
+                    corrupted_flag=self,
+                )
+                next_frontiers: dict[str, list[str]] = {fid: [] for fid in fact_ids}
+                for row in rows:
+                    rel = _record_to_relation(row)
+                    tgt = rel.target_fact_id
+                    for fid in node_to_sources.get(tgt, []):
+                        all_out[fid].append((rel, rel.source_fact_id))
+                        if rel.source_fact_id not in all_seen[fid]:
+                            all_seen[fid].add(rel.source_fact_id)
+                            next_frontiers[fid].append(rel.source_fact_id)
+                all_frontiers = next_frontiers
+            return all_out
+        except RuntimeError as exc:
+            self._handle_lance_error(exc, "graph_reverse_neighbors_batch")
+            if not self._corrupted:
+                return {fid: [] for fid in fact_ids}
+            from xmclaw.utils.log import get_logger
+            get_logger(__name__).error(
+                "lancedb.graph_corrupted_reverse_neighbors_batch err=%s — disabling",
+                exc,
+            )
+            return {fid: [] for fid in fact_ids}
 
     async def find_related(
         self,

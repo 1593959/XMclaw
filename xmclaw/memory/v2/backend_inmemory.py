@@ -360,6 +360,106 @@ class InMemoryGraphBackend:
             frontier = next_frontier
         return out
 
+    async def reverse_neighbors(
+        self,
+        fact_id: str,
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> list[tuple[Relation, str]]:
+        """Incoming-edge traversal (dual of :meth:`neighbors`)."""
+        seen: set[str] = {fact_id}
+        frontier = [fact_id]
+        out: list[tuple[Relation, str]] = []
+        for _ in range(max(1, max_hops)):
+            next_frontier: list[str] = []
+            for tgt in frontier:
+                for rel in self._rels.values():
+                    if rel.target_fact_id != tgt:
+                        continue
+                    if relation_types and rel.relation not in relation_types:
+                        continue
+                    out.append((rel, rel.source_fact_id))
+                    if rel.source_fact_id not in seen:
+                        seen.add(rel.source_fact_id)
+                        next_frontier.append(rel.source_fact_id)
+            frontier = next_frontier
+        return out
+
+    async def neighbors_batch(
+        self,
+        fact_ids: list[str],
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> dict[str, list[tuple[Relation, str]]]:
+        """Batch outgoing-edge query."""
+        from collections import defaultdict
+
+        all_out: dict[str, list[tuple[Relation, str]]] = {fid: [] for fid in fact_ids}
+        all_seen: dict[str, set[str]] = {fid: {fid} for fid in fact_ids}
+        all_frontiers: dict[str, list[str]] = {fid: [fid] for fid in fact_ids}
+
+        for _ in range(max(1, max_hops)):
+            node_to_sources: dict[str, list[str]] = defaultdict(list)
+            for fid in fact_ids:
+                for node in all_frontiers[fid]:
+                    node_to_sources[node].append(fid)
+            if not node_to_sources:
+                break
+
+            next_frontiers: dict[str, list[str]] = {fid: [] for fid in fact_ids}
+            for rel in self._rels.values():
+                if rel.source_fact_id not in node_to_sources:
+                    continue
+                if relation_types and rel.relation not in relation_types:
+                    continue
+                for fid in node_to_sources[rel.source_fact_id]:
+                    all_out[fid].append((rel, rel.target_fact_id))
+                    if rel.target_fact_id not in all_seen[fid]:
+                        all_seen[fid].add(rel.target_fact_id)
+                        next_frontiers[fid].append(rel.target_fact_id)
+            all_frontiers = next_frontiers
+
+        return all_out
+
+    async def reverse_neighbors_batch(
+        self,
+        fact_ids: list[str],
+        *,
+        relation_types: list[str] | None = None,
+        max_hops: int = 1,
+    ) -> dict[str, list[tuple[Relation, str]]]:
+        """Batch incoming-edge query."""
+        from collections import defaultdict
+
+        all_out: dict[str, list[tuple[Relation, str]]] = {fid: [] for fid in fact_ids}
+        all_seen: dict[str, set[str]] = {fid: {fid} for fid in fact_ids}
+        all_frontiers: dict[str, list[str]] = {fid: [fid] for fid in fact_ids}
+
+        for _ in range(max(1, max_hops)):
+            node_to_sources: dict[str, list[str]] = defaultdict(list)
+            for fid in fact_ids:
+                for node in all_frontiers[fid]:
+                    node_to_sources[node].append(fid)
+            if not node_to_sources:
+                break
+
+            next_frontiers: dict[str, list[str]] = {fid: [] for fid in fact_ids}
+            for rel in self._rels.values():
+                if rel.target_fact_id not in node_to_sources:
+                    continue
+                if relation_types and rel.relation not in relation_types:
+                    continue
+                for fid in node_to_sources[rel.target_fact_id]:
+                    all_out[fid].append((rel, rel.source_fact_id))
+                    if rel.source_fact_id not in all_seen[fid]:
+                        all_seen[fid].add(rel.source_fact_id)
+                        next_frontiers[fid].append(rel.source_fact_id)
+            all_frontiers = next_frontiers
+
+        return all_out
+
     async def contradictions_of(self, fact_id: str) -> list[str]:
         out = []
         for rel_id in self._out.get(fact_id, ()):
