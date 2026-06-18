@@ -19,11 +19,11 @@ COPY docs/ ./docs/
 RUN mkdir -p /data/.xmclaw
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8766
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/api/v2/health || exit 1
+    CMD curl -f http://localhost:8766/api/v2/health || exit 1
 
 # Run the daemon
-CMD ["python", "-m", "xmclaw.daemon.app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "xmclaw.daemon.app", "--host", "0.0.0.0", "--port", "8766"]

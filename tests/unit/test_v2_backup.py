@@ -410,6 +410,7 @@ def test_cli_backup_create_list_restore_happy_path(
         app,
         ["backup", "restore", "cli-test",
          "--target", str(ws), "--dest", str(dest)],
+        input="y\n",  # restore confirms before overwriting (fix audit 2026-06-11)
     )
     assert r.exit_code == 0, r.output
     assert "restored" in r.output
@@ -452,6 +453,7 @@ def test_cli_backup_restore_missing_exits_nonzero(tmp_path: Path) -> None:
         ["backup", "restore", "ghost",
          "--target", str(tmp_path / "t"),
          "--dest", str(tmp_path / "backups")],
+        input="y\n",  # confirm overwrite; then the missing backup surfaces as error
     )
     assert r.exit_code == 1, r.output
     assert "error" in r.output
