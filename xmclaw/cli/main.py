@@ -1,4 +1,4 @@
-﻿"""XMclaw CLI -- top-level entry point.
+"""XMclaw CLI -- top-level entry point.
 
 Subcommands:
 
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from typing import Any
 
 import typer
@@ -669,11 +670,25 @@ def restart(
     Wait timeout defaults to 60s (was 10s pre-2026-05-11) for the
     same reason as ``xmclaw start`` — see that command's docstring.
     """
-    from xmclaw.daemon.lifecycle import read_status, start_daemon, stop_daemon
+    from xmclaw.daemon.lifecycle import (
+        read_status, start_daemon, stop_daemon, _port_listener_pid, _reclaim_port,
+    )
     before = read_status()
     if before.state != "dead":
-        stop_daemon(grace_seconds=grace)
+        after_stop = stop_daemon(grace_seconds=grace)
         typer.echo(f"  [ok]  stopped previous daemon (was pid={before.pid})")
+        # 2026-06-19: 确认端口真正释放后才继续 start，避免旧 daemon 未死
+        # 导致新 daemon 绑不上端口 → 又造一个孤儿。
+        if after_stop.state != "dead" and after_stop.port:
+            for _ in range(25):  # 最多等 5s
+                if _port_listener_pid(int(after_stop.port)) is None:
+                    break
+                time.sleep(0.2)
+            else:
+                # 端口仍被占 — 强制回收
+                reclaimed = _reclaim_port(int(after_stop.port))
+                if reclaimed:
+                    typer.echo(f"  [!]   force-reclaimed orphan pid={reclaimed}")
     try:
         status = start_daemon(
             host=host, port=port, config=config,

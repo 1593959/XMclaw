@@ -364,6 +364,22 @@ def start_daemon(
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
         if not _process_alive(proc.pid):
+            # 2026-06-19: Windows venv launcher stub fix.  On Windows,
+            # sys.executable is a launcher that starts the real python.exe
+            # and exits.  The daemon's lifespan will self-stamp the PID
+            # file with the real listener PID.  If that has happened, keep
+            # waiting instead of declaring failure.
+            if sys.platform == "win32":
+                try:
+                    stamped = int(pid_path.read_text(encoding="utf-8").strip())
+                except (OSError, ValueError):
+                    stamped = None
+                if stamped is not None and stamped != proc.pid and _process_alive(stamped):
+                    # Real daemon is alive — keep waiting for /health.
+                    if _http_healthy(host, port):
+                        return read_status()
+                    time.sleep(0.3)
+                    continue
             _clear_files()
             raise RuntimeError(
                 f"daemon exited before becoming healthy -- see {log_path}"
@@ -428,14 +444,25 @@ def stop_daemon(*, grace_seconds: float = 5.0) -> DaemonStatus:
     # 2026-06-08: 兜底——**所有路径都跑**(优雅杀成功的早退分支以前漏了这步)。
     # daemon.pid 可能失准(指向已死/错的 pid),真正占着端口的旧 daemon 还活着。
     # 按端口属主再回收一次,确保 stop 真的把端口腾出来。
-    reclaimed = _reclaim_port(status.port)
+    # 2026-06-19: 当 status.port 为 None 时（meta 文件缺失或损坏），回退读取
+    # meta 文件或默认端口 8766，避免 _reclaim_port(None) 直接返回 None。
+    port = status.port
+    if port is None:
+        try:
+            meta = json.loads(default_meta_path().read_text(encoding="utf-8"))
+            port = meta.get("port")
+        except (OSError, json.JSONDecodeError):
+            pass
+        if port is None:
+            port = 8766  # 最后回退
+    reclaimed = _reclaim_port(port)
     if reclaimed is not None:
         try:
             from xmclaw.utils.log import get_logger
             get_logger(__name__).warning(
                 "daemon.stop reclaimed_orphan pid=%s port=%s "
                 "(pid file pointed at %s) — restart had been leaving this alive",
-                reclaimed, status.port, pid,
+                reclaimed, port, pid,
             )
         except Exception:  # noqa: BLE001
             pass
