@@ -66,7 +66,7 @@ from xmclaw.utils.paths import (
 # hitting the native API by default (cheaper + lower latency); they
 # opt into OpenRouter explicitly via the profiles array or by clearing
 # the native api_key.
-# B-XXX: ``openai_compat`` is added so Discovery API-created profiles
+# ``openai_compat`` is added so Discovery API-created profiles
 # (which use provider="openai_compat") are actually instantiated.
 _PROVIDER_ORDER: tuple[str, ...] = ("anthropic", "openai", "openrouter", "openai_compat")
 
@@ -602,7 +602,7 @@ def _instantiate_llm(
             prompt_cache_enabled=prompt_cache_enabled,
             supports_vision=supports_vision,
         )
-    # B-XXX: openai_compat — generic OpenAI-compatible shim.
+    # openai_compat — generic OpenAI-compatible shim.
     # Same shape as openai but the user provides the base_url explicitly.
     if provider_name == "openai_compat":
         return OpenAILLM(

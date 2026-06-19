@@ -41,7 +41,17 @@ from xmclaw.core.bus import (
     make_event,
 )
 from xmclaw.daemon.app_lifespan import make_lifespan
+from xmclaw.daemon.utils import _find_skill_provider
 from xmclaw.utils.log import get_logger
+
+# Module-level runtime state shared across all app instances.
+# When uvicorn reloads (re-calling create_app), these persist so
+# in-flight turns, WebSocket connections, and cancellation flags
+# survive the app rebuild.
+_session_logs: dict[str, list[BehavioralEvent]] = {}
+_active_ws_for_session: dict[str, WebSocket] = {}
+_active_turn_tasks: dict[str, Any] = {}
+_active_turn_cancelled: set[str] = set()
 
 # Epic #24 Phase 1: module-level logger. Several pre-existing
 # error-path call sites used a bare ``log.warning(...)`` reference
@@ -55,57 +65,6 @@ _SECRET_KEYS = frozenset({
     "api_key", "apikey", "bot_token", "app_token", "token",
     "password", "secret", "authorization",
 })
-
-
-def _find_skill_provider(root: Any) -> tuple[Any, Any]:
-    """Walk a tool-provider tree, return ``(skill_tool_provider, registry)``.
-
-    B-298: the factory wraps tools as
-    ``CompositeToolProvider(CompositeToolProvider(SkillTool, ...),
-    MemoryBridge)``, so the SkillToolProvider can sit two levels
-    deep. Pre-B-298 single-level lookup against the wrong attribute
-    name (``_providers``) silently returned ``(None, None)``,
-    leaving:
-
-    * the EvolutionAgent without a registry → B-296's per-skill
-      HEAD inference (``registry.active_version(skill_id)``)
-      degraded to ``head_version=None`` for every skill;
-    * the VariantSelector's ``enabled`` branch never taken →
-      candidates never got explore-traffic → controller's
-      ``min_plays`` threshold never cleared → B-294's evaluate()
-      trigger fired but always proposed nothing.
-
-    Returns the first node in a depth-first traversal whose
-    ``_registry`` attribute looks like a SkillRegistry (has the
-    ``list_skill_ids`` method). ``(None, None)`` when no such
-    provider exists in the tree (e.g. echo-mode daemon, or an
-    agent assembled with only BuiltinTools).
-
-    The walker tries public attribute names first
-    (``children``) then private ones (``_children``) so a
-    custom ToolProvider that exposes a public children API
-    can override the walk without subclassing
-    CompositeToolProvider.
-    """
-    stack = [root] if root is not None else []
-    seen: set[int] = set()
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        reg = getattr(node, "_registry", None)
-        if reg is not None and hasattr(reg, "list_skill_ids"):
-            return node, reg
-        kids = (
-            getattr(node, "children", None)
-            or getattr(node, "_children", None)
-            or getattr(node, "_providers", None)
-            or []
-        )
-        for k in kids:
-            stack.append(k)
-    return None, None
 
 
 def _sanitize_config(cfg: Any) -> Any:
@@ -849,7 +808,8 @@ def create_app(
     # global subscriber and keep a bounded log per session_id. On WS
     # connect, we stream the log first, then go live.
     _SESSION_LOG_CAP = 400  # events per session; ~20 turns of back-and-forth
-    session_logs: dict[str, list[BehavioralEvent]] = {}
+    # Use module-level state so it survives uvicorn reload / create_app rebuild.
+    session_logs = _session_logs
 
     # B-348 (Sprint 1): single-tab-wins per session. When a second
     # browser tab connects to the same session_id, the older tab's
@@ -859,19 +819,19 @@ def create_app(
     # also gets confusing because either tab can fire it. The session
     # log replay on reconnect already lets the new tab repopulate, so
     # closing the old WS doesn't lose state — just the live socket.
-    active_ws_for_session: dict[str, WebSocket] = {}
+    active_ws_for_session = _active_ws_for_session
     # 2026-06-15: in-flight turn task per session, shared across WS
     # handlers so ANY connection — including one opened after a page
     # refresh — can hard-cancel the running turn (not just the tab that
     # started it). Keyed by session_id; populated by the serial loop,
     # cleared when the turn finishes.
-    active_turn_tasks: dict[str, Any] = {}
+    active_turn_tasks = _active_turn_tasks
     # Session ids whose current turn had a cancel requested (Stop / new
     # message). Lets us emit a single deterministic ``turn_cancelled``
     # regardless of which path actually interrupted the turn — the
     # cooperative cancel_event race (tool teardown, returns normally) or
     # the hard task-cancel (stuck LLM call, raises CancelledError).
-    active_turn_cancelled: set[str] = set()
+    active_turn_cancelled = _active_turn_cancelled
     # Expose the live-turn registry so /api/v2/tasks can tell a genuinely
     # running session from a dead one whose event tail merely looks recent
     # (a turn killed mid-flight keeps "running" for STALE_S otherwise).
@@ -2169,7 +2129,7 @@ def create_app(
             # Only SqliteEventBus (the production durable bus) exposes
             # query(); a pure in-memory bus has nothing on disk to recover.
             try:
-                # B-XXX: bus.query defaults to ``ORDER BY ts ASC LIMIT N``,
+                # bus.query defaults to ``ORDER BY ts ASC LIMIT N``,
                 # which returns the *oldest* N events. For a long session
                 # ( > 400 events) this replays stale ancient events and
                 # drops the latest terminal frames (llm_response etc),
