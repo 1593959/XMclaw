@@ -73,7 +73,7 @@ class TestBuildRegistry:
 
     def test_legacy_anthropic_block_becomes_default_profile(self) -> None:
         cfg = {"llm": {"anthropic": {
-            "api_key": "sk-test",
+            "api_key": "sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
             "default_model": "claude-haiku-4-5-20251001",
         }}}
         r = build_llm_registry_from_config(cfg)

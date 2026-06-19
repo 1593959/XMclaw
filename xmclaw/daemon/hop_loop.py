@@ -365,7 +365,7 @@ class HopLoopMixin:
         _b302_corrected = 0
         # Reset fallback chain tracking each turn so every provider
         # gets a fresh chance (audit 2026-06-11).
-        object.__setattr__(self, "_fallback_tried_models", set())
+        self._fallback_tried_models.clear()
         # 2026-05-26 (audit G1 phase 2): narration tracking moved to
         # ``narration_enforcer.NarrationEnforcer``. Hop loop just
         # observes per-hop and gets back a NarrationDecision.

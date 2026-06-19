@@ -113,7 +113,7 @@ async def search_sessions(
     return JSONResponse({"sessions": rows, "query": q})
 
 
-def _reconstruct_from_events(session_id: str) -> list[dict[str, Any]]:
+def _reconstruct_from_events(session_id: str, *, bus=None) -> list[dict[str, Any]]:
     """2026-06-16 recovery: rebuild a session's visible message list from
     the DURABLE event log when ``session_store`` has nothing.
 
@@ -122,16 +122,28 @@ def _reconstruct_from_events(session_id: str) -> list[dict[str, Any]]:
     ``store.load`` returns []  and the conversation looks LOST — even
     though every message is durable in events.db. This reads those events
     and reconstructs ``user`` + ``assistant`` (with tool_calls) messages so
-    a refresh restores the conversation instead of dropping it."""
-    try:
+    a refresh restores the conversation instead of dropping it.
+
+    When ``bus`` is provided (e.g. from ``request.app.state.bus``), it is
+    reused to avoid the SQLite lock-competition risk of a second
+    SqliteEventBus instance.  When absent, a transient read-only instance is
+    created as a fallback."""
+    _bus = bus
+    _created = False
+    if _bus is None:
         from xmclaw.core.bus.sqlite import SqliteEventBus, default_events_db_path
-        bus = SqliteEventBus(default_events_db_path())
-        try:
-            evs = bus.query(session_id=session_id, limit=5000)
-        finally:
-            bus.close()
+        _bus = SqliteEventBus(default_events_db_path())
+        _created = True
+    try:
+        evs = _bus.query(session_id=session_id, limit=5000)
     except Exception:  # noqa: BLE001
         return []
+    finally:
+        if _created:
+            try:
+                _bus.close()
+            except Exception:  # noqa: BLE001
+                pass
     out: list[dict[str, Any]] = []
     for e in sorted(evs, key=lambda x: getattr(x, "ts", 0) or 0):
         t = e.type.value if hasattr(e.type, "value") else str(e.type)
@@ -152,7 +164,7 @@ def _reconstruct_from_events(session_id: str) -> list[dict[str, Any]]:
 
 
 @router.get("/{session_id}")
-async def get_session(session_id: str) -> JSONResponse:
+async def get_session(session_id: str, request: Request) -> JSONResponse:
     """Return the full message list (system prompt excluded)."""
     store = _store()
     if store is None:
@@ -176,7 +188,10 @@ async def get_session(session_id: str) -> JSONResponse:
     # from the durable event log so the conversation isn't lost.
     recovered = False
     if not out:
-        out = _reconstruct_from_events(session_id)
+        # Prefer the shared bus instance (if available) to avoid a second
+        # SqliteEventBus connection that competes for the WAL lock.
+        bus = getattr(request.app.state, "bus", None)
+        out = _reconstruct_from_events(session_id, bus=bus)
         recovered = bool(out)
     return JSONResponse({
         "session_id": session_id, "messages": out, "recovered_from_events": recovered,

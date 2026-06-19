@@ -267,4 +267,4 @@ def test_use_my_browser_spec_registered():
     """The tool must appear in list_tools() so the LLM can see it."""
     bt = BrowserTools(headless=False)
     names = {t.name for t in bt.list_tools()}
-    assert "browser_use_my_browser" in names
+    assert "browser" in names

@@ -796,6 +796,9 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
     return out
 
 
+_LLM_REGISTRY_CACHE: dict[str, LLMRegistry] = {}
+
+
 def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     """Build the per-session-pickable LLMRegistry.
 
@@ -817,6 +820,13 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     Empty registry (no LLM at all) returns a registry with no
     default — AgentLoop tolerates that and runs in echo mode.
     """
+    # P0-3: per-process cache so repeated calls (e.g. tests, hot-reload)
+    # don't re-instantiate HTTP clients and waste connections.
+    llm_section = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    _cache_key = json.dumps(llm_section, sort_keys=True, default=str)
+    if _cache_key in _LLM_REGISTRY_CACHE:
+        return _LLM_REGISTRY_CACHE[_cache_key]
+
     profiles: dict[str, LLMProfile] = {}
 
     named = build_llm_profiles_from_config(cfg)
@@ -855,7 +865,6 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     #   2. first loaded named profile (insertion order)
     #   3. legacy "default" (only when no named profiles exist)
     #   4. None → echo mode (only when truly no profiles)
-    llm_section = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
     explicit = llm_section.get("default_profile_id")
     default_id: str | None = None
     if isinstance(explicit, str) and explicit in profiles:
@@ -863,7 +872,9 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     elif profiles:
         default_id = next(iter(profiles))
 
-    return LLMRegistry(profiles=profiles, default_id=default_id)
+    registry = LLMRegistry(profiles=profiles, default_id=default_id)
+    _LLM_REGISTRY_CACHE[_cache_key] = registry
+    return registry
 
 
 def _workspace_root_provider() -> Any:

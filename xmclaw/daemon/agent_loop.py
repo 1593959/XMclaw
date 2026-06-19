@@ -649,6 +649,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # 2026-06-04: optional PerformanceMonitor for turn-level metrics.
         # When None, track_operation calls become no-ops (zero overhead).
         self._perf_monitor = None
+        # P0-2: per-turn fallback chain tracking. Initialized here so
+        # instant mode (which bypasses _run_hop_loop) can also safely
+        # access the attribute without AttributeError.
+        self._fallback_tried_models: set[str] = set()
 
     def set_performance_monitor(self, monitor: Any) -> None:
         """Wire a PerformanceMonitor instance post-construction."""
@@ -1620,48 +1624,136 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             chunk_seq += 1
 
         t0 = _time.perf_counter()
-        try:
-            response = await asyncio.wait_for(
-                llm.complete_streaming(
-                    messages,
-                    tools=None,
-                    on_chunk=_emit_chunk,
-                    cancel=None,
-                ),
-                timeout=llm_timeout_s,
-            )
-        except asyncio.TimeoutError:
-            await publish(EventType.ANTI_REQ_VIOLATION, {
-                "message": "instant mode LLM call timed out",
-                "kind": "timeout",
-                "hop": 0,
-            })
-            await publish(EventType.LLM_RESPONSE, {
-                "hop": 0, "ok": False,
-                "error": "instant mode LLM call timed out",
-                "latency_ms": (_time.perf_counter() - t0) * 1000.0,
-            }, correlation_id=hop_corr)
-            return AgentTurnResult(
-                ok=False, text="",
-                hops=1, tool_calls=[], events=events,
-                error="instant_timeout",
-            )
-        except Exception as exc:  # noqa: BLE001
-            await publish(EventType.ANTI_REQ_VIOLATION, {
-                "message": f"instant mode LLM call failed: {exc}",
-                "kind": "llm_error",
-                "hop": 0,
-            })
-            await publish(EventType.LLM_RESPONSE, {
-                "hop": 0, "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
-                "latency_ms": (_time.perf_counter() - t0) * 1000.0,
-            }, correlation_id=hop_corr)
-            return AgentTurnResult(
-                ok=False, text="",
-                hops=1, tool_calls=[], events=events,
-                error=f"instant_llm_error: {exc}",
-            )
+
+        # B-227 retry loop (simplified for instant mode — no first-token-guard
+        # / heartbeat / speculation, just classify-and-retry with backoff).
+        _b227_attempts = 0
+        while True:
+            try:
+                response = await asyncio.wait_for(
+                    llm.complete_streaming(
+                        messages,
+                        tools=None,
+                        on_chunk=_emit_chunk,
+                        cancel=None,
+                    ),
+                    timeout=llm_timeout_s,
+                )
+                break  # success
+            except asyncio.TimeoutError:
+                # No retry on timeout — instant mode is meant to be fast.
+                await publish(EventType.ANTI_REQ_VIOLATION, {
+                    "message": "instant mode LLM call timed out",
+                    "kind": "timeout",
+                    "hop": 0,
+                })
+                await publish(EventType.LLM_RESPONSE, {
+                    "hop": 0, "ok": False,
+                    "error": "instant mode LLM call timed out",
+                    "latency_ms": (_time.perf_counter() - t0) * 1000.0,
+                }, correlation_id=hop_corr)
+                return AgentTurnResult(
+                    ok=False, text="",
+                    hops=1, tool_calls=[], events=events,
+                    error="instant_timeout",
+                )
+            except Exception as exc:  # noqa: BLE001
+                from xmclaw.utils.error_classifier import (
+                    classify_api_error, backoff_schedule,
+                    is_non_transient_reason,
+                )
+                ce = classify_api_error(
+                    exc,
+                    provider=getattr(llm, "__class__", type(llm)).__name__,
+                    model=getattr(llm, "model", "") or "",
+                )
+                # Fast-fail non-transient (auth, billing, model_not_found…).
+                if is_non_transient_reason(ce.reason):
+                    try:
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).warning(
+                            "agent_loop.instant_fast_fail reason=%s msg=%s",
+                            ce.reason.value, ce.message[:120],
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    # Return error result immediately — do not propagate.
+                    _err_msg = f"{type(exc).__name__}: {exc}"
+                    await publish(EventType.ANTI_REQ_VIOLATION, {
+                        "message": f"instant mode LLM call failed: {exc}",
+                        "kind": "llm_error",
+                        "hop": 0,
+                    })
+                    await publish(EventType.LLM_RESPONSE, {
+                        "hop": 0, "ok": False,
+                        "error": _err_msg,
+                        "latency_ms": (_time.perf_counter() - t0) * 1000.0,
+                    }, correlation_id=hop_corr)
+                    return AgentTurnResult(
+                        ok=False, text="",
+                        hops=1, tool_calls=[], events=events,
+                        error=f"instant_llm_error: {exc}",
+                    )
+                # Context-overflow gets 1 retry only.
+                _is_ctx_overflow = ce.reason.value in (
+                    "context_overflow", "payload_too_large", "long_context_tier",
+                )
+                if _is_ctx_overflow and _b227_attempts >= 1:
+                    # Context-overflow exhausted — return error result.
+                    _err_msg = f"{type(exc).__name__}: {exc}"
+                    await publish(EventType.ANTI_REQ_VIOLATION, {
+                        "message": f"instant mode LLM call failed: {exc}",
+                        "kind": "llm_error",
+                        "hop": 0,
+                    })
+                    await publish(EventType.LLM_RESPONSE, {
+                        "hop": 0, "ok": False,
+                        "error": _err_msg,
+                        "latency_ms": (_time.perf_counter() - t0) * 1000.0,
+                    }, correlation_id=hop_corr)
+                    return AgentTurnResult(
+                        ok=False, text="",
+                        hops=1, tool_calls=[], events=events,
+                        error=f"instant_llm_error: {exc}",
+                    )
+                schedule = backoff_schedule(ce.reason)
+                if ce.retryable and _b227_attempts < len(schedule):
+                    _b227_attempts += 1
+                    _delay = schedule[_b227_attempts - 1]
+                    try:
+                        from xmclaw.utils.log import get_logger
+                        get_logger(__name__).warning(
+                            "agent_loop.instant_retry attempt=%d/%d "
+                            "reason=%s delay=%.1fs",
+                            _b227_attempts, len(schedule),
+                            ce.reason.value, _delay,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    await asyncio.sleep(_delay)
+                    continue  # retry
+                # Non-retryable or exhausted — return error result.
+                _err_msg = f"{type(exc).__name__}: {exc}"
+                await publish(EventType.ANTI_REQ_VIOLATION, {
+                    "message": f"instant mode LLM call failed: {exc}",
+                    "kind": "llm_error",
+                    "hop": 0,
+                })
+                await publish(EventType.LLM_RESPONSE, {
+                    "hop": 0, "ok": False,
+                    "error": _err_msg,
+                    "latency_ms": (_time.perf_counter() - t0) * 1000.0,
+                }, correlation_id=hop_corr)
+                return AgentTurnResult(
+                    ok=False, text="",
+                    hops=1, tool_calls=[], events=events,
+                    error=f"instant_llm_error: {exc}",
+                )
+
+        # If we broke out via the 'raise' path (non-retryable / exhausted),
+        # the exception would have propagated and we'd never reach here.
+        # The following 'except Exception' block is the fallback for any
+        # exception that escaped the inner retry logic.
 
         _llm_ms = (_time.perf_counter() - t0) * 1000.0
         if _turn_metrics is not None:
