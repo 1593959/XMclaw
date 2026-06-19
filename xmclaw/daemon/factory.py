@@ -796,9 +796,6 @@ def build_llm_profiles_from_config(cfg: dict[str, Any]) -> list[LLMProfile]:
     return out
 
 
-_LLM_REGISTRY_CACHE: dict[str, LLMRegistry] = {}
-
-
 def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     """Build the per-session-pickable LLMRegistry.
 
@@ -820,13 +817,6 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     Empty registry (no LLM at all) returns a registry with no
     default — AgentLoop tolerates that and runs in echo mode.
     """
-    # P0-3: per-process cache so repeated calls (e.g. tests, hot-reload)
-    # don't re-instantiate HTTP clients and waste connections.
-    llm_section = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
-    _cache_key = json.dumps(llm_section, sort_keys=True, default=str)
-    if _cache_key in _LLM_REGISTRY_CACHE:
-        return _LLM_REGISTRY_CACHE[_cache_key]
-
     profiles: dict[str, LLMProfile] = {}
 
     named = build_llm_profiles_from_config(cfg)
@@ -865,6 +855,7 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     #   2. first loaded named profile (insertion order)
     #   3. legacy "default" (only when no named profiles exist)
     #   4. None → echo mode (only when truly no profiles)
+    llm_section = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
     explicit = llm_section.get("default_profile_id")
     default_id: str | None = None
     if isinstance(explicit, str) and explicit in profiles:
@@ -872,9 +863,7 @@ def build_llm_registry_from_config(cfg: dict[str, Any]) -> LLMRegistry:
     elif profiles:
         default_id = next(iter(profiles))
 
-    registry = LLMRegistry(profiles=profiles, default_id=default_id)
-    _LLM_REGISTRY_CACHE[_cache_key] = registry
-    return registry
+    return LLMRegistry(profiles=profiles, default_id=default_id)
 
 
 def _workspace_root_provider() -> Any:
@@ -2108,6 +2097,7 @@ def build_agent_from_config(
     cognitive_state: Any | None = None,
     auditor: Any | None = None,
     perception_bus: Any | None = None,
+    llm_registry: LLMRegistry | None = None,
 ) -> AgentLoop | None:
     """Assemble an AgentLoop from config. Returns None if no LLM is set.
 
@@ -2169,7 +2159,10 @@ def build_agent_from_config(
             session_store = None
     else:
         _build_status["session_store"] = "ok"
-    registry = build_llm_registry_from_config(cfg)
+    if llm_registry is not None:
+        registry = llm_registry
+    else:
+        registry = build_llm_registry_from_config(cfg)
     default_profile = registry.default()
     llm = default_profile.llm if default_profile is not None else None
     _build_status["llm"] = "ok" if llm is not None else "skipped"

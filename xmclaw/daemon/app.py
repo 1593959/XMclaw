@@ -693,9 +693,15 @@ def create_app(
     if agent is None and config is not None:
         # Local import avoids a circular dep (factory imports from this
         # module's sibling packages).
-        from xmclaw.daemon.factory import build_agent_from_config
+        from xmclaw.daemon.factory import build_agent_from_config, build_llm_registry_from_config
+        # Build the registry once at daemon boot time and reuse it for
+        # the lifetime of the process.  Prevents repeated HTTP client
+        # instantiation and keeps the fallback chain state stable.
+        if app.state.llm_registry is None:
+            app.state.llm_registry = build_llm_registry_from_config(config)
         agent = build_agent_from_config(
             config, bus,
+            llm_registry=app.state.llm_registry,
             approval_service=app.state.approval_service,
             auditor=getattr(app.state, "security_auditor", None),
         )
