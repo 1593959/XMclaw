@@ -39,7 +39,7 @@ from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
-from xmclaw.providers.tool.mcp_bridge import MCPBridge
+from xmclaw.providers.tool.mcp_bridge import MCPBridge, MCPError
 from xmclaw.providers.tool.mcp_http_bridge import MCPHttpBridge
 
 _log = logging.getLogger(__name__)

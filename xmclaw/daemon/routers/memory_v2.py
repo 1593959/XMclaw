@@ -41,9 +41,10 @@ boundary" rule in CLAUDE.md).
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from starlette.responses import JSONResponse
 
 router = APIRouter(prefix="/api/v2/memory/v2", tags=["memory-v2"])
@@ -88,6 +89,15 @@ async def status(request: Request) -> dict[str, Any]:
     svc = _get_service(request)
     if svc is None:
         return {"enabled": False, "reason": "service not constructed"}
+    # 2026-06-19: surface corrupted state in status probe too.
+    _vec = getattr(svc, "_vec", None)
+    _graph = getattr(svc, "_graph", None)
+    if getattr(_vec, "_corrupted", False) or getattr(_graph, "_corrupted", False):
+        return {
+            "enabled": True,
+            "healthy": False,
+            "error": "LanceDB backend corrupted (table initialization failed)",
+        }
     try:
         count = await svc.count()
     except Exception as exc:  # noqa: BLE001
@@ -178,6 +188,17 @@ async def overview(request: Request) -> Any:
     svc = _get_service(request)
     if svc is None:
         return _v2_disabled_response()
+    # 2026-06-19: if backend is corrupted (e.g. table init failed), surface
+    # healthy=False immediately rather than letting recall() short-circuit
+    # and return empty-looking healthy=True.
+    _vec = getattr(svc, "_vec", None)
+    _graph = getattr(svc, "_graph", None)
+    if getattr(_vec, "_corrupted", False) or getattr(_graph, "_corrupted", False):
+        return {
+            "enabled": True,
+            "healthy": False,
+            "error": "LanceDB backend corrupted (table initialization failed)",
+        }
     try:
         hits = await svc.recall(
             None,

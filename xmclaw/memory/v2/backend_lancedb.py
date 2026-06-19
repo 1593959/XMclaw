@@ -389,6 +389,13 @@ class LanceDBVectorBackend:
         except RuntimeError as exc:
             self._handle_lance_error(exc, "ensure_ready")
             if not self._corrupted:
+                if self._table is None:
+                    self._corrupted = True
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).error(
+                        "lancedb.ensure_ready_failed path=%s — table init failed, marking corrupted",
+                        self._db_path,
+                    )
                 return  # transient — caller may retry
             from xmclaw.utils.log import get_logger
             get_logger(__name__).error(
@@ -829,6 +836,13 @@ class LanceDBGraphBackend:
         except RuntimeError as exc:
             self._handle_lance_error(exc, "graph_ensure_ready")
             if not self._corrupted:
+                if self._table is None:
+                    self._corrupted = True
+                    from xmclaw.utils.log import get_logger
+                    get_logger(__name__).error(
+                        "lancedb.graph_ensure_ready_failed path=%s — table init failed, marking corrupted",
+                        self._db_path,
+                    )
                 return  # transient — caller may retry
             from xmclaw.utils.log import get_logger
             get_logger(__name__).error(

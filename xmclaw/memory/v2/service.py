@@ -2292,12 +2292,21 @@ class MemoryService:
         # decay, confidence weighting, and graph centrality.
         if query is not None:
             try:
-                from xmclaw.memory.v2.service import _compute_centrality, _cosine_distance
                 _now = time.time()
+                # Reuse the vector already computed for the ANN search
+                # (str query → embed_query above; list query → itself).
+                # When keyword_only / no embedder, search_query is a str
+                # and qvec stays None, so relevance degrades to 0 and the
+                # ranking falls back to recency + importance + centrality.
+                qvec = search_query if isinstance(search_query, list) else None
+                qnorm = sum(v * v for v in qvec) ** 0.5 if qvec else 0.0
                 for h in out:
                     h._score = _three_factor_score(
-                        h.fact, query_embedding if isinstance(query, list) else None,
-                        _now,
+                        h.fact,
+                        query_vec=qvec,
+                        query_norm=qnorm,
+                        now=_now,
+                        centrality=self._centrality_scores.get(h.fact.id, 0.0),
                     )
                 out.sort(key=lambda h: getattr(h, "_score", 0.0), reverse=True)
             except Exception:

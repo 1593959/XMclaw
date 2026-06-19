@@ -152,6 +152,7 @@ def _iter_workspace_files(roots: list[Path]):
                 yield resolved
 
 if TYPE_CHECKING:
+    from xmclaw.providers.memory.base import MemoryProvider
     from xmclaw.providers.memory.embedding import EmbeddingProvider
     from xmclaw.providers.memory.sqlite_vec import SqliteVecMemory
 

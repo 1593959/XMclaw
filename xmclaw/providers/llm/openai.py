@@ -39,6 +39,7 @@ import asyncio
 import base64
 import hashlib
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -170,7 +171,7 @@ class OpenAILLM(LLMProvider):
     # Message-list conversion cache: key includes the message ids and the
     # keyword-only flags that affect output shape, so different parameter
     # combinations are isolated.
-    _messages_cache: dict[tuple, list[dict[str, Any]]] = {}
+    _messages_cache: "OrderedDict[tuple, list[dict[str, Any]]]" = OrderedDict()
     _MAX_MESSAGES_CACHE = 100
 
     def __init__(

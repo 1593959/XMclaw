@@ -21,6 +21,7 @@ import asyncio
 import base64
 import hashlib
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -64,7 +65,7 @@ class AnthropicLLM(LLMProvider):
     # value = (system, converted).  Avoids re-running _repair_tool_pairing
     # and _mark_history_cache_breakpoint on every hop when the message list
     # hasn't changed.
-    _messages_cache: dict[tuple[int, ...], tuple[Any, list[dict[str, Any]]]] = {}
+    _messages_cache: "OrderedDict[tuple[int, ...], tuple[Any, list[dict[str, Any]]]]" = OrderedDict()
     _MAX_MESSAGES_CACHE = 100
 
     def __init__(

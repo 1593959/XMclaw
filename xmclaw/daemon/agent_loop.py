@@ -41,6 +41,7 @@ import asyncio
 import re
 import time
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -1399,6 +1400,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     channel_name=channel_name,
                     _turn_metrics=_turn_metrics,
                     ultrathink=ultrathink,
+                    forced_mode=forced_mode,
                     output_schema=output_schema,
                 )
                 return _result
@@ -1707,6 +1709,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         channel_name: str | None = None,
         _turn_metrics: "dict[str, Any] | None" = None,
         ultrathink: bool = False,
+        forced_mode: str | None = None,
         output_schema: dict[str, Any] | None = None,
     ) -> AgentTurnResult:
         # B-332: per-call tool-name allowlist. When set, the rest of
