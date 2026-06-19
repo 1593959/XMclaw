@@ -1112,6 +1112,73 @@ _BROWSER_DOWNLOAD_NEXT_SPEC = ToolSpec(
 
 # ── module ────────────────────────────────────────────────────────
 
+
+def _resolve_bundled_chromium_executable(playwright: Any) -> str | None:
+    """Return an ``executable_path`` for a Chromium build that actually
+    exists on disk, or ``None`` to use Playwright's default.
+
+    Why this exists (2026-06-19): the computer-use/browser refactor
+    (commit 4665188d) dropped the "detect & reuse an already-installed
+    Chromium" fallback, so the bundled-Chromium launch paths rigidly
+    demanded the exact build the installed Playwright wheel pins (e.g.
+    ``chromium-1223``). On a machine that has ``chromium-1228`` /
+    ``chromium-1208`` installed but not 1223 — common after a Playwright
+    minor bump or a partial ``playwright install`` — every headless /
+    visible launch died with *"Executable doesn't exist at
+    …chromium-1223…"*. The user reasonably called this broken: a usable
+    Chromium was sitting right there.
+
+    Strategy:
+      1. Ask Playwright for the build it WANTS (``chromium.executable_path``).
+         If that file exists, return ``None`` — nothing to override.
+      2. Otherwise scan the ms-playwright install root for sibling
+         ``chromium-<rev>`` builds that contain the same relative
+         executable, and return the newest (highest revision) one.
+      3. If none exist, return ``None`` and let Playwright raise its
+         own (now-accurate) "run playwright install" error.
+    """
+    try:
+        expected = playwright.chromium.executable_path
+    except Exception:  # noqa: BLE001 — never let detection break launch
+        return None
+    if not expected:
+        return None
+    exe = Path(expected)
+    if exe.exists():
+        return None  # pinned build is present — use Playwright's default
+    parts = exe.parts
+    idx = next(
+        (i for i, seg in enumerate(parts) if seg.startswith("chromium-")),
+        None,
+    )
+    if idx is None:
+        return None
+    base = Path(*parts[:idx])
+    suffix = Path(*parts[idx + 1:])  # e.g. chrome-win64/chrome.exe
+    candidates: list[tuple[int, Path]] = []
+    try:
+        for d in base.glob("chromium-*"):
+            cand = d / suffix
+            if cand.exists():
+                try:
+                    rev = int(d.name.split("-", 1)[1])
+                except (IndexError, ValueError):
+                    rev = 0
+                candidates.append((rev, cand))
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    chosen = str(candidates[0][1])
+    from xmclaw.utils.log import get_logger
+    get_logger(__name__).info(
+        "browser: pinned Chromium %s missing — using installed build %s",
+        exe.parent.parent.name, candidates[0][1].parent.parent.name,
+    )
+    return chosen
+
+
 class BrowserTools(ToolProvider):
     """Per-session Playwright browser wrapper.
 
@@ -1608,10 +1675,16 @@ class BrowserTools(ToolProvider):
                     "--start-maximized",
                     "--new-window",
                 ])
-            browser = await self._playwright.chromium.launch(
-                headless=headless,
-                args=launch_args,
-            )
+            _launch_kwargs: dict[str, Any] = {
+                "headless": headless,
+                "args": launch_args,
+            }
+            # Reuse an installed Chromium build when the pinned one is
+            # absent (see _resolve_bundled_chromium_executable).
+            _exe = _resolve_bundled_chromium_executable(self._playwright)
+            if _exe:
+                _launch_kwargs["executable_path"] = _exe
+            browser = await self._playwright.chromium.launch(**_launch_kwargs)
             setattr(self, attr, browser)
 
     async def _ensure_persistent_context(
@@ -1720,6 +1793,13 @@ class BrowserTools(ToolProvider):
                 launch_kwargs["no_viewport"] = True
             if channel:
                 launch_kwargs["channel"] = channel
+            else:
+                # Bundled-Chromium path: fall back to an installed build
+                # when the pinned one is missing (parity with the simple
+                # launch() path above).
+                _exe = _resolve_bundled_chromium_executable(self._playwright)
+                if _exe:
+                    launch_kwargs["executable_path"] = _exe
 
             ctx = await self._playwright.chromium.launch_persistent_context(
                 **launch_kwargs,

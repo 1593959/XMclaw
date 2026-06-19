@@ -503,9 +503,20 @@ class FeishuAdapter(ChannelAdapter):
         # B-2026-06-11: setuptools ≥69 removed pkg_resources.declare_namespace.
         # lark_oapi's top-level __init__.py calls it unconditionally.
         # Monkey-patch a no-op before the import so it doesn't crash.
-        import pkg_resources
-        if not hasattr(pkg_resources, 'declare_namespace'):
-            pkg_resources.declare_namespace = lambda _pn: None  # noqa: ARG005
+        # 2026-06-19: guard import itself — ``pkg_resources`` is not guaranteed
+        # to exist in uv/venv minimal installs (setuptools not bundled).
+        try:
+            import pkg_resources
+            if not hasattr(pkg_resources, 'declare_namespace'):
+                pkg_resources.declare_namespace = lambda _pn: None  # noqa: ARG005
+        except ModuleNotFoundError:
+            # pkg_resources missing entirely — stub the module so
+            # lark_oapi's unconditional call doesn't AttributeError.
+            import sys
+            import types
+            _stub = types.ModuleType("pkg_resources")
+            _stub.declare_namespace = lambda _pn: None  # noqa: ARG005
+            sys.modules["pkg_resources"] = _stub
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
         return lark, P2ImMessageReceiveV1

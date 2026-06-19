@@ -78,26 +78,49 @@ def check_llm_configured(cfg: dict[str, Any]) -> CheckResult:
         return CheckResult(
             name="llm", ok=False,
             detail="no 'llm' section in config",
-            advisory="add an 'llm' section with anthropic or openai credentials",
+            advisory=(
+                "add an 'llm' section with anthropic / openai / openrouter "
+                "credentials, or a named profile under llm.profiles"
+            ),
         )
-    for provider in ("anthropic", "openai"):
-        p = llm_section.get(provider)
-        if not isinstance(p, dict):
-            continue
-        key = p.get("api_key")
-        if not key:
-            continue
-        model = p.get("default_model") or p.get("model") or "(default)"
-        return CheckResult(
-            name="llm", ok=True,
-            detail=f"{provider} configured (model={model})",
-        )
+    # Mirror the daemon's REAL resolution path instead of re-implementing a
+    # narrower one. Pre-fix this check only looked at the legacy
+    # ``llm.anthropic`` / ``llm.openai`` blocks and so falsely reported
+    # "no provider has api_key set" whenever the user configured a model via
+    # the Phase 10 ``llm.profiles`` array (or via ``openrouter``) — the
+    # daemon would boot with a working LLM while doctor cried wolf. Building
+    # the registry here means doctor agrees with what the daemon actually
+    # constructs.
+    try:
+        from xmclaw.daemon.factory import build_llm_registry_from_config
+
+        reg = build_llm_registry_from_config(cfg)
+        profiles = reg.profiles
+        default_id = reg.default_id
+    except Exception:  # noqa: BLE001 — never let a config quirk crash doctor
+        profiles, default_id = {}, None
+
+    if profiles:
+        prof = profiles.get(default_id) or next(iter(profiles.values()))
+        named = [pid for pid in profiles if pid != "default"]
+        if named:
+            label = prof.label or prof.id
+            detail = (
+                f"{len(profiles)} profile(s) configured; "
+                f"default={label} ({prof.provider_name}/{prof.model})"
+            )
+        else:
+            model = prof.model or "(default)"
+            detail = f"{prof.provider_name} configured (model={model})"
+        return CheckResult(name="llm", ok=True, detail=detail)
+
     return CheckResult(
         name="llm", ok=False,
         detail="no provider has api_key set",
         advisory=(
-            "add api_key under llm.anthropic or llm.openai. daemon will "
-            "fall back to echo mode without one."
+            "add api_key under llm.anthropic / llm.openai / llm.openrouter, "
+            "or a profile under llm.profiles. daemon will fall back to echo "
+            "mode without one."
         ),
     )
 

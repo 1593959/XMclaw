@@ -2031,29 +2031,58 @@ class SecretsCheck(DoctorCheck):
 # config section — `xmclaw doctor` will nudge users to clean up but
 # a stale whitelist gives false positives, so the check is INFO-level
 # (ok=True with advisory) rather than a hard fail.
-_CONFIG_KNOWN_CHILD_KEYS: dict[str, set[str] | None] = {
-    "llm": {
-        "default_provider", "openai", "anthropic", "profiles",
-        "compressor",
-    },
-    "evolution": {
-        "enabled", "auto_apply", "interval_minutes",
-        "daily_review_hour", "vfm_threshold", "max_genes_per_day",
-        "auto_rollback", "dream", "memory",
-        "pattern_thresholds", "tool_specific_thresholds",
-    },
-    "memory": {
-        "enabled", "db_path", "embedding_dim", "ttl",
-        "pinned_tags", "retention",
-    },
-    "tools": {"allowed_dirs", "enable_bash", "enable_web"},
-    "runtime": {"backend"},
-    "gateway": {"host", "port"},
-    "security": {"prompt_injection", "guardians"},
-    "backup": {"auto_daily", "interval_s", "keep", "name_prefix"},
-    "mcp_servers": None,
-    "integrations": None,
+# Sections whose immediate children are user-named / vendor-specific, so we
+# must NOT recurse and flag them (anything goes inside). ``None`` in the map
+# below means "permissive".
+_CONFIG_PERMISSIVE_SECTIONS: frozenset[str] = frozenset(
+    {"mcp_servers", "integrations"}
+)
+
+# Optional immediate-child keys that production code reads but that aren't in
+# the default template (so deriving purely from the template would
+# false-positive on real configs that set them).
+_CONFIG_EXTRA_CHILD_KEYS: dict[str, set[str]] = {
+    "llm": {"default_provider", "default_profile_id", "compressor"},
+    "evolution": {"pattern_thresholds", "tool_specific_thresholds"},
 }
+
+
+def _build_known_child_keys() -> dict[str, set[str] | None]:
+    """Derive the dead-field whitelist from the canonical config template.
+
+    B-78 originally hard-coded this map, which then rotted: B-425 expanded
+    ``default_config_template()`` with whole new sections (``skills``,
+    ``cognition``, ``voice``, ``channels``, ``agent``, ``hooks`` …) and
+    ``llm.openrouter`` / ``tools.computer_use`` / ``tools.media`` / etc., but
+    nobody updated this table — so ``xmclaw doctor`` told users their
+    perfectly valid, daemon-consumed config keys were "dead fields, remove
+    them". Deriving the whitelist from the template (the single source of
+    truth) means it can never drift behind the template again.
+    """
+    from xmclaw.cli.config_template import default_config_template
+
+    known: dict[str, set[str] | None] = {}
+    for top, val in default_config_template().items():
+        if top in _CONFIG_PERMISSIVE_SECTIONS:
+            known[top] = None
+        elif isinstance(val, dict):
+            known[top] = set(val.keys())
+        else:
+            # Scalar / list top-level section (e.g. ``hooks``): valid as a
+            # top key, but there are no fixed children to whitelist.
+            known[top] = None
+    for permissive in _CONFIG_PERMISSIVE_SECTIONS:
+        known[permissive] = None
+    for top, extras in _CONFIG_EXTRA_CHILD_KEYS.items():
+        base = known.get(top)
+        if isinstance(base, set):
+            known[top] = base | extras
+        else:
+            known[top] = set(extras)
+    return known
+
+
+_CONFIG_KNOWN_CHILD_KEYS: dict[str, set[str] | None] = _build_known_child_keys()
 
 # Top-level sections that are entirely valid even though they're not in
 # the schema map (e.g. someone wires a custom subsystem; we don't want

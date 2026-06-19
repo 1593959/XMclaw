@@ -44,13 +44,12 @@ def test_default_config_includes_core_builtin_wiring() -> None:
 
 
 def test_default_config_includes_browser_when_playwright_present() -> None:
-    """playwright 可用时默认 config 应注册浏览器族(browser_open 等)。"""
+    """playwright 可用时默认 config 应注册浏览器族(browser 统一工具)。"""
     if not _HAS_PLAYWRIGHT:
         import pytest
 
         pytest.skip("playwright 未安装 — 浏览器族按设计跳过，非回归")
     names = set(_names({"llm": {}}))
-    assert "browser_open" in names, (
-        "playwright 已装但默认 config 无 browser_open —— 早退分支回归了"
+    assert "browser" in names, (
+        "playwright 已装但默认 config 无 browser —— 早退分支回归了"
     )
-    assert len([n for n in names if n.startswith("browser_")]) >= 10

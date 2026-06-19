@@ -377,6 +377,7 @@ class LanceDBVectorBackend:
                     # message because of this. add_columns() is
                     # idempotent through the missing-check below.
                     await self._maybe_add_missing_columns()
+                    await self._check_embedding_dim()
                 else:
                     self._table = await _with_timeout_and_retry(
                         self._db.create_table(
@@ -478,6 +479,54 @@ class LanceDBVectorBackend:
                         f"migration failed: {type(exc).__name__}: {exc}"
                     )
 
+    async def _check_embedding_dim(self) -> None:
+        """Detect drift between the configured embedding dim and the
+        on-disk table's vector width.
+
+        Real incident (2026-06-19): a user switched their embedder from a
+        1536-D model (OpenAI text-embedding-3-small) to qwen3-embedding
+        (1024-D) by editing config, but the ``facts`` table on disk was
+        created at 1536. The dim is baked into the LanceDB fixed-size-list
+        column, so — unlike a missing scalar column — it CANNOT be patched
+        by ``add_columns``. Every write of an existing 1536-D row
+        (forget / correct / restore) AND every new 1024-D insert failed
+        with a raw ``ValueError: embedding dim mismatch`` → HTTP 500;
+        daemon.log showed 55 of them. We can't reconcile the two dims here
+        (re-embedding needs the embedder, which lives in the service
+        layer), so we surface a clear, actionable ``schema_error`` and let
+        ``upsert`` refuse fast with guidance instead of 500-ing per call.
+        """
+        assert self._table is not None
+        try:
+            schema = await _with_timeout_and_retry(
+                self._table.schema(),
+                timeout_s=10,
+                context="schema_dim",
+                corrupted_flag=self,
+            )
+        except Exception:  # noqa: BLE001 — never let the probe break boot
+            return
+        on_disk_dim: int | None = None
+        for f in schema:
+            if f.name == "embedding":
+                # pyarrow FixedSizeListType exposes the width as list_size.
+                on_disk_dim = getattr(f.type, "list_size", None)
+                break
+        if (
+            isinstance(on_disk_dim, int)
+            and on_disk_dim > 0
+            and on_disk_dim != self._dim
+        ):
+            self._schema_error = (
+                f"embedding dim drift: table {self._table_name!r} stores "
+                f"{on_disk_dim}-D vectors but the configured embedder "
+                f"produces {self._dim}-D. The width is baked into the "
+                f"LanceDB column and cannot be auto-migrated. Fix: re-embed "
+                f"all facts at {self._dim}-D and rebuild the table "
+                f"(`xmclaw memory reembed`), or revert the embedding config "
+                f"to the {on_disk_dim}-D model."
+            )
+
     @property
     def schema_error(self) -> str | None:
         """Epic #27 sweep #7: read-only check for "is the on-disk
@@ -502,13 +551,15 @@ class LanceDBVectorBackend:
         # machine, each one a silently-dropped fact. Now: one clear
         # error per call, no cryptic stack trace bubbling up.
         if self._schema_error is not None:
+            # ``schema_error`` now covers two distinct degradations, each
+            # carrying its own actionable fix text: a missing required
+            # column (fixed by a daemon restart re-running the migration)
+            # and an embedding dim drift (fixed by a re-embed + rebuild).
+            # So we just surface the specific message rather than appending
+            # one hardcoded ADD COLUMN hint that's wrong half the time.
             raise LanceDBSchemaError(
                 f"refusing upsert: on-disk schema is degraded. "
-                f"{self._schema_error} "
-                f"Fix: restart daemon (re-runs schema migration), "
-                f"or manually run ``ALTER TABLE {self._table_name} "
-                f"ADD COLUMN bucket STRING DEFAULT ''`` via LanceDB "
-                f"CLI then restart."
+                f"{self._schema_error}"
             )
         rows = [_fact_to_record(f, self._dim) for f in records]
         # merge_insert("id") — the LanceDB-native upsert. Replaces

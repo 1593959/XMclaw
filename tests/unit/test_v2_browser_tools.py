@@ -35,30 +35,7 @@ def _call(name: str, args: dict, session_id: str | None = None) -> ToolCall:
 
 def test_list_tools_complete_roster_even_without_playwright() -> None:
     names = {s.name for s in BrowserTools().list_tools()}
-    assert names == {
-        "browser_open", "browser_click", "browser_press",
-        "browser_fill", "browser_hover", "browser_scroll",
-        "browser_select_option", "browser_upload", "browser_wait_for",
-        "browser_back", "browser_forward", "browser_reload",
-        "browser_tabs", "browser_tab_switch", "browser_tab_close",
-        "browser_download_next",
-        "browser_save_state", "browser_list_states",
-        # Wave-27 fix-LAT8: external cookie import for skipping
-        # third-party logins.
-        "browser_import_cookies",
-        "browser_get_console",
-        "browser_screenshot", "browser_snapshot",
-        "browser_eval", "browser_close",
-        # 2026-05-28: third browser path — user's REAL Chrome with
-        # full agent control (CDP attach / launch real profile /
-        # side-profile fallback).
-        "browser_use_my_browser",
-        # 2026-05-28 P0.1 + P0.2: [N] ref system + dialog supervisor.
-        "browser_click_ref", "browser_type_ref",
-        "browser_dialog",
-        # 2026-05-28 P2.4 + P3.5: dialog pre-arm + network log.
-        "browser_dialog_arm", "browser_network_log",
-    }
+    assert names == {"browser"}
 
 
 # ── missing-playwright path is a structured refusal, not a crash ────────
@@ -445,7 +422,9 @@ async def test_click_and_fill_operate_on_current_page(
         session_id="s1",
     ))
     assert fill.ok is True
-    assert "5 chars" in fill.content
+    # 2026-06-14: _append_screenshot wraps content in a dict with text + screenshot keys.
+    _fill_text = fill.content if isinstance(fill.content, str) else fill.content.get("text", "")
+    assert "5 chars" in _fill_text
     # Verify the fake page actually observed the calls.
     page = patched_browser._pages["s1"]
     assert page.last_click == "button.submit"
