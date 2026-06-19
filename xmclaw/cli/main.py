@@ -1468,6 +1468,129 @@ def memory_setup(
     typer.echo("        next: restart the daemon — 'xmclaw restart'")
 
 
+@memory_app.command("reembed")
+def memory_reembed(
+    path: str = typer.Option(
+        "daemon/config.json", "--path",
+        help="Config file to read the embedding settings from.",
+    ),
+    no_backup: bool = typer.Option(
+        False, "--no-backup",
+        help="Skip backing up the facts table before rebuilding (NOT advised).",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt.",
+    ),
+) -> None:
+    """Re-embed all V2 memory facts and rebuild the LanceDB table at the
+    current embedder's dimension.
+
+    Fixes the *"embedding dim mismatch"* failure that bricks every memory
+    write (forget / correct / new facts) after the embedding model is
+    changed in config — the stored vector width is baked into the LanceDB
+    column and can't be patched in place.
+
+    Safety:
+      * Refuses to run while the daemon is up (LanceDB is single-writer).
+        Stop it first with ``xmclaw stop``.
+      * Backs up ``~/.xmclaw/v2/facts`` to ``~/.xmclaw/backups`` first
+        (unless ``--no-backup``); restore by copying it back.
+    """
+    import asyncio as _asyncio
+    import shutil as _shutil
+    import time as _time
+    from pathlib import Path as _Path
+
+    from xmclaw.daemon.factory import load_config
+    from xmclaw.daemon.lifecycle import _process_alive, default_pid_path
+    from xmclaw.utils.paths import data_dir as _data_dir
+
+    # 1) Refuse if the daemon is running — concurrent writers corrupt LanceDB.
+    pid_path = default_pid_path()
+    if pid_path.exists():
+        try:
+            pid = int((pid_path.read_text(encoding="utf-8").strip() or "0"))
+        except (OSError, ValueError):
+            pid = 0
+        if pid and _process_alive(pid):
+            typer.echo(
+                f"  [x]  daemon is running (pid={pid}). Stop it first: "
+                "'xmclaw stop' — LanceDB allows only one writer.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+    facts_dir = _data_dir() / "v2" / "facts"
+    if not facts_dir.exists():
+        typer.echo(f"  [!]  no facts table at {facts_dir} — nothing to do.")
+        raise typer.Exit(code=0)
+
+    try:
+        cfg = load_config(_Path(path))
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"  [x]  could not load config {path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not yes:
+        typer.echo(
+            "This re-embeds every memory fact and REBUILDS the table "
+            f"at {facts_dir}.\n"
+            "The daemon must stay stopped during the run."
+        )
+        if not typer.confirm("  proceed?", default=True):
+            raise typer.Exit(code=1)
+
+    # 2) Backup.
+    if not no_backup:
+        backup_root = _data_dir() / "backups"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        dest = backup_root / f"facts-{_time.strftime('%Y%m%d-%H%M%S')}"
+        _shutil.copytree(facts_dir, dest)
+        typer.echo(f"  [ok]  backed up facts table → {dest}")
+
+    # 3) Build the V2 service exactly like the daemon lifespan does, then
+    #    re-embed + rebuild.
+    from xmclaw.memory.v2 import (
+        MemoryService,
+        build_embedding_service,
+        get_lancedb_graph_backend,
+        get_lancedb_vector_backend,
+    )
+
+    embedder = build_embedding_service(cfg=cfg)
+    if embedder is None:
+        typer.echo(
+            "  [x]  no embedder resolved from config "
+            "(evolution.memory.embedding). Cannot re-embed.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    dim = embedder.dim
+    vec_backend = get_lancedb_vector_backend(str(facts_dir), embedding_dim=dim)
+    graph_backend = get_lancedb_graph_backend(str(facts_dir))
+    service = MemoryService(
+        vector_backend=vec_backend,
+        graph_backend=graph_backend,
+        embedder=embedder,
+    )
+
+    try:
+        summary = _asyncio.run(service.reembed_rebuild())
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"  [x]  re-embed failed: {type(exc).__name__}: {exc}", err=True)
+        if not no_backup:
+            typer.echo("        your backup is intact — restore it if needed.")
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        f"  [ok]  rebuilt facts table at {summary['dim']}-D: "
+        f"{summary['written']}/{summary['total']} facts written "
+        f"({summary['reembedded']} re-embedded, {summary['empty']} empty)"
+    )
+    typer.echo("        next: start the daemon — 'xmclaw start'")
+
+
 # ── module entry-point ────────────────────────────────────────────────
 #
 # B-343: restored after B-325. The B-325 monolith split (extracted

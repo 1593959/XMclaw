@@ -1403,6 +1403,99 @@ class MemoryIndexerCheck(DoctorCheck):
             )
 
 
+class MemoryV2TableDimCheck(DoctorCheck):
+    """Verify the V2 LanceDB ``facts`` table's vector width matches the
+    configured embedder.
+
+    The blind spot this closes (2026-06-19): ``MemoryDbCheck`` /
+    ``MemoryProviderConfigCheck`` only inspect the *legacy* sqlite_vec
+    ``memory.db`` (the keyword/external-provider path). But the user-facing
+    memory (recall, the UI 记忆 page, forget/correct) runs on the V2
+    ``MemoryService`` backed by LanceDB at ``~/.xmclaw/v2/facts``. When the
+    embedder config changes (e.g. OpenAI 1536-D → qwen3 1024-D) without a
+    table rebuild, the on-disk vector column keeps the old width and EVERY
+    memory write fails with *"embedding dim mismatch"* (HTTP 500) — yet
+    doctor reported "memory healthy" because it was checking the wrong
+    backend entirely. This check looks at the table users actually use.
+
+    INFO/FAIL only — never raises. Skips cleanly when lancedb isn't
+    installed or the table doesn't exist yet (fresh install).
+    """
+
+    id = "memory_v2_table_dim"
+    name = "memory_v2_table_dim"
+
+    def run(self, ctx: DoctorContext) -> CheckResult:
+        from xmclaw.utils.paths import data_dir
+        facts_dir = data_dir() / "v2" / "facts"
+        if not facts_dir.exists():
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="no V2 facts table yet (fresh install)",
+            )
+        try:
+            import lancedb  # noqa: F401
+        except ImportError:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail="lancedb not installed (V2 memory disabled) — skipped",
+            )
+        try:
+            db = lancedb.connect(str(facts_dir))
+            tnames = db.table_names()
+            if "facts" not in tnames:
+                return CheckResult(
+                    name=self.name, ok=True,
+                    detail="facts table not created yet",
+                )
+            tbl = db.open_table("facts")
+            on_disk_dim: int | None = None
+            for f in tbl.schema:
+                if f.name == "embedding":
+                    on_disk_dim = getattr(f.type, "list_size", None)
+                    break
+            rows = tbl.count_rows()
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=f"could not open V2 facts table: {type(exc).__name__}: {exc}",
+                advisory="the LanceDB table may be corrupted; restore from ~/.xmclaw/backups",
+            )
+        if not isinstance(on_disk_dim, int) or on_disk_dim <= 0:
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"V2 facts table present ({rows} rows; dim unknown)",
+            )
+        # Configured embedder dim — read from config (no network probe).
+        cfg = ctx.cfg or {}
+        sec = (((cfg.get("evolution") or {}).get("memory") or {})
+               .get("embedding") or {})
+        cfg_dim = sec.get("dimensions")
+        if not isinstance(cfg_dim, int) or cfg_dim <= 0:
+            # No explicit dim configured — can't compare; just report.
+            return CheckResult(
+                name=self.name, ok=True,
+                detail=f"V2 facts table: {rows} rows @ {on_disk_dim}-D",
+            )
+        if on_disk_dim != cfg_dim:
+            return CheckResult(
+                name=self.name, ok=False,
+                detail=(
+                    f"embedding dim drift: V2 facts table is {on_disk_dim}-D "
+                    f"but config embedder is {cfg_dim}-D ({rows} rows)"
+                ),
+                advisory=(
+                    "every memory write (forget/correct/new fact) will 500 "
+                    "until fixed. Run 'xmclaw stop && xmclaw memory reembed' "
+                    "to re-embed + rebuild the table at the configured dim."
+                ),
+            )
+        return CheckResult(
+            name=self.name, ok=True,
+            detail=f"V2 facts table healthy: {rows} rows @ {on_disk_dim}-D",
+        )
+
+
 class PersonaProfileCheck(DoctorCheck):
     """B-56: surface the health of the active persona profile.
 
@@ -2558,6 +2651,7 @@ def build_default_registry() -> DoctorRegistry:
     reg.register(MemoryProviderCheck())
     reg.register(MemoryProviderConfigCheck())
     reg.register(MemoryIndexerCheck())
+    reg.register(MemoryV2TableDimCheck())
     reg.register(PersonaProfileCheck())
     reg.register(DreamCronCheck())
     reg.register(SkillRuntimeCheck())

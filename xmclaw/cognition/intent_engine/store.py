@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,13 +39,29 @@ class IntentStore:
         with self._connect() as conn:
             self._ensure_schema(conn)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # Per-operation connection that actually CLOSES on exit. The
+        # previous ``return conn`` + ``with self._connect() as conn:`` only
+        # used sqlite3's transaction context manager, which commits but
+        # NEVER closes — so every call leaked a connection until GC. On
+        # Windows that lingering handle blocked temp-dir cleanup
+        # (``PermissionError: WinError 32`` in tests) and contradicted this
+        # module's own docstring ("opens its own connection and closes it
+        # on exit"). Commit on success / rollback on error, then close.
         conn = sqlite3.connect(str(self._db_path), timeout=5.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=5000")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         cur = conn.cursor()

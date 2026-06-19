@@ -1726,6 +1726,69 @@ class MemoryService:
         })
         return True
 
+    async def reembed_rebuild(self) -> dict[str, Any]:
+        """Re-embed every stored fact with the CURRENT embedder and rebuild
+        the vector table at the embedder's dimension.
+
+        Fixes an embedding-dim drift: when the embedder config changes (e.g.
+        OpenAI 1536-D → qwen3 1024-D) the existing LanceDB ``facts`` table
+        keeps the old width baked into its vector column, so every write
+        fails with *"embedding dim mismatch"* (see
+        :meth:`LanceDBVectorBackend._check_embedding_dim`). The width can't
+        be patched in place, so we re-embed all text and recreate the table.
+
+        Reuses existing pieces rather than a parallel migration path:
+        ``self._vec.search(query=None)`` to list every fact,
+        ``self._embedder.embed`` to recompute vectors, and the new
+        ``VectorBackend.rebuild`` to drop+recreate at the new width.
+
+        Caller MUST hold exclusive access — stop the daemon first (LanceDB
+        is single-writer). Idempotent: safe to re-run. Returns a summary.
+        """
+        if self._embedder is None:
+            raise RuntimeError(
+                "no embedder configured — cannot re-embed. Set "
+                "evolution.memory.embedding in daemon/config.json first."
+            )
+        if self._vec is None:
+            raise RuntimeError("no vector backend configured")
+        target_dim = int(getattr(self._embedder, "dim", 0) or 0)
+        if target_dim <= 0:
+            raise RuntimeError("embedder did not report a positive dimension")
+
+        # List every fact (pure-filter listing — no KNN, no limit cap).
+        facts = await self._vec.search(query=None, limit=10_000_000)
+
+        reembedded = 0
+        empty = 0
+        for f in facts:
+            text = (f.text or "").strip()
+            if not text:
+                # Keep the row but give it a zero vector at the new width
+                # so it fits the recreated schema.
+                f.embedding = tuple([0.0] * target_dim)
+                empty += 1
+                continue
+            vec = await self._embedder.embed(text[:6000])
+            f.embedding = tuple(vec)
+            reembedded += 1
+
+        written = await self._vec.rebuild(facts, dim=target_dim)
+
+        from xmclaw.utils.log import get_logger
+        get_logger(__name__).info(
+            "memory.reembed_rebuild dim=%s total=%s reembedded=%s "
+            "empty=%s written=%s",
+            target_dim, len(facts), reembedded, empty, written,
+        )
+        return {
+            "dim": target_dim,
+            "total": len(facts),
+            "reembedded": reembedded,
+            "empty": empty,
+            "written": written,
+        }
+
     async def correct(
         self,
         *,

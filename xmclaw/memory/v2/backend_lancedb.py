@@ -591,6 +591,59 @@ class LanceDBVectorBackend:
             )
             return 0
 
+    async def rebuild(self, records: list[Fact], *, dim: int) -> int:
+        """Drop the table and recreate it at ``dim``, then insert ``records``.
+
+        The embedding width is baked into the LanceDB fixed-size-list
+        column, so a dim change (e.g. the user switched embedders) can't be
+        patched in place — the table must be recreated. Used by the
+        re-embed migration (``MemoryService.reembed_rebuild`` /
+        ``xmclaw memory reembed``). ``records`` MUST already carry
+        ``dim``-wide embeddings.
+
+        Resets the corrupted / schema_error / dim state so the backend
+        resumes normal operation against the fresh table. The caller is
+        responsible for ensuring no other process holds the table open
+        (stop the daemon first — LanceDB is single-writer).
+        """
+        if self._db is None:
+            self._db = await _with_timeout_and_retry(
+                _LanceDBConnectionManager.get_connection(self._db_path),
+                timeout_s=10,
+                context="connect",
+                corrupted_flag=self,
+            )
+        # Drop the existing table if present.
+        page = await _with_timeout_and_retry(
+            self._db.list_tables(),
+            timeout_s=10,
+            context="list_tables",
+            corrupted_flag=self,
+        )
+        existing = list(getattr(page, "tables", []) or page)
+        if self._table_name in existing:
+            await _with_timeout_and_retry(
+                self._db.drop_table(self._table_name),
+                timeout_s=15,
+                context="drop_table",
+                corrupted_flag=self,
+            )
+        # Reset state and create a fresh table at the new dim.
+        self._dim = dim
+        self._schema_cls = _build_fact_schema(dim)
+        self._table = await _with_timeout_and_retry(
+            self._db.create_table(self._table_name, schema=self._schema_cls),
+            timeout_s=15,
+            context="rebuild_create_table",
+            corrupted_flag=self,
+        )
+        self._schema_error = None
+        self._corrupted = False
+        self._transient_failures = 0
+        # Delegate the write to the validated upsert path (re-checks dim
+        # per row against the now-correct self._dim).
+        return await self.upsert(records)
+
     async def search(
         self,
         query: list[float] | str | None = None,

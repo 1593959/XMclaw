@@ -351,9 +351,22 @@ class _FakeBrowser:
 class _FakeChromium:
     browser: _FakeBrowser = field(default_factory=_FakeBrowser)
 
+    @property
+    def executable_path(self) -> str:
+        # A real, existing path so _resolve_chromium_launch_overrides hits
+        # T1 ("pinned build present") and injects nothing — keeping these
+        # unit tests off the real system-browser detection fallback.
+        import sys
+        return sys.executable
+
     async def launch(
-        self, headless: bool = True, args: list[str] | None = None,
+        self,
+        headless: bool = True,
+        args: list[str] | None = None,
+        **kwargs: Any,
     ) -> _FakeBrowser:
+        # Tolerate executable_path / channel kwargs the launch-resolver may
+        # add, so the fixture doesn't break when that logic evolves.
         if args:
             self.browser.last_launch_args = list(args)
         return self.browser

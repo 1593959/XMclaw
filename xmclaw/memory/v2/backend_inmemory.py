@@ -243,6 +243,13 @@ class InMemoryVectorBackend:
     async def get(self, fact_id: str) -> Fact | None:
         return self._rows.get(fact_id)
 
+    async def rebuild(self, records: list[Fact], *, dim: int) -> int:
+        """Clear the store and re-insert ``records``. The in-memory backend
+        is dim-agnostic (it stores whatever vector it's given), so ``dim``
+        is accepted for Protocol parity but not enforced here."""
+        self._rows.clear()
+        return await self.upsert(records)
+
     async def close(self) -> None:
         # Nothing to clean up; method present for Protocol parity.
         return None

@@ -194,6 +194,10 @@ async def test_b332_run_turn_tools_allowlist_blocks_disallowed_call() -> None:
         LLMResponse(content="couldn't use forbidden_tool", tool_calls=()),
     ])
     agent = AgentLoop(llm=llm, bus=bus, tools=inner)
+    # Force the multi-hop tool path. Since the 2026-06-09 instant-mode
+    # router, short prompts route to a single-shot that passes no tools,
+    # which would short-circuit the allowlist behaviour under test.
+    agent._mode_instant_enabled = False
 
     res = await agent.run_turn(
         "sess-cron", "do something",
@@ -229,6 +233,10 @@ async def test_b332_run_turn_no_allowlist_unaffected() -> None:
         LLMResponse(content="done", tool_calls=()),
     ])
     agent = AgentLoop(llm=llm, bus=bus, tools=inner)
+    # Force the multi-hop tool path (see note in the test above): the
+    # instant-mode router would otherwise route "hi" to a single-shot
+    # that ignores the scripted bash tool_call.
+    agent._mode_instant_enabled = False
 
     res = await agent.run_turn("sess-chat", "hi")
     # Without allowlist, bash invoked normally.

@@ -1113,70 +1113,95 @@ _BROWSER_DOWNLOAD_NEXT_SPEC = ToolSpec(
 # ── module ────────────────────────────────────────────────────────
 
 
-def _resolve_bundled_chromium_executable(playwright: Any) -> str | None:
-    """Return an ``executable_path`` for a Chromium build that actually
-    exists on disk, or ``None`` to use Playwright's default.
+def _resolve_chromium_launch_overrides(playwright: Any) -> dict[str, Any]:
+    """Return kwargs to merge into a bundled-Chromium launch so it drives
+    a browser that actually exists on disk.
 
-    Why this exists (2026-06-19): the computer-use/browser refactor
-    (commit 4665188d) dropped the "detect & reuse an already-installed
-    Chromium" fallback, so the bundled-Chromium launch paths rigidly
+    Why this exists (2026-06-19): the bundled-Chromium launch paths rigidly
     demanded the exact build the installed Playwright wheel pins (e.g.
     ``chromium-1223``). On a machine that has ``chromium-1228`` /
     ``chromium-1208`` installed but not 1223 — common after a Playwright
     minor bump or a partial ``playwright install`` — every headless /
     visible launch died with *"Executable doesn't exist at
-    …chromium-1223…"*. The user reasonably called this broken: a usable
-    Chromium was sitting right there.
+    …chromium-1223…"*. A usable browser was sitting right there. This
+    restores the "detect & reuse what's installed" capability by leaning on
+    the existing pure-detection module rather than a parallel code path.
 
-    Strategy:
-      1. Ask Playwright for the build it WANTS (``chromium.executable_path``).
-         If that file exists, return ``None`` — nothing to override.
-      2. Otherwise scan the ms-playwright install root for sibling
-         ``chromium-<rev>`` builds that contain the same relative
-         executable, and return the newest (highest revision) one.
-      3. If none exist, return ``None`` and let Playwright raise its
-         own (now-accurate) "run playwright install" error.
+    Priority (returns the FIRST that resolves):
+      * **T1** pinned build present → ``{}`` (use Playwright's default).
+      * **T2** pinned build missing but a sibling ms-playwright
+        ``chromium-<rev>`` build exists → ``{"executable_path": newest}``.
+      * **T3** no bundled build → reuse :func:`_user_browser_detect.pick_browser`
+        to drive the user's system Chrome/Edge (``{"channel": ...}`` for the
+        known channels, else ``{"executable_path": ...}`` for e.g. Brave).
+      * **T4** nothing usable → ``{}`` and let Playwright raise its own
+        (now-accurate) ``playwright install chromium`` error.
     """
+    from pathlib import Path as _P
+
+    from xmclaw.utils.log import get_logger
+    log = get_logger(__name__)
+
+    # ── T1 / T2: inspect the pinned bundled-Chromium build ──
     try:
         expected = playwright.chromium.executable_path
     except Exception:  # noqa: BLE001 — never let detection break launch
-        return None
-    if not expected:
-        return None
-    exe = Path(expected)
-    if exe.exists():
-        return None  # pinned build is present — use Playwright's default
-    parts = exe.parts
-    idx = next(
-        (i for i, seg in enumerate(parts) if seg.startswith("chromium-")),
-        None,
-    )
-    if idx is None:
-        return None
-    base = Path(*parts[:idx])
-    suffix = Path(*parts[idx + 1:])  # e.g. chrome-win64/chrome.exe
-    candidates: list[tuple[int, Path]] = []
+        expected = ""
+    if expected:
+        exe = _P(expected)
+        if exe.exists():
+            return {}  # T1 — pinned build present
+        parts = exe.parts
+        idx = next(
+            (i for i, seg in enumerate(parts) if seg.startswith("chromium-")),
+            None,
+        )
+        if idx is not None:
+            base = _P(*parts[:idx])
+            suffix = _P(*parts[idx + 1:])  # e.g. chrome-win64/chrome.exe
+            candidates: list[tuple[int, _P]] = []
+            try:
+                for d in base.glob("chromium-*"):
+                    cand = d / suffix
+                    if cand.exists():
+                        try:
+                            rev = int(d.name.split("-", 1)[1])
+                        except (IndexError, ValueError):
+                            rev = 0
+                        candidates.append((rev, cand))
+            except OSError:
+                candidates = []
+            if candidates:
+                candidates.sort(key=lambda t: t[0], reverse=True)
+                chosen = candidates[0][1]
+                log.info(
+                    "browser: pinned Chromium %s missing — using installed "
+                    "build %s", exe.parent.parent.name,
+                    chosen.parent.parent.name,
+                )
+                return {"executable_path": str(chosen)}
+
+    # ── T3: fall back to the user's system Chrome / Edge / Brave ──
     try:
-        for d in base.glob("chromium-*"):
-            cand = d / suffix
-            if cand.exists():
-                try:
-                    rev = int(d.name.split("-", 1)[1])
-                except (IndexError, ValueError):
-                    rev = 0
-                candidates.append((rev, cand))
-    except OSError:
-        return None
-    if not candidates:
-        return None
-    candidates.sort(reverse=True)
-    chosen = str(candidates[0][1])
-    from xmclaw.utils.log import get_logger
-    get_logger(__name__).info(
-        "browser: pinned Chromium %s missing — using installed build %s",
-        exe.parent.parent.name, candidates[0][1].parent.parent.name,
+        from xmclaw.providers.tool._user_browser_detect import pick_browser
+        install = pick_browser(None)
+    except Exception:  # noqa: BLE001
+        install = None
+    if install is not None:
+        log.info(
+            "browser: no bundled Chromium build found — driving system "
+            "%s (%s)", install.name, install.exe_path,
+        )
+        if install.playwright_channel in ("chrome", "msedge"):
+            return {"channel": install.playwright_channel}
+        return {"executable_path": str(install.exe_path)}
+
+    # ── T4: nothing usable — let Playwright surface the install hint ──
+    log.warning(
+        "browser: no bundled Chromium build and no system Chrome/Edge "
+        "detected — run `playwright install chromium`",
     )
-    return chosen
+    return {}
 
 
 class BrowserTools(ToolProvider):
@@ -1679,11 +1704,12 @@ class BrowserTools(ToolProvider):
                 "headless": headless,
                 "args": launch_args,
             }
-            # Reuse an installed Chromium build when the pinned one is
-            # absent (see _resolve_bundled_chromium_executable).
-            _exe = _resolve_bundled_chromium_executable(self._playwright)
-            if _exe:
-                _launch_kwargs["executable_path"] = _exe
+            # Drive an installed Chromium build / system Chrome when the
+            # pinned bundled build is absent (see
+            # _resolve_chromium_launch_overrides).
+            _launch_kwargs.update(
+                _resolve_chromium_launch_overrides(self._playwright)
+            )
             browser = await self._playwright.chromium.launch(**_launch_kwargs)
             setattr(self, attr, browser)
 
@@ -1794,12 +1820,12 @@ class BrowserTools(ToolProvider):
             if channel:
                 launch_kwargs["channel"] = channel
             else:
-                # Bundled-Chromium path: fall back to an installed build
-                # when the pinned one is missing (parity with the simple
-                # launch() path above).
-                _exe = _resolve_bundled_chromium_executable(self._playwright)
-                if _exe:
-                    launch_kwargs["executable_path"] = _exe
+                # Bundled-Chromium path: reuse an installed build / system
+                # Chrome when the pinned one is missing (parity with the
+                # simple launch() path above).
+                launch_kwargs.update(
+                    _resolve_chromium_launch_overrides(self._playwright)
+                )
 
             ctx = await self._playwright.chromium.launch_persistent_context(
                 **launch_kwargs,

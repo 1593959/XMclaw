@@ -267,16 +267,31 @@ async def test_curate_skips_llm_passes_without_llm():
 
 
 @pytest.mark.asyncio
-async def test_curate_marks_contradiction_and_downweights_weaker():
+async def test_curate_marks_contradiction_invalidates_older():
+    """Contradiction resolution is *temporal*: the NEWER assertion wins,
+    the OLDER one is invalidated — even if the older one had the higher
+    confidence. This is the Phase 8 ⑩ "Zep route" semantics in
+    ``curator._detect_contradictions_scope`` (loser decided by ``ts_last``;
+    confidence is only a tie-break). The pre-2026-06 test asserted the
+    lower-CONFIDENCE side lost, which no longer holds."""
     svc = _make_service()
-    strong = await svc.remember(
+    older = await svc.remember(
         "用户喜欢喝咖啡", kind=FactKind.PREFERENCE,
         scope=FactScope.USER, confidence=0.9,
     )
-    weak = await svc.remember(
+    newer = await svc.remember(
         "用户从不喝咖啡", kind=FactKind.PREFERENCE,
         scope=FactScope.USER, confidence=0.5,
     )
+    # Pin distinct timestamps so the temporal ordering is deterministic
+    # (time.time() resolution on Windows can collide for back-to-back
+    # writes, which would fall through to the confidence tie-break).
+    f_old = await svc.get_fact(older.id)
+    f_old.ts_last = 1000.0
+    f_new = await svc.get_fact(newer.id)
+    f_new.ts_last = 2000.0
+    await svc._vec.upsert([f_old, f_new])
+
     llm = _FakeLLM({
         "contradictions": [
             {"a": 1, "b": 2, "reason": "一个说喜欢喝，一个说从不喝"},
@@ -289,13 +304,15 @@ async def test_curate_marks_contradiction_and_downweights_weaker():
     )
     assert "contradict" in report.passes_run
     assert report.contradictions_found == 1
-    # The lower-confidence side got down-ranked + stamped.
-    refreshed_weak = await svc.get_fact(weak.id)
-    assert refreshed_weak.confidence <= 0.4
-    assert strong.id in refreshed_weak.contradicts
-    # The stronger claim is untouched.
-    refreshed_strong = await svc.get_fact(strong.id)
-    assert refreshed_strong.confidence == 0.9
+    # The OLDER assertion loses despite its HIGHER confidence: floored +
+    # stamped + temporally invalidated.
+    refreshed_old = await svc.get_fact(older.id)
+    assert refreshed_old.confidence <= 0.4
+    assert newer.id in refreshed_old.contradicts
+    assert refreshed_old.invalid_at is not None
+    # The newer assertion is untouched.
+    refreshed_new = await svc.get_fact(newer.id)
+    assert refreshed_new.confidence == 0.5
 
 
 @pytest.mark.asyncio

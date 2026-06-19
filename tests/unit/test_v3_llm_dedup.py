@@ -121,6 +121,15 @@ async def test_llm_dedup_commits_merges_when_not_dry_run():
         "若3轮都是空消息则停止", kind=FactKind.LESSON,
         scope=FactScope.PROJECT, bucket="rules",
     )
+    # The LLM numbers facts by their RECALL order (newest ts_last first),
+    # NOT creation order — so pin distinct timestamps to make "canonical:1"
+    # deterministically map to f1. Without this the back-to-back writes get
+    # near-equal ts_last and the survivor is whichever the recall sort
+    # happened to put first.
+    for fid, ts in ((f1.id, 3000.0), (f2.id, 2000.0), (f3.id, 1000.0)):
+        _f = await svc.get_fact(fid)
+        _f.ts_last = ts
+        await svc._vec.upsert([_f])
     svc.set_llm(_FakeLLM({
         "groups": [
             {"members": [1, 2, 3], "canonical": 1, "reason": "同一规则"},

@@ -2448,6 +2448,16 @@ class HopLoopMixin:
                             user_message=user_message,
                             assistant_response=response.content,
                         )
+                        # 2026-06-09 P3: ``preference`` and ``lesson`` are
+                        # owned by the post-sampling ExtractLessonsHook (it
+                        # dual-writes them to v2). The Layer-2 extractor
+                        # prompt already omits these kinds; this is the
+                        # defense-in-depth guard so a non-compliant / stubbed
+                        # model can't double-write them through this path.
+                        candidates = [
+                            c for c in candidates
+                            if c.kind not in ("preference", "lesson")
+                        ]
                         if _gateway is not None:
                             from xmclaw.memory.v2.gateway_models import Observation
                             observations = [

@@ -89,6 +89,17 @@ class VectorBackend(Protocol):
         """Exact-id fetch, None if absent."""
         ...
 
+    async def rebuild(self, records: list[Fact], *, dim: int) -> int:
+        """Recreate the store at embedding width ``dim``, then insert
+        ``records`` (which MUST carry ``dim``-wide embeddings).
+
+        Used by the re-embed migration when the stored vector width has
+        drifted from the configured embedder (the width is baked into the
+        LanceDB column, so an in-place patch is impossible). Returns rows
+        written. Caller must ensure exclusive access (stop the daemon).
+        """
+        ...
+
     async def close(self) -> None:
         """Release resources (file handles, connections). Idempotent."""
         ...
