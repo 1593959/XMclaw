@@ -620,7 +620,13 @@ class HopLoopMixin:
                 "messages_count": len(messages),
                 "tools_count": len(tool_specs) if tool_specs else 0,
                 "llm_profile_id": llm_profile_id,
-            })
+            }, correlation_id=hop_corr)
+            # ↑ 2026-06-22: LLM_REQUEST was the ONLY per-hop LLM event missing
+            # ``correlation_id=hop_corr`` (CHUNK / THINKING_CHUNK / RESPONSE all
+            # carry it). Without it the chat reducer keyed the request off the
+            # event's own random id, spawning a phantom "思考中…" bubble that
+            # never matched the hop's CHUNK/RESPONSE stream — the empty "思考"
+            # ghost the user saw. Now all of a hop's events share one id.
 
             # Streaming: each text delta becomes an LLM_CHUNK so the WS
             # client can render the assistant text token-by-token. Tool-use
