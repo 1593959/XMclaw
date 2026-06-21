@@ -1623,6 +1623,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             }, correlation_id=hop_corr)
             chunk_seq += 1
 
+        async def _emit_thinking_chunk(delta: str) -> None:
+            await publish(EventType.LLM_THINKING_CHUNK, {
+                "hop": 0,
+                "delta": delta,
+            }, correlation_id=hop_corr)
+
         t0 = _time.perf_counter()
 
         # B-227 retry loop (simplified for instant mode — no first-token-guard
@@ -1635,6 +1641,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         messages,
                         tools=None,
                         on_chunk=_emit_chunk,
+                        on_thinking_chunk=_emit_thinking_chunk,
                         cancel=None,
                     ),
                     timeout=llm_timeout_s,
@@ -1814,7 +1821,13 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
         # Persist the instant-mode turn so it survives a fresh AgentLoop
         # or daemon restart, just like the hop-loop path.
-        messages.append(Message(role="assistant", content=text))
+        messages.append(Message(
+            role="assistant", content=text,
+            thinking=getattr(response, "thinking", "") or "",
+            thinking_signature=getattr(
+                response, "thinking_signature", "",
+            ) or "",
+        ))
         try:
             await self._persist_history(session_id, messages)
         except Exception:  # noqa: BLE001
