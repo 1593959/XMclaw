@@ -104,6 +104,7 @@ def test_ws_three_turn_reference_chain() -> None:
         LLMResponse(content="Yes, Hermes's messaging design is what we discussed."),
     ])
     agent = AgentLoop(llm=llm, bus=bus)
+    agent._mode_instant_enabled = False  # exercise multi-hop so the scripted LLM records each turn
     client = TestClient(create_app(bus=bus, agent=agent))
 
     with client.websocket_connect("/agent/v2/chain-sess") as ws:
@@ -120,8 +121,11 @@ def test_ws_three_turn_reference_chain() -> None:
     # Must see all 3 user messages and the first 2 assistant responses.
     users = [m.content for m in turn3 if m.role == "user"]
     assts = [m.content for m in turn3 if m.role == "assistant"]
-    assert len(users) == 3, f"turn 3 should see 3 user msgs, got {users}"
-    assert len(assts) == 2, f"turn 3 should see 2 asst msgs, got {assts}"
+    # >= because the loop now injects extra user-role context framing every
+    # few hops (e.g. the [GOAL-ANCHOR] re-anchor block); the 3 real user
+    # turns must all be present, which the substring checks below pin.
+    assert len(users) >= 3, f"turn 3 should see >=3 user msgs, got {users}"
+    assert len(assts) >= 2, f"turn 3 should see >=2 asst msgs, got {assts}"
     assert any("project called Hermes" in u for u in users)
     assert any("What does Hermes do" in u for u in users)
 
@@ -144,6 +148,7 @@ def test_ws_reconnect_preserves_session_history() -> None:
         LLMResponse(content="second-connect reply"),
     ])
     agent = AgentLoop(llm=llm, bus=bus)
+    agent._mode_instant_enabled = False  # exercise multi-hop so both turns hit the scripted LLM
     client = TestClient(create_app(bus=bus, agent=agent))
 
     with client.websocket_connect("/agent/v2/same-id") as ws:
@@ -155,7 +160,14 @@ def test_ws_reconnect_preserves_session_history() -> None:
     with client.websocket_connect("/agent/v2/same-id") as ws:
         ws.receive_json()
         ws.send_text(json.dumps({"type": "user", "content": "what's my secret?"}))
-        _drain_until_llm_response(ws)
+        # On reconnect the handler REPLAYS turn 1's session log (incl. its
+        # llm_response frame), so _drain_until_llm_response would return on
+        # the replayed frame before the second turn's LLM call. Wait for the
+        # real second call instead (turn runs as a background task).
+        import time as _t
+        _deadline = _t.time() + 5.0
+        while len(llm.seen_messages) < 2 and _t.time() < _deadline:
+            _t.sleep(0.05)
 
     second = llm.seen_messages[1]
     user_text = " ".join(m.content or "" for m in second if m.role == "user")
