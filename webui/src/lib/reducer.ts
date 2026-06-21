@@ -105,7 +105,7 @@ const INJECTED_BLOCKS =
 export function stripInjectedBlocks(text: string): string {
   return text.replace(INJECTED_BLOCKS, "").trim();
 }
-const mediaList = (v: unknown): string[] =>
+export const mediaList = (v: unknown): string[] =>
   Array.isArray(v) ? (v as string[]).map(resolveMediaUrl) : [];
 
 export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {

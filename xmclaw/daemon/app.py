@@ -835,13 +835,45 @@ def create_app(
     # (a turn killed mid-flight keeps "running" for STALE_S otherwise).
     app.state.active_turn_tasks = active_turn_tasks
 
+    # 2026-06-22: event types that carry RECONSTRUCTABLE UI side-state
+    # (right-panel canvas artifacts, top todo strip, plan steps). These
+    # aren't in the REST /sessions transcript that hydrateHistory restores,
+    # so they can ONLY come back via the reconnect replay. The buffer cap is
+    # dominated by high-volume llm_chunk / cost_tick frames; if a long turn
+    # evicts the early ``canvas_artifact_created`` / ``todo_updated`` the
+    # right panel + todo strip vanish on refresh. Keep these sticky so they
+    # survive eviction.
+    _STICKY_REPLAY_TYPES = frozenset({
+        "todo_updated",
+        "canvas_artifact_created",
+        "canvas_artifact_updated",
+        "canvas_artifact_closed",
+        "plan_started",
+        "plan_step_started",
+        "plan_step_finished",
+    })
+
     async def _session_log_subscriber(event: BehavioralEvent) -> None:
         buf = session_logs.setdefault(event.session_id, [])
         buf.append(event)
         if len(buf) > _SESSION_LOG_CAP:
-            # Drop oldest. Matches agent_loop history_cap trimming spirit:
-            # keep the recent transcript intact, sacrifice the archaeology.
-            del buf[:len(buf) - _SESSION_LOG_CAP]
+            # Evict oldest NON-sticky events first so the recent transcript
+            # stays intact AND the UI side-state events (canvas / todo / plan)
+            # survive — they're the only way the right panel + todo strip
+            # repopulate on refresh. Falls back to plain head-trim if the
+            # buffer is somehow all-sticky (can't happen in practice).
+            overflow = len(buf) - _SESSION_LOG_CAP
+            kept: list[BehavioralEvent] = []
+            dropped = 0
+            for ev in buf:
+                if dropped < overflow and ev.type.value not in _STICKY_REPLAY_TYPES:
+                    dropped += 1
+                    continue
+                kept.append(ev)
+            if dropped < overflow:
+                # Buffer was mostly sticky — fall back to trimming the head.
+                del kept[: overflow - dropped]
+            session_logs[event.session_id] = kept
 
     bus.subscribe(lambda e: True, _session_log_subscriber)
     app.state.session_logs = session_logs

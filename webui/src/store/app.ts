@@ -10,6 +10,7 @@ import {
   applyEvent,
   appendOptimisticUser,
   appendThinkingAssistant,
+  mediaList,
   normalizeQuestionOptions,
   stripInjectedBlocks,
 } from "../lib/reducer";
@@ -150,12 +151,19 @@ async function hydrateHistory(sid: string, token: string | null, set: (fn: (s: A
     msgs.forEach((m, i) => {
       const role = m.role as string;
       if (role !== "user" && role !== "assistant") return;
+      const restoredImages = mediaList(m.images);
       hydrated.push({
         id: `restore_${i}`,
         role: role as Entry["role"],
         content: stripInjectedBlocks((m.content as string) || ""),
         status: "complete",
         ts: 0,
+        // 2026-06-22: restore in-message images on refresh. The REST
+        // /sessions endpoint returns ``images`` per message (session_store
+        // adds them), but hydrateHistory dropped the field — and the
+        // replayed user_message frame that carries them is filtered out by
+        // ws.ts (chatOnlyTypes), so refresh lost all in-message images.
+        ...(restoredImages.length ? { images: restoredImages } : {}),
       });
       // 历史里的 tool_calls 还原为终态工具卡，保持时间线完整。
       const tcs = Array.isArray(m.tool_calls) ? (m.tool_calls as Array<Record<string, unknown>>) : [];
