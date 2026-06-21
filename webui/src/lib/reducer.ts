@@ -9,6 +9,7 @@ import type {
   Block,
   ChatState,
   Entry,
+  EntryStatus,
   Envelope,
   PlanState,
   TodoItem,
@@ -93,7 +94,7 @@ export function normalizeQuestionOptions(raw: unknown): Array<{ label: string; v
 // 给 LLM 看的，不是用户打的字 — 展示层剥掉。标签名单与
 // routers/tasks.py 的 _INJECTED_BLOCKS 保持同步。
 const INJECTED_BLOCKS =
-  /<(session-workspace|output_schema|memory-[\w-]+|recalled-memory-files|recalled|curriculum-[\w-]+|user-uploaded-files)>[\s\S]*?<\/\1>/g;
+  /<(session-workspace|output_schema|memory-[\w-]+|recalled-memory-files|recalled|curriculum-[\w-]+|user-uploaded-files|swarm-hint)>[\s\S]*?<\/\1>/g;
 export function stripInjectedBlocks(text: string): string {
   return text.replace(INJECTED_BLOCKS, "").trim();
 }
@@ -124,6 +125,30 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
             images: serverImages.length > 0 ? serverImages : e.images || [],
           })),
         };
+      }
+      // 2026-06-22: deduplicate against hydrateHistory-restored entries.
+      // When the page refreshes, hydrateHistory loads persisted history with
+      // synthetic ids (restore_${i}). Then WS replay sends the original
+      // user_message with correlation_id=m_abcdef. Without this guard the
+      // reducer appends a second entry because ids don't match.
+      const restoredIdx = swept.findIndex(
+        (e) =>
+          e.role === "user" &&
+          e.id.startsWith("restore_") &&
+          stripInjectedBlocks(str(payload.content)) ===
+            stripInjectedBlocks(e.content || ""),
+      );
+      if (restoredIdx >= 0) {
+        const next = swept.slice();
+        next[restoredIdx] = {
+          ...next[restoredIdx],
+          id,
+          content: stripInjectedBlocks(str(payload.content)),
+          status: "complete" as EntryStatus,
+          ts,
+          images: serverImages.length > 0 ? serverImages : next[restoredIdx].images || [],
+        };
+        return { ...chat, entries: next };
       }
       return {
         ...chat,
