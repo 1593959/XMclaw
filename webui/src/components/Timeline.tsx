@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useApp } from "../store/app";
 import type { Entry } from "../lib/types";
 import ToolCard, { AgentGroupCard } from "./ToolCards";
+import ThinkingBlock from "./ThinkingBlock";
 import Markdown from "./LazyMarkdown";
 
 function QuestionCard({ e }: { e: Entry }) {
@@ -46,23 +47,6 @@ function QuestionCard({ e }: { e: Entry }) {
             </form>
           )}
         </div>
-      )}
-    </div>
-  );
-}
-
-function ThinkingBlock({ content }: { content: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="border-l-2 border-mc-border pl-2">
-      <button
-        onClick={() => setOpen(!open)}
-        className="text-[11px] text-mc-faint cursor-pointer hover:text-mc-muted"
-      >
-        {open ? "▾ 思考过程" : "▸ 思考过程"}
-      </button>
-      {open && (
-        <div className="text-xs text-mc-faint whitespace-pre-wrap mt-1">{content}</div>
       )}
     </div>
   );

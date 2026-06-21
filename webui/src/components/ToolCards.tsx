@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import type { Entry } from "../lib/types";
 import { buildDiffFromStrings, collapseMiddle, type DiffLine, type DiffStat } from "../lib/difflines";
 import { useApp } from "../store/app";
+import ThinkingBlock from "./ThinkingBlock";
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
@@ -200,7 +201,7 @@ const SUMMARY_TOOLS: Record<string, string> = {
   web_fetch: "🌐 抓取",
   memory_search: "🧠 检索记忆",
   remember: "🧠 写入记忆",
-  think: "💭 思考",
+  // ``think`` 不在此 — 它在 ToolCard 路由里特判成「思考过程」折叠块（图二）。
 };
 
 function SummaryCard({ e }: { e: Entry }) {
@@ -414,6 +415,16 @@ export function AgentGroupCard({ e }: { e: Entry }) {
 
 export default function ToolCard({ e }: { e: Entry }) {
   const name = e.name || "";
+  // 用户要求：``think`` 工具走「思考过程」折叠块（图二），不是普通工具卡（图一）。
+  // 内容是它的 args.thought（深思模式记录的可审计推理）。
+  if (name === "think") {
+    return (
+      <div className="min-w-0">
+        <ThinkingBlock content={str(e.args?.thought) || str(e.content) || ""} />
+        <MediaStrip e={e} />
+      </div>
+    );
+  }
   let card;
   if (name === "file_write" || name === "apply_patch") card = <EditCard e={e} />;
   else if (name === "bash") card = <TerminalCard e={e} />;
