@@ -241,16 +241,34 @@ class _StubAgent:
         self.turns.append((session_id, content))
 
 
+def _wait_until(cond, timeout: float = 5.0) -> None:
+    """Poll ``cond`` until true or timeout. The WS handler now runs the
+    turn as a background task; closing the socket cancels in-flight turns,
+    so tests must wait for the stub to record the turn BEFORE leaving the
+    ``websocket_connect`` block. ``time.sleep`` yields to the app's event
+    loop thread (TestClient runs the ASGI app in a portal thread)."""
+    import time as _t
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
+        if cond():
+            return
+        _t.sleep(0.05)
+
+
 def test_ws_without_agent_id_uses_primary(
     bus: InProcessEventBus, tmp_registry
 ) -> None:
     primary = _StubAgent("primary", bus)
     app = create_app(bus=bus, agent=primary)  # type: ignore[arg-type]
-    with TestClient(app) as client, client.websocket_connect(
-        "/agent/v2/sess1"
-    ) as ws:
-        ws.receive_json()  # session_create
-        ws.send_text(json.dumps({"type": "user", "content": "hello"}))
+    with TestClient(app) as client:
+        # The Jarvis orchestrator intercepts "main"/default-agent turns
+        # (calls jarvis_orch.handle instead of agent.run_turn). These are
+        # plain agent-ROUTING tests, so disable it to assert run_turn routing.
+        app.state.jarvis_orchestrator = None
+        with client.websocket_connect("/agent/v2/sess1") as ws:
+            ws.receive_json()  # session_create
+            ws.send_text(json.dumps({"type": "user", "content": "hello"}))
+            _wait_until(lambda: primary.turns)
     assert primary.turns == [("sess1", "hello")]
 
 
@@ -298,11 +316,12 @@ def test_ws_agent_id_main_resolves_to_primary(
 ) -> None:
     primary = _StubAgent("primary", bus)
     app = create_app(bus=bus, agent=primary)  # type: ignore[arg-type]
-    with TestClient(app) as client, client.websocket_connect(
-        "/agent/v2/sess1?agent_id=main"
-    ) as ws:
-        ws.receive_json()
-        ws.send_text(json.dumps({"type": "user", "content": "ping"}))
+    with TestClient(app) as client:
+        app.state.jarvis_orchestrator = None  # see routing note above
+        with client.websocket_connect("/agent/v2/sess1?agent_id=main") as ws:
+            ws.receive_json()
+            ws.send_text(json.dumps({"type": "user", "content": "ping"}))
+            _wait_until(lambda: primary.turns)
     assert primary.turns == [("sess1", "ping")]
 
 
@@ -312,6 +331,7 @@ def test_primary_and_registered_do_not_cross_contaminate(
     primary = _StubAgent("primary", bus)
     app = create_app(bus=bus, agent=primary)  # type: ignore[arg-type]
     with TestClient(app) as client:
+        app.state.jarvis_orchestrator = None  # see routing note above
         client.post(
             "/api/v2/agents",
             json={"agent_id": "side", "config": llm_config},
@@ -320,6 +340,7 @@ def test_primary_and_registered_do_not_cross_contaminate(
         with client.websocket_connect("/agent/v2/p") as ws:
             ws.receive_json()
             ws.send_text(json.dumps({"type": "user", "content": "a"}))
+            _wait_until(lambda: primary.turns)
         # Side flow routes to the registered agent — primary MUST
         # NOT see this turn.
         with client.websocket_connect("/agent/v2/s?agent_id=side") as ws:
