@@ -356,8 +356,6 @@ class HopLoopMixin:
         Returns ``None`` when max_hops is reached — caller must
         synthesise the truncation message.
         """
-        _stuck_loop_deque: list[tuple[str, str]] = []
-        _STUCK_LOOP_THRESHOLD = 3
         _NO_PROGRESS_THRESHOLD = 5
         _no_progress_counter = 0
         # B-302: honesty guard — max 1 correction per turn to avoid loops.
@@ -1942,14 +1940,12 @@ class HopLoopMixin:
                         "error": result.error,
                         "side_effects": list(result.side_effects),
                     })
-                    # B-397 anti-loop guard: track consecutive identical
-                    # tool failures. ``error_signature`` is the first
-                    # 80 chars of the error so transient differences
-                    # (line numbers, timestamps) don't reset the streak,
-                    # but qualitatively-different errors do.
                     if result.ok:
-                        _stuck_loop_deque.clear()
                         _had_success_this_hop = True
+                        tool_msg_content = (
+                            result.content if isinstance(result.content, str)
+                            else str(result.content)
+                        )
                         # Batch C.2: validate this successful step.
                         # Verdict published as INNER_MONOLOGUE so the UI
                         # think pane shows the advancement chip. Never
@@ -1993,64 +1989,6 @@ class HopLoopMixin:
                                     "step_validator.hook_failed err=%s",
                                     exc,
                                 )
-                    else:
-                        sig = (result.error or "")[:80]
-                        key = (call.name, sig)
-                        if _stuck_loop_deque and _stuck_loop_deque[-1] == key:
-                            _stuck_loop_deque.append(key)
-                        else:
-                            _stuck_loop_deque = [key]
-                    # B-397: break early when the agent is clearly stuck
-                    # making the same failed call. Without this, real
-                    # users hit max_hops=40 with 40 identical
-                    # ``apply_patch.old_text not found`` errors and
-                    # XMclaw burned ~$0.50 of LLM budget per stuck turn.
-                    # 3 consecutive identical failures is conservative —
-                    # genuine retries on transient errors typically vary
-                    # by error string OR succeed within 1-2 retries.
-                    if len(_stuck_loop_deque) >= _STUCK_LOOP_THRESHOLD:
-                        stuck_tool, stuck_err = _stuck_loop_deque[-1]
-                        await publish(EventType.ANTI_REQ_VIOLATION, {
-                            "message": (
-                                f"agent stuck — same tool error "
-                                f"{_STUCK_LOOP_THRESHOLD}x in a row"
-                            ),
-                            "tool": stuck_tool,
-                            "error_signature": stuck_err,
-                            "hop": hop,
-                            "kind": "stuck_loop",
-                        })
-                        truncation_text = (
-                            f"⚠️ I appear to be stuck in a loop calling "
-                            f"`{stuck_tool}` with the same error "
-                            f"{_STUCK_LOOP_THRESHOLD} times in a row:\n"
-                            f"  {stuck_err}\n\n"
-                            f"Stopping early to avoid burning the rest "
-                            f"of the {self._max_hops}-hop budget. The "
-                            f"tool's error message likely tells you what "
-                            f"to do differently — please re-read it and "
-                            f"try a different approach next turn."
-                        )
-                        return AgentTurnResult(
-                            ok=False, text=truncation_text,
-                            hops=hop + 1,
-                            tool_calls=tool_calls_made,
-                            events=events,
-                            error=f"stuck_loop tool={stuck_tool}",
-                        )
-                    # Tool result message content: on success pass through
-                    # the content; on failure pass the structured error
-                    # string so the LLM can tell the user what actually
-                    # happened. Previously a failure landed as ``str(None)``
-                    # == "None" here, which made the model hallucinate
-                    # "the file is empty" or "got None back" instead of
-                    # surfacing the real reason (permission denied, file
-                    # not found, etc.).
-                    if result.ok:
-                        tool_msg_content = (
-                            result.content if isinstance(result.content, str)
-                            else str(result.content)
-                        )
                     else:
                         err = result.error or "tool failed without an error message"
                         # Epic #3: render NEEDS_APPROVAL as a user-actionable
@@ -2206,8 +2144,6 @@ class HopLoopMixin:
                 # successful tool call for N consecutive hops, we're
                 # probably stuck in a wasteful retry loop (different
                 # tools, same failure pattern, or hallucinated tools).
-                # This complements B-397 which only catches identical
-                # consecutive failures.
                 if _had_success_this_hop:
                     _no_progress_counter = 0
                 else:
