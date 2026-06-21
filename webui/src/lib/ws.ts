@@ -149,13 +149,24 @@ export function createWsClient({
         send({ type: "pong", payload: {} });
         return;
       }
-      // 2026-06-19: skip server-replayed history frames. The frontend already
-      // hydrates history via REST (`hydrateHistory` in store/app.ts) on
-      // session switch / reconnect. Replayed WS frames share the same
-      // content but carry different ids, so without this guard they
-      // duplicate every message in the chat transcript.
+      // 2026-06-19: skip server-replayed history frames that hydrateHistory
+      // already restores via REST. Replayed WS frames share the same content
+      // but carry different ids, so without this guard they duplicate basic
+      // chat messages. HOWEVER — subagent / fanout / worker / plan / tool
+      // events are NOT restored by hydrateHistory, so discarding them causes
+      // Expert Team cards and plan steps to vanish after refresh. Only drop
+      // the plain chat message types that the REST endpoint recovers.
       if (envelope.replayed === true) {
-        return;
+        const chatOnlyTypes = new Set([
+          "user_message",
+          "llm_request",
+          "llm_response",
+          "llm_chunk",
+          "llm_thinking_chunk",
+        ]);
+        if (chatOnlyTypes.has(envelope.type)) {
+          return;
+        }
       }
       try {
         onEvent(envelope);
