@@ -131,7 +131,7 @@ def default_config_template() -> dict[str, Any]:
                 "download_dir": None
             },
             "composio": {
-                "enabled": True,
+                "enabled": False,
                 "api_key": "",
                 "entity_id": "default",
                 "apps": [
