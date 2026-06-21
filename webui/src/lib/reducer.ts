@@ -93,8 +93,15 @@ export function normalizeQuestionOptions(raw: unknown): Array<{ label: string; v
 // memory 注入 / output_schema 等，见 agent_loop.py F1 注释）。这些是
 // 给 LLM 看的，不是用户打的字 — 展示层剥掉。标签名单与
 // routers/tasks.py 的 _INJECTED_BLOCKS 保持同步。
+// Tag-style blocks (<session-workspace>…</…>) AND the markdown-header
+// blocks the daemon also rides on the user-message tail — the time block
+// (## 当前时刻 … training-time clock.) added on every turn, and the
+// ultrathink directive (## 深思模式 … 承载流式直觉.). The latter two have no
+// closing tag, so the old tag-only regex left them visible after a refresh
+// ("提示词出现"). Both are anchored by their distinctive trailing sentence
+// so they can't over-match real user text.
 const INJECTED_BLOCKS =
-  /<(session-workspace|output_schema|memory-[\w-]+|recalled-memory-files|recalled|curriculum-[\w-]+|user-uploaded-files|swarm-hint)>[\s\S]*?<\/\1>/g;
+  /<(session-workspace|output_schema|memory-[\w-]+|recalled-memory-files|recalled|curriculum-[\w-]+|user-uploaded-files|swarm-hint)>[\s\S]*?<\/\1>|##\s*当前时刻[\s\S]*?Trust this over your training-time clock\.|##\s*深思模式\s*\(Ultrathink\)[\s\S]*?承载流式直觉\./g;
 export function stripInjectedBlocks(text: string): string {
   return text.replace(INJECTED_BLOCKS, "").trim();
 }

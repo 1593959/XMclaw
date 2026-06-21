@@ -64,7 +64,11 @@ _RUNNING_TAIL = {
 # 标签名单与 webui/src/lib/reducer.ts 的 INJECTED_BLOCKS 保持同步。
 _INJECTED_BLOCKS = re.compile(
     r"<(session-workspace|output_schema|memory-[\w-]+|recalled-memory-files"
-    r"|recalled|curriculum-[\w-]+)>[\s\S]*?</\1>"
+    r"|recalled|curriculum-[\w-]+|user-uploaded-files|swarm-hint)>[\s\S]*?</\1>"
+    # markdown-header tails (no closing tag) the daemon also rides on the
+    # user message — strip them too so task titles aren't "## 当前时刻 …".
+    r"|##\s*当前时刻[\s\S]*?Trust this over your training-time clock\."
+    r"|##\s*深思模式\s*\(Ultrathink\)[\s\S]*?承载流式直觉\."
 )
 
 
@@ -136,8 +140,16 @@ def _derive(events: list[Any], now: float) -> dict[str, Any]:
             last_resp_ok = payload.get("ok") is not False
             last_resp_more_hops = bool(payload.get("tool_calls_count") or 0)
 
-    steps_total = plan_total or todo_total
-    steps_done = plan_done if plan_total else todo_done
+    # 如果存在 todo 列表，优先使用 todo 进度（更实时、更细粒度）。
+    # 只有纯 plan 无 todo 时才回退到 plan 进度。
+    # 修复：当 plan 与 todo 并存时，旧逻辑优先 plan 导致 TaskRail 与前端
+    # PlanStrip 显示不一致（plan 已停/前端刷新后丢失，但 todo 仍在更新）。
+    if todo_total > 0:
+        steps_total = todo_total
+        steps_done = todo_done
+    else:
+        steps_total = plan_total
+        steps_done = plan_done
 
     # awaiting_input 仅当未答问题真的挂在事件流尾部（最后事件就是提问）。
     # 旧条件只看 asked>answered 计数 —— 历史会话里被弃置的提问会让任务
