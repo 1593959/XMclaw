@@ -150,6 +150,19 @@ def _reconstruct_from_events(session_id: str, *, bus=None) -> list[dict[str, Any
         p = getattr(e, "payload", {}) or {}
         if t == "user_message":
             c = p.get("content")
+            # 2026-06-22: scrub in-flight scaffolding from event-log recovery.
+            if (
+                isinstance(c, str)
+                and c.strip()
+                and c.lstrip().startswith("(screenshots from the previous tool batch")
+            ):
+                continue
+            if (
+                isinstance(c, str)
+                and c.strip()
+                and c.lstrip().startswith("[系统提示]")
+            ):
+                continue
             if isinstance(c, str) and c.strip():
                 out.append({"role": "user", "content": c, "tool_call_id": None, "tool_calls": []})
         elif t == "llm_response":
@@ -175,6 +188,20 @@ async def get_session(session_id: str, request: Request) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
     out: list[dict[str, Any]] = []
     for m in messages:
+        # 2026-06-22: scrub in-flight scaffolding that leaked into old
+        # session_store rows before _scrub_messages learned to filter them.
+        if (
+            m.role == "user"
+            and isinstance(m.content, str)
+            and m.content.lstrip().startswith("(screenshots from the previous tool batch")
+        ):
+            continue
+        if (
+            m.role == "user"
+            and isinstance(m.content, str)
+            and m.content.lstrip().startswith("[系统提示]")
+        ):
+            continue
         out.append({
             "role": m.role,
             "content": m.content or "",
