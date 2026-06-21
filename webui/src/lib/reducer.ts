@@ -105,6 +105,25 @@ const INJECTED_BLOCKS =
 export function stripInjectedBlocks(text: string): string {
   return text.replace(INJECTED_BLOCKS, "").trim();
 }
+
+// System-injected user-role messages that must NOT show as the user's own
+// chat bubbles. They flooded the transcript on refresh ("用户信息重复"):
+//   * vision screenshot batch hint   "(screenshots from the previous tool…"
+//   * todo-nudge                     "[系统提示] 你的待办列表…"
+//   * narration-enforcer nudge       "已连续 N 个步骤没有给用户的进度更新…"
+//   * purely-injected blocks (e.g. <memory-v2-facts>…) → empty after strip
+export function isScaffoldingUserMessage(raw: string): boolean {
+  const c = (raw || "").trimStart();
+  if (!c) return false;
+  if (c.startsWith("(screenshots from the previous tool batch")) return true;
+  if (c.startsWith("[系统提示]")) return true;
+  if (c.startsWith("已连续") && c.includes("没有给用户的进度更新")) return true;
+  // Purely-injected blocks (e.g. a message that is ONLY <memory-v2-facts>…):
+  // non-empty raw that strips to nothing. Image-only messages have empty raw
+  // and real images, so they are NOT caught here.
+  if (raw.trim() !== "" && stripInjectedBlocks(raw) === "") return true;
+  return false;
+}
 export const mediaList = (v: unknown): string[] =>
   Array.isArray(v) ? (v as string[]).map(resolveMediaUrl) : [];
 
@@ -122,13 +141,9 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       const content = stripInjectedBlocks(str(payload.content));
       // 2026-06-22: drop in-flight scaffolding messages that leaked into
       // the chat UI. These are system-injected user-role messages for the
-      // LLM only, not user-authored content.
-      if (
-        content.trimStart().startsWith("(screenshots from the previous tool batch")
-      ) {
-        return chat;
-      }
-      if (content.trimStart().startsWith("[系统提示]")) {
+      // LLM only, not user-authored content. (Checked against the RAW
+      // payload too, so purely-injected blocks that strip to "" are caught.)
+      if (isScaffoldingUserMessage(str(payload.content))) {
         return chat;
       }
       // 新用户消息 = 上一轮彻底结束 → 收尾所有残留 running 工具卡。

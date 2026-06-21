@@ -35,6 +35,31 @@ def _store() -> SessionStore | None:
         return None
 
 
+def _is_scaffolding_user(content: Any) -> bool:
+    """True when a user-role message is system-injected scaffolding, not the
+    user's own text — so it must not surface as a "用户" chat bubble.
+
+    Covers: vision screenshot hint, todo-nudge ([系统提示]…), narration-enforcer
+    nudge (已连续 N 个步骤没有给用户的进度更新…), and purely-injected messages
+    (e.g. a message that is ONLY <memory-v2-facts>…). Keep in sync with the
+    webui ``isScaffoldingUserMessage``."""
+    if not isinstance(content, str):
+        return False
+    c = content.lstrip()
+    if not c:
+        return False
+    if c.startswith("(screenshots from the previous tool batch"):
+        return True
+    if c.startswith("[系统提示]"):
+        return True
+    if c.startswith("已连续") and "没有给用户的进度更新" in c:
+        return True
+    from xmclaw.daemon.routers.tasks import _INJECTED_BLOCKS
+    if content.strip() and _INJECTED_BLOCKS.sub("", content).strip() == "":
+        return True
+    return False
+
+
 @router.get("")
 async def list_sessions(
     limit: int = 50,
@@ -151,17 +176,7 @@ def _reconstruct_from_events(session_id: str, *, bus=None) -> list[dict[str, Any
         if t == "user_message":
             c = p.get("content")
             # 2026-06-22: scrub in-flight scaffolding from event-log recovery.
-            if (
-                isinstance(c, str)
-                and c.strip()
-                and c.lstrip().startswith("(screenshots from the previous tool batch")
-            ):
-                continue
-            if (
-                isinstance(c, str)
-                and c.strip()
-                and c.lstrip().startswith("[系统提示]")
-            ):
+            if _is_scaffolding_user(c):
                 continue
             if isinstance(c, str) and c.strip():
                 out.append({"role": "user", "content": c, "tool_call_id": None, "tool_calls": []})
@@ -190,17 +205,7 @@ async def get_session(session_id: str, request: Request) -> JSONResponse:
     for m in messages:
         # 2026-06-22: scrub in-flight scaffolding that leaked into old
         # session_store rows before _scrub_messages learned to filter them.
-        if (
-            m.role == "user"
-            and isinstance(m.content, str)
-            and m.content.lstrip().startswith("(screenshots from the previous tool batch")
-        ):
-            continue
-        if (
-            m.role == "user"
-            and isinstance(m.content, str)
-            and m.content.lstrip().startswith("[系统提示]")
-        ):
+        if m.role == "user" and _is_scaffolding_user(m.content):
             continue
         out.append({
             "role": m.role,

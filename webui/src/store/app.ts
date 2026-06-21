@@ -10,6 +10,7 @@ import {
   applyEvent,
   appendOptimisticUser,
   appendThinkingAssistant,
+  isScaffoldingUserMessage,
   mediaList,
   normalizeQuestionOptions,
   stripInjectedBlocks,
@@ -151,6 +152,10 @@ async function hydrateHistory(sid: string, token: string | null, set: (fn: (s: A
     msgs.forEach((m, i) => {
       const role = m.role as string;
       if (role !== "user" && role !== "assistant") return;
+      // Skip system-injected user-role scaffolding (todo-nudge,
+      // narration-nudge, screenshot hint, purely-injected blocks) so a
+      // refresh doesn't flood the chat with duplicate "用户" bubbles.
+      if (role === "user" && isScaffoldingUserMessage((m.content as string) || "")) return;
       const restoredImages = mediaList(m.images);
       hydrated.push({
         id: `restore_${i}`,
