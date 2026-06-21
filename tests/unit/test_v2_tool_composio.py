@@ -598,17 +598,25 @@ def test_factory_skips_when_section_missing(
     assert not any(n.startswith("GMAIL_") for n in names)
 
 
-def test_factory_raises_config_error_when_enabled_without_api_key() -> None:
-    """``enabled=true`` + empty api_key is a half-filled config — fail
-    fast at startup rather than letting the daemon boot in a state
-    where Composio tools are advertised but every call fails."""
-    from xmclaw.daemon.factory import ConfigError, build_tools_from_config
-    with pytest.raises(ConfigError, match="composio"):
-        build_tools_from_config({
-            "tools": {
-                "composio": {"enabled": True, "api_key": "", "apps": ["GMAIL"]},
-            },
-        })
+def test_factory_skips_composio_when_enabled_without_api_key() -> None:
+    """``enabled=true`` + empty api_key degrades GRACEFULLY (2026-06-22).
+
+    Composio is now default-on in the template, but it needs a paid api_key
+    + the optional ``composio-core`` extra. build_tools is on the daemon
+    startup path, so a missing key must NOT raise — it would brick boot for
+    every user without a Composio account. Instead the provider is skipped
+    (logged) and the rest of the tool stack still builds; the 7000+
+    Composio tools just don't appear until a key is set."""
+    from xmclaw.daemon.factory import build_tools_from_config
+    tools = build_tools_from_config({
+        "tools": {
+            "enable_bash": True,
+            "composio": {"enabled": True, "api_key": "", "apps": ["GMAIL"]},
+        },
+    })
+    assert tools is not None
+    names = {s.name for s in tools.list_tools()}
+    assert not any(n.startswith("GMAIL_") for n in names)
 
 
 def test_factory_raises_config_error_when_apps_not_list() -> None:

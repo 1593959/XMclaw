@@ -131,7 +131,7 @@ def default_config_template() -> dict[str, Any]:
                 "download_dir": None
             },
             "composio": {
-                "enabled": False,
+                "enabled": True,
                 "api_key": "",
                 "entity_id": "default",
                 "apps": [
@@ -301,10 +301,10 @@ def default_config_template() -> dict[str, Any]:
                 }
             },
             "auto_recall": {
-                "enabled": False,
+                "enabled": True,
                 "k": 8,
                 "min_similarity": 0.65,
-                "use_hybrid": False,
+                "use_hybrid": True,
                 "timeout_s": 1.0,
                 "exclude_buckets": []
             },

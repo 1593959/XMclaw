@@ -1534,23 +1534,35 @@ def build_tools_from_config(
     if isinstance(composio_cfg, dict) and composio_cfg.get("enabled"):
         api_key = composio_cfg.get("api_key")
         if not isinstance(api_key, str) or not api_key.strip():
-            raise ConfigError(
-                "'tools.composio.enabled' is true but "
-                "'tools.composio.api_key' is empty. Get one at "
-                "https://app.composio.dev or set XMC__tools__composio__api_key."
+            # 2026-06-22: degrade gracefully instead of raising. Composio is
+            # now ``enabled`` by default in the template, but it needs a
+            # paid api_key + the optional ``composio-core`` extra. A missing
+            # key must NOT brick daemon boot (build_tools is on the startup
+            # path) — skip the provider with a one-line hint and continue,
+            # matching how channels/integrations degrade without creds. The
+            # 7000+ Composio tools simply don't appear until a key is set.
+            get_aggregator().record(
+                ErrorSeverity.INFO, __name__, "build_tools",
+                ValueError(
+                    "tools.composio.enabled is true but api_key is empty — "
+                    "skipping Composio tools. Set tools.composio.api_key "
+                    "(https://app.composio.dev) or XMC__tools__composio__api_key "
+                    "to enable them."
+                ),
             )
-        apps_raw = composio_cfg.get("apps") or []
-        if not isinstance(apps_raw, list):
-            raise ConfigError(
-                f"'tools.composio.apps' must be a list, got {type(apps_raw).__name__}"
-            )
-        from xmclaw.providers.tool.composio import ComposioToolProvider
-        children.append(ComposioToolProvider(
-            api_key=api_key,
-            entity_id=str(composio_cfg.get("entity_id") or "default"),
-            apps=[a for a in apps_raw if isinstance(a, str) and a.strip()],
-            cache_ttl_s=float(composio_cfg.get("cache_ttl_s", 300.0)),
-        ))
+        else:
+            apps_raw = composio_cfg.get("apps") or []
+            if not isinstance(apps_raw, list):
+                raise ConfigError(
+                    f"'tools.composio.apps' must be a list, got {type(apps_raw).__name__}"
+                )
+            from xmclaw.providers.tool.composio import ComposioToolProvider
+            children.append(ComposioToolProvider(
+                api_key=api_key,
+                entity_id=str(composio_cfg.get("entity_id") or "default"),
+                apps=[a for a in apps_raw if isinstance(a, str) and a.strip()],
+                cache_ttl_s=float(composio_cfg.get("cache_ttl_s", 300.0)),
+            ))
 
     # Sprint 2 Wave 15: calendar write-back tool. Hooked to the same
     # ICS file CalendarReminderTrigger reads, so created events are
