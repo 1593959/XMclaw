@@ -112,6 +112,18 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
     case "user_message": {
       const id = corr;
       const serverImages = mediaList(payload.images);
+      const content = stripInjectedBlocks(str(payload.content));
+      // 2026-06-22: drop in-flight scaffolding messages that leaked into
+      // the chat UI. These are system-injected user-role messages for the
+      // LLM only, not user-authored content.
+      if (
+        content.trimStart().startsWith("(screenshots from the previous tool batch")
+      ) {
+        return chat;
+      }
+      if (content.trimStart().startsWith("[系统提示]")) {
+        return chat;
+      }
       // 新用户消息 = 上一轮彻底结束 → 收尾所有残留 running 工具卡。
       const swept = finalizeStaleTools(chat.entries, null);
       if (swept.some((e) => e.id === id)) {
@@ -119,7 +131,7 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
           ...chat,
           entries: upsertById(swept, id, (e) => ({
             ...e,
-            content: stripInjectedBlocks(str(payload.content)) || e.content,
+            content: content || e.content,
             status: "complete",
             ts,
             images: serverImages.length > 0 ? serverImages : e.images || [],
@@ -135,15 +147,14 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
         (e) =>
           e.role === "user" &&
           e.id.startsWith("restore_") &&
-          stripInjectedBlocks(str(payload.content)) ===
-            stripInjectedBlocks(e.content || ""),
+          content === stripInjectedBlocks(e.content || ""),
       );
       if (restoredIdx >= 0) {
         const next = swept.slice();
         next[restoredIdx] = {
           ...next[restoredIdx],
           id,
-          content: stripInjectedBlocks(str(payload.content)),
+          content: content,
           status: "complete" as EntryStatus,
           ts,
           images: serverImages.length > 0 ? serverImages : next[restoredIdx].images || [],
@@ -155,7 +166,7 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
         entries: swept.concat({
           id,
           role: "user",
-          content: stripInjectedBlocks(str(payload.content)),
+          content: content,
           status: "complete",
           ts,
           images: serverImages,
