@@ -166,6 +166,11 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       const id = corr;
       // B-269: 用户已点 Stop 的回合，丢弃在途残余 chunk。
       if (chat.cancelledTurnIds.has(id)) return chat;
+      // 该回合已收到 llm_response 收尾。事件总线乱序投递时（chunk 被
+      // batch 延迟、response 抢先到达），迟到的 chunk 仍可补全文本，但
+      // 不得把已 complete 的气泡 status 打回 streaming —— 否则紫光标永
+      // 远闪、"停止"按钮不消失。内容不会丢：llm_response 已带 finalText。
+      const alreadyDone = chat.completedTurnIds.has(id);
       // seq 去重：WS 重连/bus 重发可能送达同一 chunk 两次。
       const seq = payload.seq;
       const chunkKey = seq != null ? `${id}:${seq}` : null;
@@ -195,7 +200,7 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
         entries: upsertById(cleaned, id, (e) => ({
           ...e,
           content: e.content + delta,
-          status: "streaming",
+          status: alreadyDone ? e.status : "streaming",
           blocks: appendBlock(e.blocks, "text", id, delta),
         })),
       };
@@ -251,9 +256,14 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       // 多 hop 中段（还有工具要跑）不清 pending，避免按钮 Stop/Send 闪烁。
       const moreHopsComing = ok && ((payload.tool_calls_count as number) || 0) > 0;
       const nextPending = moreHopsComing ? id : null;
+      // 标记该回合 corr 已收尾，后续乱序迟到的 llm_chunk 不再把气泡
+      // 打回 streaming（见 llm_chunk 分支的 alreadyDone 守卫）。
+      const completed = new Set(chat.completedTurnIds);
+      completed.add(id);
       if (!chat.entries.some((e) => e.id === id)) {
         return {
           ...chat,
+          completedTurnIds: completed,
           pendingAssistantId: nextPending,
           entries: chat.entries.concat({
             id,
@@ -267,6 +277,7 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       }
       return {
         ...chat,
+        completedTurnIds: completed,
         pendingAssistantId: nextPending,
         entries: upsertById(chat.entries, id, (e) => ({
           ...e,

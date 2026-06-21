@@ -336,6 +336,18 @@ class SqliteEventBus(InProcessEventBus):
             await _asyncio.to_thread(
                 self._conn.execute, _INSERT_SQL, _event_to_row(event),
             )
+        # 2026-06-21: fan-out ordering guard. LLM_CHUNK is batched and
+        # flushed every 100ms; a non-batched terminal event (LLM_RESPONSE)
+        # would otherwise fan out to subscribers BEFORE the trailing chunks
+        # published just before it, so the WS client sees llm_response then
+        # late chunks — and the chat reducer's chunk handler flips the
+        # already-completed bubble back to "streaming" (caret spins forever).
+        # Drain any pending chunk batches first so order is preserved.
+        # ``_flush_batch`` is idempotent and re-acquires the write lock, so
+        # it must run OUTSIDE the ``async with`` block above.
+        if self._batch_flush_pending:
+            for _pending_type in list(self._batch_flush_pending):
+                await self._flush_batch(_pending_type)
         await super().publish(event)
 
     async def _flush_after_delay(self, event_type: str) -> None:

@@ -149,6 +149,9 @@ export interface ChatState {
   entries: Entry[];
   pendingAssistantId: string | null;
   cancelledTurnIds: Set<string>;
+  // 已收到 llm_response 收尾的回合 corr。乱序到达的迟到 llm_chunk
+  // 不得把这些已 complete 的气泡打回 streaming（紫光标永久闪）。
+  completedTurnIds: Set<string>;
   seenChunks: Record<string, boolean>;
   tokenUsage: TokenUsage | null;
   todos: { items: TodoItem[]; count: number; ts: number } | null;
@@ -183,6 +186,7 @@ export const emptyChat = (): ChatState => ({
   entries: [],
   pendingAssistantId: null,
   cancelledTurnIds: new Set(),
+  completedTurnIds: new Set(),
   seenChunks: {},
   tokenUsage: null,
   todos: null,

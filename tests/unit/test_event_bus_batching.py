@@ -146,11 +146,53 @@ async def test_mixed_event_types_batch_independently(tmp_path: Path) -> None:
 
         # Wait for flush
         await asyncio.sleep(0.15)
-        # one batch for LLM_CHUNK, one for LLM_THINKING_CHUNK
-        assert counter.executemany_count == 2
-        assert counter.rows == 3  # 2 chunks + 1 thinking
-        # USER_MESSAGE immediate (1) + BEGIN/COMMIT per batch (2 batches × 2)
-        assert counter.execute_count == 5
+        # 2026-06-21: a low-frequency event (USER_MESSAGE) now flushes any
+        # pending chunk batch BEFORE it fans out, so terminal events never
+        # overtake the chunks published before them on the subscriber side.
+        # chunk1 therefore flushes early (triggered by USER_MESSAGE) and
+        # chunk2 flushes later on the 100ms timer → two separate LLM_CHUNK
+        # batches + one LLM_THINKING_CHUNK batch = 3 executemany calls.
+        assert counter.executemany_count == 3
+        assert counter.rows == 3  # 2 chunks + 1 thinking, 1 row per batch
+        # USER_MESSAGE immediate insert (1) + BEGIN/COMMIT per batch (3 × 2)
+        assert counter.execute_count == 7
+    finally:
+        bus.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_event_does_not_overtake_pending_chunks(
+    tmp_path: Path,
+) -> None:
+    """Regression (2026-06-21): subscriber fan-out order must be preserved.
+
+    LLM_CHUNK is batched and flushed every 100ms; a non-batched terminal
+    event (LLM_RESPONSE) published within that window must NOT fan out to
+    subscribers before the chunks published just before it. Pre-fix the WS
+    client saw ``llm_response`` then the trailing chunks, and the chat
+    reducer's chunk handler flipped the already-completed bubble back to
+    "streaming" — the caret spun forever.
+    """
+    bus = SqliteEventBus(tmp_path / "events.db")
+    try:
+        seen: list[str] = []
+
+        async def handler(event: BehavioralEvent) -> None:
+            seen.append(event.type.value)
+
+        bus.subscribe(accept_all, handler)
+
+        # Two chunks land in the 100ms batch buffer (not yet flushed)...
+        await bus.publish(_ev(type=EventType.LLM_CHUNK, payload={"i": 0}))
+        await bus.publish(_ev(type=EventType.LLM_CHUNK, payload={"i": 1}))
+        # ...then a terminal event arrives immediately, well inside the
+        # window. It must flush the pending chunks first so they fan out
+        # before it — NOT 100ms later, after the terminal event.
+        await bus.publish(_ev(type=EventType.LLM_RESPONSE, payload={"done": True}))
+
+        await bus.drain()
+
+        assert seen == ["llm_chunk", "llm_chunk", "llm_response"]
     finally:
         bus.close()
 
