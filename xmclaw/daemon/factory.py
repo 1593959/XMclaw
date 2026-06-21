@@ -1623,11 +1623,12 @@ def build_tools_from_config(
         from xmclaw.providers.tool.composite import CompositeToolProvider
         provider = CompositeToolProvider(*children)
 
-    # 2026-05-12 Batch B.2: ErrorAwareRetryProvider — LLM-guided one-shot
-    # fixup layer for SEMANTIC tool failures (wrong args, wrong tool).
+    # 2026-05-12 Batch B.2: ErrorAwareRetryProvider — LLM-guided fixup
+    # layer for SEMANTIC tool failures (wrong args, wrong tool).
     # Composes ON TOP of the existing B-17 transient retry in hop_loop.
     # Default ON (zero regression: on success path it's a passthrough;
-    # on failure it tries one fixup, returns original on any issue).
+    # on failure it tries up to 2 fixups, returns original on any issue).
+    # 2026-06-22: expanded from 1 → 2 max_retries with back-off.
     retry_aware_cfg = tools_section.get("retry_aware") or {}
     if (
         not isinstance(retry_aware_cfg, dict)
@@ -1641,14 +1642,17 @@ def build_tools_from_config(
             # function gets called by it; the build_tools-only path
             # gives None and the wrapper is a passthrough on llm=None.
             llm_for_retry = None  # filled in by build_agent_from_config
+            _ra_cfg = retry_aware_cfg if isinstance(retry_aware_cfg, dict) else {}
             provider = ErrorAwareRetryProvider(
                 provider,
                 llm=llm_for_retry,
-                timeout_s=float(
-                    retry_aware_cfg.get("timeout_s", 8.0)
-                    if isinstance(retry_aware_cfg, dict) else 8.0
-                ),
+                timeout_s=float(_ra_cfg.get("timeout_s", 8.0)),
                 enabled=True,
+                max_retries=int(_ra_cfg.get("max_retries", 2)),
+                backoff_delays=tuple(
+                    float(d)
+                    for d in _ra_cfg.get("backoff_delays", [1.0, 3.0])
+                ),
             )
         except Exception as _exc:  # noqa: BLE001
             get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
@@ -1672,7 +1676,7 @@ def build_tools_from_config(
                 tools=None,  # plumbed in by build_agent_from_config
                 llm_registry=None,  # plumbed in by build_agent_from_config
                 max_hops_per_subagent=int(
-                    subagent_cfg.get("max_hops_per_subagent", 20)
+                    subagent_cfg.get("max_hops_per_subagent", 100)
                 ),
                 max_concurrency=int(
                     subagent_cfg.get("max_concurrency", 4)

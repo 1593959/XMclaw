@@ -83,7 +83,7 @@ fixup the agent should try next.
 Tool that failed: ``{tool_name}``
 Args were: {tool_args}
 Error: {tool_error}
-
+{history_block}
 Available tools (name + 1-line description):
 {tool_catalog}
 
@@ -106,13 +106,15 @@ RULES:
   * Don't loop: if the error suggests the goal is impossible from
     here (e.g. "permission denied" on a path the user owns), prefer
     ``skip`` over retrying the same path with different args.
-  * Don't be clever: this is a SINGLE shot. The agent will see the
-    final outcome regardless.
+  * If previous attempts failed, try a DIFFERENT approach — don't
+    repeat the same mistake.
+  * Don't be clever: you have at most 2 attempts. The agent will see
+    the final outcome regardless.
 """
 
 
 class ErrorAwareRetryProvider(ToolProvider):
-    """Wraps any ``ToolProvider`` with an LLM-guided one-shot fixup
+    """Wraps any ``ToolProvider`` with an LLM-guided fixup
     layer for non-transient tool failures.
 
     Constructor params:
@@ -123,6 +125,11 @@ class ErrorAwareRetryProvider(ToolProvider):
       AgentLoop._llm uses.
     * ``timeout_s`` — wall-clock cap on the fixup LLM call. Default 8s.
     * ``enabled`` — kill-switch from config. Default True.
+    * ``max_retries`` — how many fixup attempts per tool call.
+      Default 2 (was 1 in pre-2026-06-22). Each attempt uses the
+      previous error as context so the LLM can learn from failure.
+    * ``backoff_delays`` — sleep between fixup attempts. Default
+      (1.0, 3.0) seconds.
 
     Composes cleanly with B-17 transient retry (in hop_loop) — that
     fires for transient errors before we see them, this fires for
@@ -136,11 +143,15 @@ class ErrorAwareRetryProvider(ToolProvider):
         llm: Any | None = None,
         timeout_s: float = 8.0,
         enabled: bool = True,
+        max_retries: int = 2,
+        backoff_delays: tuple[float, ...] = (1.0, 3.0),
     ) -> None:
         self._inner = inner
         self._llm = llm
         self._timeout_s = max(2.0, float(timeout_s))
         self._enabled = bool(enabled)
+        self._max_retries = max(0, int(max_retries))
+        self._backoff_delays = tuple(float(d) for d in backoff_delays)
         self._fixups_attempted = 0
         self._fixups_succeeded = 0
 
@@ -167,83 +178,107 @@ class ErrorAwareRetryProvider(ToolProvider):
         ):
             return result
 
-        # Attempt one LLM-guided fixup.
-        try:
-            fixup = await asyncio.wait_for(
-                self._ask_fixup(call, result),
-                timeout=self._timeout_s,
+        # 2026-06-22: multi-attempt fixup loop with back-off.
+        # Previous attempts' errors are fed into the prompt so the LLM
+        # can see a failure chain and pick a different strategy.
+        attempt_history: list[str] = []
+        for attempt in range(self._max_retries):
+            attempt_history.append(
+                f"Attempt {attempt + 1}: {result.error}"
             )
-        except asyncio.TimeoutError:
-            logger.info(
-                "retry_aware.fixup_llm_timeout tool=%s", call.name,
-            )
-            return result
-        except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "retry_aware.fixup_llm_failed tool=%s err=%s",
-                call.name, exc,
-            )
-            return result
+            delay = self._backoff_delays[
+                min(attempt, len(self._backoff_delays) - 1)
+            ]
+            if delay > 0:
+                await asyncio.sleep(delay)
 
-        if not isinstance(fixup, dict):
-            return result
-        action = str(fixup.get("action", "")).lower()
-        self._fixups_attempted += 1
-
-        if action == "skip":
-            logger.info(
-                "retry_aware.skip tool=%s reason=%r",
-                call.name, fixup.get("reason"),
-            )
-            return result  # caller sees the original error
-
-        if action == "retry":
-            new_args = fixup.get("new_args")
-            if not isinstance(new_args, dict):
-                return result
-            retry_call = _dc.replace(call, args=new_args)
-            retry_result = await self._inner.invoke(retry_call)
-            if retry_result.ok:
-                self._fixups_succeeded += 1
-                logger.info(
-                    "retry_aware.retry_ok tool=%s reason=%r",
-                    call.name, fixup.get("reason"),
+            try:
+                fixup = await asyncio.wait_for(
+                    self._ask_fixup(call, result, attempt_history),
+                    timeout=self._timeout_s,
                 )
-                return retry_result
-            return result
-
-        if action == "alternative":
-            new_tool = str(fixup.get("new_tool", "")).strip()
-            new_args = fixup.get("new_args")
-            if not new_tool or not isinstance(new_args, dict):
-                return result
-            # Verify the alternative is in our catalogue — don't let the
-            # LLM hallucinate tool names.
-            catalog_names = {s.name for s in self._inner.list_tools()}
-            if new_tool not in catalog_names:
+            except asyncio.TimeoutError:
                 logger.info(
-                    "retry_aware.alt_unknown tool=%s alt=%r",
-                    call.name, new_tool,
+                    "retry_aware.fixup_llm_timeout tool=%s attempt=%d",
+                    call.name, attempt + 1,
                 )
-                return result
-            alt_call = _dc.replace(call, name=new_tool, args=new_args)
-            alt_result = await self._inner.invoke(alt_call)
-            if alt_result.ok:
-                self._fixups_succeeded += 1
+                break
+            except Exception as exc:  # noqa: BLE001
                 logger.info(
-                    "retry_aware.alt_ok orig=%s alt=%s reason=%r",
-                    call.name, new_tool, fixup.get("reason"),
+                    "retry_aware.fixup_llm_failed tool=%s attempt=%d err=%s",
+                    call.name, attempt + 1, exc,
                 )
-                return alt_result
-            return result
+                break
 
-        # Unknown action shape — bubble original.
+            if not isinstance(fixup, dict):
+                break
+            action = str(fixup.get("action", "")).lower()
+            self._fixups_attempted += 1
+
+            if action == "skip":
+                logger.info(
+                    "retry_aware.skip tool=%s attempt=%d reason=%r",
+                    call.name, attempt + 1, fixup.get("reason"),
+                )
+                return result  # caller sees the original error
+
+            if action == "retry":
+                new_args = fixup.get("new_args")
+                if not isinstance(new_args, dict):
+                    break
+                retry_call = _dc.replace(call, args=new_args)
+                retry_result = await self._inner.invoke(retry_call)
+                if retry_result.ok:
+                    self._fixups_succeeded += 1
+                    logger.info(
+                        "retry_aware.retry_ok tool=%s attempt=%d reason=%r",
+                        call.name, attempt + 1, fixup.get("reason"),
+                    )
+                    return retry_result
+                # If the retry failed with a *transient* error, B-17
+                # already fired; if it's a *different* semantic error,
+                # feed it into the next attempt.
+                result = retry_result
+                continue
+
+            if action == "alternative":
+                new_tool = str(fixup.get("new_tool", "")).strip()
+                new_args = fixup.get("new_args")
+                if not new_tool or not isinstance(new_args, dict):
+                    break
+                # Verify the alternative is in our catalogue — don't let the
+                # LLM hallucinate tool names.
+                catalog_names = {s.name for s in self._inner.list_tools()}
+                if new_tool not in catalog_names:
+                    logger.info(
+                        "retry_aware.alt_unknown tool=%s attempt=%d alt=%r",
+                        call.name, attempt + 1, new_tool,
+                    )
+                    break
+                alt_call = _dc.replace(call, name=new_tool, args=new_args)
+                alt_result = await self._inner.invoke(alt_call)
+                if alt_result.ok:
+                    self._fixups_succeeded += 1
+                    logger.info(
+                        "retry_aware.alt_ok orig=%s alt=%s attempt=%d reason=%r",
+                        call.name, new_tool, attempt + 1, fixup.get("reason"),
+                    )
+                    return alt_result
+                # Feed the alternative tool's error into the next attempt.
+                result = alt_result
+                continue
+
+            # Unknown action shape — stop trying.
+            break
+
+        # All attempts exhausted or hit an unrecoverable wall.
         return result
 
     # ── Internals ──────────────────────────────────────────────────
 
     async def _ask_fixup(
         self, call: ToolCall, result: ToolResult,
+        attempt_history: list[str] | None = None,
     ) -> dict[str, Any] | None:
         from xmclaw.providers.llm.base import Message
         # Build a compact catalogue — only tool name + first 80 chars
@@ -254,11 +289,20 @@ class ErrorAwareRetryProvider(ToolProvider):
             catalog_lines.append(f"  * {s.name}: {desc[:120]}")
         catalog = "\n".join(catalog_lines[:80])  # absolute cap
 
+        history_block = ""
+        if attempt_history:
+            history_block = (
+                "\nPrevious failed attempts in this turn:\n"
+                + "\n".join(attempt_history)
+                + "\n"
+            )
+
         prompt = _FIXUP_PROMPT.format(
             tool_name=call.name,
             tool_args=json.dumps(call.args, ensure_ascii=False)[:500],
             tool_error=(result.error or "")[:500],
             tool_catalog=catalog,
+            history_block=history_block,
         )
         resp = await self._llm.complete([Message(role="user", content=prompt)])
         raw = (getattr(resp, "content", "") or "").strip()

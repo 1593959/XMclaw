@@ -702,25 +702,74 @@ class BuiltinToolsShellMixin:
         last_error: str | None = None
         results: list[dict[str, str]] = []
 
+        async def _retry_with_backoff(
+            name: str, coro_fn, *, max_retries: int = 2, delays: tuple = (1.0, 3.0),
+        ):
+            """Execute a search engine coroutine with transient-aware retries."""
+            last_err = None
+            for attempt in range(max_retries + 1):
+                if attempt > 0:
+                    await asyncio.sleep(delays[min(attempt - 1, len(delays) - 1)])
+                try:
+                    return await coro_fn()
+                except _SearchBackendError as exc:
+                    last_err = str(exc)
+                    # Only retry on transient-looking errors
+                    low = last_err.lower()
+                    if not any(
+                        p in low for p in (
+                            "timeout", "connection", "reset", "refused",
+                            "unreachable", "unavailable", "503", "502",
+                            "504", "429", "dns", "resolve", "econn",
+                            "etimedout", "eai_again", "read error",
+                            "write error", "broken pipe",
+                        )
+                    ):
+                        raise
+                except Exception as exc:
+                    low = str(exc).lower()
+                    if any(
+                        p in low for p in (
+                            "timeout", "connection", "reset", "refused",
+                            "unreachable", "unavailable", "503", "502",
+                            "504", "429", "dns", "resolve", "econn",
+                        )
+                    ):
+                        last_err = str(exc)
+                        continue
+                    raise
+            raise _SearchBackendError(
+                f"{name} failed after {max_retries + 1} attempts: {last_err}"
+            )
+
         async def _try_engine(name: str):
             used_engines.append(name)
             if name == "ddg":
-                return await self._search_ddg(query.strip(), max_results)
+                return await _retry_with_backoff(
+                    name, lambda: self._search_ddg(query.strip(), max_results),
+                )
             if name == "bing_cn":
-                return await self._search_bing_cn_html(
-                    query.strip(), max_results,
+                return await _retry_with_backoff(
+                    name,
+                    lambda: self._search_bing_cn_html(query.strip(), max_results),
                 )
             if name == "bing":
-                return await self._search_bing(
-                    query.strip(), max_results, cfg,
+                return await _retry_with_backoff(
+                    name, lambda: self._search_bing(
+                        query.strip(), max_results, cfg,
+                    ),
                 )
             if name == "brave":
-                return await self._search_brave(
-                    query.strip(), max_results, cfg,
+                return await _retry_with_backoff(
+                    name, lambda: self._search_brave(
+                        query.strip(), max_results, cfg,
+                    ),
                 )
             if name == "google_cse":
-                return await self._search_google_cse(
-                    query.strip(), max_results, cfg,
+                return await _retry_with_backoff(
+                    name, lambda: self._search_google_cse(
+                        query.strip(), max_results, cfg,
+                    ),
                 )
             raise _SearchBackendError(f"unknown engine: {name}")
 
@@ -749,18 +798,87 @@ class BuiltinToolsShellMixin:
                 break
 
         if not results:
+            # 2026-06-22: final fallback — try web_fetch on a search engine
+            # SERP when all APIs fail. This is a degraded path but often
+            # works when DDG/Bing APIs are blocked but the HTML site is
+            # reachable via proxy.
+            from urllib.parse import quote_plus
+            fallback_urls = []
+            if not disable_fallback:
+                fallback_urls.append(
+                    f"https://cn.bing.com/search?q={quote_plus(query)}&form=QBLH"
+                )
+                fallback_urls.append(
+                    f"https://duckduckgo.com/html/?q={quote_plus(query)}"
+                )
+            _fetch_err = None
+            for fb_url in fallback_urls:
+                try:
+                    import httpx
+                    headers = {
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/145.0.0.0 Safari/537.36"
+                        ),
+                        "Accept": (
+                            "text/html,application/xhtml+xml,application/xml;"
+                            "q=0.9,*/*;q=0.8"
+                        ),
+                        "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                    }
+                    timeout = httpx.Timeout(connect=8.0, read=15.0)
+                    async with httpx.AsyncClient(
+                        follow_redirects=True, timeout=timeout,
+                    ) as c:
+                        r = await c.get(fb_url, headers=headers)
+                    if r.status_code == 200:
+                        # Parse the HTML as a search result page
+                        html_text = r.text
+                        if "bing.com" in fb_url:
+                            parsed = _parse_bing_html(html_text, max_results)
+                        else:
+                            parsed = _parse_ddg_html(html_text, max_results)
+                        if parsed:
+                            engine_name = "bing_cn_fetch" if "bing.com" in fb_url else "ddg_fetch"
+                            blocks = [
+                                f"{i+1}. {row['title']}\n   {row['url']}\n   {row['snippet']}"
+                                for i, row in enumerate(parsed)
+                            ]
+                            return ToolResult(
+                                call_id=call.id, ok=True,
+                                content=(
+                                    f"{len(parsed)} results for {query!r} "
+                                    f"(via {engine_name} fallback; all search APIs failed: "
+                                    f"{last_error or 'unknown'}):\n\n"
+                                    + "\n\n".join(blocks)
+                                ),
+                                side_effects=(),
+                                latency_ms=(time.perf_counter() - t0) * 1000.0,
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    _fetch_err = str(exc)
+                    continue
+
             # All engines failed or returned 0. Surface the LAST error
             # so the agent has something concrete + which engines we
             # tried (so it doesn't pick the same one on retry).
             if last_error is not None:
-                return _fail(
+                hint = (
+                    "If this is from a CN network and DDG is blocked, "
+                    "configure a Bing API key via ``evolution.search.bing_api_key`` "
+                    "for higher quality results. "
+                    f"Fetch fallback also failed: {_fetch_err}."
+                    if _fetch_err else
+                    "If this is from a CN network and DDG is blocked, "
+                    "configure a Bing API key via ``evolution.search.bing_api_key`` "
+                    "for higher quality results — Bing CN HTML scrape is the "
+                    "current fallback but is rate-limited."
+                )
+                return _fail_with_hint(
                     call, t0,
-                    f"search failed across engines {used_engines}: "
-                    f"{last_error}. If this is from a CN network and "
-                    f"DDG is blocked, configure a Bing API key via "
-                    f"``evolution.search.bing_api_key`` for higher "
-                    f"quality results — Bing CN HTML scrape is the "
-                    f"current fallback but is rate-limited.",
+                    f"search failed across engines {used_engines}: {last_error}",
+                    hint=hint,
                 )
             return ToolResult(
                 call_id=call.id, ok=True,

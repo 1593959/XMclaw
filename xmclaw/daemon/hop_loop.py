@@ -240,9 +240,21 @@ async def _invoke_single_tool(
                 f"a failed ToolResult instead of raising)"
             ),
         )
-    # B-17: retry once on transient failures.
-    if not result.ok and result.error and _is_transient_tool_error(result.error):
-        await _asyncio.sleep(0.5)
+    # B-17: retry up to 3× on transient failures with exponential back-off.
+    # 2026-06-22: expanded from 1 → 3 retries (0.5s, 2s, 5s) and widened
+    # the transient pattern list in history_utils.py. Real networks (CN
+    # cross-border, satellite, hotel Wi-Fi) often need >1 attempt.
+    _B17_BACKOFFS = (0.5, 2.0, 5.0)
+    _b17_attempt = 0
+    while (
+        not result.ok
+        and result.error
+        and _is_transient_tool_error(result.error)
+        and _b17_attempt < len(_B17_BACKOFFS)
+    ):
+        delay = _B17_BACKOFFS[_b17_attempt]
+        _b17_attempt += 1
+        await _asyncio.sleep(delay)
         try:
             retry = await _asyncio.wait_for(
                 effective_tools.invoke(call_with_sid),
@@ -254,7 +266,7 @@ async def _invoke_single_tool(
                 ok=False,
                 content=None,
                 error=(
-                    f"tool '{call.name}' retry also exceeded "
+                    f"tool '{call.name}' retry #{_b17_attempt} also exceeded "
                     f"{tool_timeout_s:.0f}s wall-clock"
                 ),
             )
@@ -265,17 +277,24 @@ async def _invoke_single_tool(
                 content=None,
                 error=(
                     f"{type(_retry_exc).__name__}: {_retry_exc} "
-                    f"(retry also raised uncaught — "
+                    f"(retry #{_b17_attempt} raised uncaught — "
                     f"ToolProvider contract violation)"
                 ),
             )
         if retry.ok:
             from xmclaw.utils.log import get_logger
             get_logger(__name__).info(
-                "tool.retry_succeeded tool=%s first_error=%s",
-                call.name, (result.error or "")[:120],
+                "tool.retry_succeeded tool=%s attempt=%d first_error=%s",
+                call.name, _b17_attempt, (result.error or "")[:120],
             )
             result = retry
+            break
+        else:
+            # If the retry itself hit a *different* transient error,
+            # keep looping; if it's a non-transient error, stop.
+            if not _is_transient_tool_error(retry.error or ""):
+                break
+            result = retry  # bubble the latest error for next attempt
 
     # Wave-32: PostToolUse hook dispatch.
     if hook_engine is not None:
