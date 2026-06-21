@@ -164,10 +164,10 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
             "max_hops": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 12,
+                "maximum": 100,
                 "description": (
                     "Optional. Per-subagent hop budget override "
-                    "(default 6, cap 12). Use higher for sub-tasks "
+                    "(default 6, cap 100). Use higher for sub-tasks "
                     "that need multiple tool round-trips."
                 ),
             },
@@ -246,7 +246,7 @@ class SubagentToolProvider(ToolProvider):
         llm: Any | None = None,
         tools: ToolProvider | None = None,
         llm_registry: Any | None = None,
-        max_hops_per_subagent: int = 50,
+        max_hops_per_subagent: int = 100,
         max_concurrency: int = 4,
         # 2026-05-25: both caps bumped to 5 min per user request.
         # Previous 120s fanout cap aborted mid-way through real-world
