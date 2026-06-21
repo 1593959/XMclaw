@@ -214,5 +214,9 @@ async def test_agent_loop_without_cost_tracker_still_works() -> None:
     result = await agent.run_turn("sess", "hi")
     await bus.drain()
     assert result.ok
-    # No COST_TICK events are emitted when no tracker.
-    assert not any(e.type == EventType.COST_TICK for e in result.events)
+    # Wave-30: COST_TICK is emitted on EVERY LLM call even without a
+    # tracker (cache stats are meaningful for the dashboard).  When no
+    # tracker is wired, cost_usd is None.
+    cost_ticks = [e for e in result.events if e.type == EventType.COST_TICK]
+    assert len(cost_ticks) == 1, "COST_TICK should be emitted even without tracker"
+    assert cost_ticks[0].payload.get("cost_usd") is None
