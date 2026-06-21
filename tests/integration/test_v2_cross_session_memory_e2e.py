@@ -102,6 +102,9 @@ async def test_memory_injects_prior_session_into_new_turn(tmp_path):
         memory=memory,
         memory_top_k=3,
         agent_id="test",
+        # The V1 ``memory=`` recall leg now defaults OFF (V2 supplies
+        # injection); this test exercises the legacy path, so opt back in.
+        cfg={"cognition": {"memory": {"legacy_recall_enabled": True}}},
     )
     res_b = await loop_b.run_turn(
         session_id="session-b",
@@ -115,8 +118,10 @@ async def test_memory_injects_prior_session_into_new_turn(tmp_path):
     assert "<memory-context>" in user_msg.content
     assert "</memory-context>" in user_msg.content
     assert "line 47" in user_msg.content
-    # And the original user message is preserved at the head:
-    assert user_msg.content.startswith("Where did the build break?")
+    # And the original user message is preserved (now after the always-on
+    # ## 当前时间 / <session-workspace> context tails, so check presence
+    # rather than startswith).
+    assert "Where did the build break?" in user_msg.content
 
     memory.close()
 
@@ -160,5 +165,10 @@ async def test_memory_optional_no_failures_when_unset(tmp_path):
     res = await loop.run_turn(session_id="s", user_message="hello")
     assert res.ok
     user_msg = next(m for m in llm.last_messages if m.role == "user")
-    # Plain user message — no fence injected.
-    assert user_msg.content == "hello"
+    # No MEMORY fence injected (memory is None). The user message still
+    # carries the always-on ephemeral context tails (## 当前时间 +
+    # <session-workspace>, added 2026-05-30 F1; both are stripped from
+    # stored history by history_compression), so assert on substring +
+    # the absence of the memory fence rather than exact equality.
+    assert "hello" in user_msg.content
+    assert "<memory-context>" not in user_msg.content

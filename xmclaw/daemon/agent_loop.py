@@ -1760,6 +1760,40 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             _turn_metrics["llm_time_ms"] = _llm_ms
 
         text = response.content or ""
+
+        # Wave-30 (2026-05-18): emit COST_TICK on EVERY LLM call,
+        # including instant mode.  Mirrors hop_loop.py:1457 logic.
+        _cache_creation = int(getattr(
+            response, "cache_creation_input_tokens", 0,
+        ) or 0)
+        _cache_read = int(getattr(
+            response, "cache_read_input_tokens", 0,
+        ) or 0)
+        _tick_payload: dict[str, Any] = {
+            "hop": 0,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "model": getattr(llm, "model", "") or "",
+            "cache_creation_input_tokens": _cache_creation,
+            "cache_read_input_tokens": _cache_read,
+        }
+        if self._cost_tracker is not None:
+            cost = self._cost_tracker.record(
+                provider=getattr(llm, "__class__", type(llm)).__name__,
+                model=getattr(llm, "model", "") or "",
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+            )
+            _tick_payload.update({
+                "cost_usd": cost,
+                "spent_usd": self._cost_tracker.spent_usd,
+                "budget_usd": self._cost_tracker.budget_usd,
+                "remaining_usd": self._cost_tracker.remaining_usd,
+            })
+        else:
+            _tick_payload["cost_usd"] = None
+        await publish(EventType.COST_TICK, _tick_payload)
+
         await publish(EventType.LLM_RESPONSE, {
             "hop": 0,
             "text": text,
@@ -3674,10 +3708,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 enable_swarm=bool(getattr(self, "_mode_swarm_enabled", True)),
             )
             _route = _mode_router.route(user_message, forced_mode=forced_mode)
-            self._active_run_modes[session_id] = _route.mode.value
+            _mode_value = _route.mode.value
+            # Ultrathink is incompatible with the instant single-shot path:
+            # 深思 mandates a think-first multi-hop (the directive + the
+            # extended-thinking enablement only run on the agent path). If
+            # the router picked ``instant`` for a short prompt, upgrade to
+            # the full agent path so toggling 深思 actually takes effect
+            # instead of being silently dropped.
+            if ultrathink and _mode_value == "instant":
+                _mode_value = "agent"
+            self._active_run_modes[session_id] = _mode_value
             await publish(EventType.INNER_MONOLOGUE, {
                 "kind": "mode_routed",
-                "mode": _route.mode.value,
+                "mode": _mode_value,
                 "reason": _route.reason,
                 "forced": _route.forced,
             })

@@ -150,7 +150,10 @@ def test_unknown_frame_type_is_ignored_for_phase_40(
     more frame types to scheduler calls."""
     with client.websocket_connect("/agent/v2/sess-ignore") as ws:
         ws.receive_json()  # create
-        ws.send_text(json.dumps({"type": "cancel", "id": "x"}))
+        # NOTE: ``cancel`` is now a WIRED frame type (it emits a
+        # session_lifecycle event), so it's no longer a valid stand-in for
+        # "unknown". Use a genuinely unrecognised type to test the ignore path.
+        ws.send_text(json.dumps({"type": "definitely-not-a-real-frame", "id": "x"}))
         # Follow up with a real user frame — should be the next event.
         ws.send_text(json.dumps({"type": "user", "content": "ok"}))
         event = ws.receive_json()

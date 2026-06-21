@@ -212,7 +212,13 @@ def test_session_log_is_bounded() -> None:
 
 def test_ultrathink_flag_prepends_thinking_directive() -> None:
     """When the user frame has ultrathink=true, the message the LLM sees
-    is wrapped with a 'think step-by-step' directive."""
+    carries the 深思模式 (Ultrathink) directive.
+
+    Regression guard for two changes: (1) the directive text moved from
+    the old English 'step-by-step' line to the 深思模式 block; (2) a short
+    prompt like 'what is 2+2?' would otherwise route to the instant
+    single-shot path, which skips the directive — ultrathink now forces
+    the agent path so toggling 深思 actually takes effect."""
     bus = InProcessEventBus()
     llm = _RecordingLLM(script=[LLMResponse(content="k")])
     agent = AgentLoop(llm=llm, bus=bus)
@@ -227,8 +233,12 @@ def test_ultrathink_flag_prepends_thinking_directive() -> None:
         _drain_until_llm_response(ws)
 
     last = llm.seen_messages[-1]
+    # The 深思 directive rides the SYSTEM prompt (built in _run_turn_inner's
+    # _parts), while the question is in the user message — assert over the
+    # combined text the LLM actually sees.
+    all_text = " ".join(m.content or "" for m in last)
     user_text = " ".join(m.content or "" for m in last if m.role == "user")
-    assert "step-by-step" in user_text
+    assert "深思模式" in all_text
     assert "what is 2+2" in user_text
 
 
@@ -245,8 +255,12 @@ def test_ultrathink_off_by_default_leaves_message_untouched() -> None:
 
     last = llm.seen_messages[-1]
     user_text = " ".join(m.content or "" for m in last if m.role == "user")
-    assert "step-by-step" not in user_text
-    assert user_text.strip() == "plain question"
+    # No ultrathink directive when the flag is off. (The message may still
+    # carry the always-on ## 当前时间 / <session-workspace> context tails,
+    # so assert on the directive's absence + the original text presence
+    # rather than exact equality.)
+    assert "深思模式" not in user_text
+    assert "plain question" in user_text
 
 
 # ── sanitized config endpoint ────────────────────────────────────────────
