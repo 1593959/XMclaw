@@ -2322,17 +2322,32 @@ def create_app(
             # ask_user_question future so a turn blocked on an
             # unanswered question unwinds immediately.
             if frame.get("type") == "cancel":
-                # 2026-06-15: cooperative cancel + grace-then-hard-cancel so
-                # a tool mid-execution OR a stuck LLM call is really stopped,
-                # not just flagged for the next hop boundary.
-                cancelled = _hard_cancel_turn()
+                # When the turn is blocked on an ``ask_user_question``,
+                # prefer the GRACEFUL escape hatch: cancel just the pending
+                # question future so the tool returns a failure and the turn
+                # unwinds to a final answer on its own. A ``_hard_cancel_turn``
+                # here would kill the whole task mid-await, leaving no
+                # terminal frame — the WS client (Stop button) would hang
+                # waiting for a completion that never comes. Only fall back
+                # to the hard task-cancel when there's NO pending question
+                # (i.e. the turn is stuck on a long LLM call / tool, the
+                # 2026-06-15 scenario).
+                cancelled_questions = 0
                 try:
                     from xmclaw.providers.tool.builtin import (
                         cancel_pending_questions,
                     )
-                    cancel_pending_questions(session_id)
+                    cancelled_questions = cancel_pending_questions(session_id)
                 except Exception:  # noqa: BLE001
-                    pass
+                    cancelled_questions = 0
+                if cancelled_questions > 0:
+                    # Graceful: the turn will produce its final response.
+                    cancelled = True
+                else:
+                    # 2026-06-15: cooperative cancel + grace-then-hard-cancel
+                    # so a tool mid-execution OR a stuck LLM call is really
+                    # stopped, not just flagged for the next hop boundary.
+                    cancelled = _hard_cancel_turn()
                 await bus.publish(make_event(
                     session_id=session_id, agent_id="daemon",
                     type=EventType.SESSION_LIFECYCLE,

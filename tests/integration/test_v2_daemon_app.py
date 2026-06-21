@@ -549,7 +549,13 @@ async def test_cognitive_daemon_tick_e2e_lifespan_wiring(bus: InProcessEventBus)
         assert "n_reflections" in summary
         assert "n_skill_proposals" in summary
 
-        # Verify the tick event was published on the bus.
+        # COGNITIVE_DAEMON_TICK is broadcast ONLY when a tick did something
+        # interesting (goals spawned / plans executed / reflections /
+        # skill proposals / errors). Idle ticks are intentionally NOT
+        # published — otherwise the bus + UI would get a frame every ~2 s
+        # forever. This tick is idle (errors == [], nothing spawned), so we
+        # assert the gate holds: the tick still RUNS (tick_count advances)
+        # but no event fires.
         tick_events = []
         async def _collect(ev) -> None:  # noqa: ANN001
             if ev.type == EventType.COGNITIVE_DAEMON_TICK:
@@ -558,12 +564,27 @@ async def test_cognitive_daemon_tick_e2e_lifespan_wiring(bus: InProcessEventBus)
         bus.subscribe(
             lambda e: e.type == EventType.COGNITIVE_DAEMON_TICK, _collect,
         )
-        await daemon.tick_once()
+        n_before = daemon.tick_count
+        idle_summary = await daemon.tick_once()
         # publish spawns async tasks for subscribers; drain waits for
         # them to finish before we assert.
         await bus.drain()
-        assert len(tick_events) >= 1
-        assert tick_events[-1].payload["tick"] == daemon.tick_count
+        assert daemon.tick_count == n_before + 1, "tick did not run"
+        _interesting = (
+            idle_summary.get("n_goals_spawned", 0)
+            or idle_summary.get("n_plans_executed", 0)
+            or idle_summary.get("n_reflections", 0)
+            or idle_summary.get("n_skill_proposals", 0)
+            or idle_summary.get("errors")
+        )
+        if _interesting:
+            assert len(tick_events) >= 1
+            assert tick_events[-1].payload["tick"] == daemon.tick_count
+        else:
+            assert tick_events == [], (
+                "idle tick must not broadcast COGNITIVE_DAEMON_TICK "
+                f"(gated to interesting ticks); got {len(tick_events)}"
+            )
 
 
 @pytest.mark.asyncio
