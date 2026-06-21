@@ -136,6 +136,10 @@ def test_daemon_runs_tool_call_through_ws(bus: InProcessEventBus) -> None:
         LLMResponse(content="finished", tool_calls=()),
     ])
     agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    # Force the multi-hop tool path: a short prompt like "please echo"
+    # otherwise routes to the instant single-shot (no tools), which would
+    # never invoke the scripted echo tool.
+    agent._mode_instant_enabled = False
     client = TestClient(create_app(bus=bus, agent=agent))
 
     with client.websocket_connect("/agent/v2/sess-tool") as ws:
@@ -143,11 +147,13 @@ def test_daemon_runs_tool_call_through_ws(bus: InProcessEventBus) -> None:
 
         ws.send_text(json.dumps({"type": "user", "content": "please echo"}))
 
-        # Collect up to 12 frames — the tool-round trip produces
-        # roughly 8 events (user, llm_req, llm_resp, tool_emitted,
-        # tool_started, tool_finished, llm_req, llm_resp).
+        # Collect frames until the final content-bearing llm_response. The
+        # tool round-trip now interleaves more observability events
+        # (inner_monologue, cost_tick, grader_verdict, llm_chunk), so the
+        # 2nd llm_response lands around frame ~13 — collect a wider window
+        # than the original 12 so it isn't cut off.
         received: list[dict] = []
-        for _ in range(12):
+        for _ in range(24):
             evt = ws.receive_json()
             received.append(evt)
             if evt["type"] == EventType.LLM_RESPONSE.value and evt["payload"].get("content_length", 0) > 0:

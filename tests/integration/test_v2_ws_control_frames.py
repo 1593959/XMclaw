@@ -99,6 +99,11 @@ def _make_client(bus: InProcessEventBus) -> TestClient:
     ])
     tools = BuiltinTools(enable_bash=False, enable_web=False)
     agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+    # Force the multi-hop tool path. Short prompts ("ask me") otherwise
+    # route to the instant single-shot, which passes no tools — the
+    # scripted ask_user_question never fires, so the test would block
+    # forever on receive_json() waiting for AGENT_ASKED_QUESTION.
+    agent._mode_instant_enabled = False
     return TestClient(create_app(bus=bus, agent=agent))
 
 

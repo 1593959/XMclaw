@@ -585,13 +585,19 @@ async def cognition_ws(websocket: WebSocket) -> None:
     # doesn't cover WebSocket routes; without this any localhost page
     # can stream live cognitive state (goals, focus, suggestions).
     try:
-        from xmclaw.daemon.middleware.pairing_auth import _load_expected_token
-        _expected = _load_expected_token()
+        # 2026-06-21 fix: the previous code imported ``_load_expected_token``
+        # from ``middleware.pairing_auth`` — a name that NEVER existed there
+        # (that module only exposes the HTTP middleware class). So this
+        # import raised ImportError on EVERY connect, the except below fired,
+        # and the cognition dashboard WS was closed 4401 for everyone —
+        # including valid tokens. Use the canonical pairing helpers instead.
+        from xmclaw.daemon.pairing import read_token, validate_token
+        _expected = read_token()
         if not _expected:
             await websocket.close(code=4403, reason="no pairing token configured")
             return
         _provided = websocket.query_params.get("token", "")
-        if not _provided or _provided != _expected:
+        if not validate_token(_expected, _provided):
             await websocket.close(code=4401, reason="unauthorized")
             return
     except Exception:

@@ -40,6 +40,14 @@ from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.app import create_app
 
 
+def _authed_path() -> str:
+    """Cognition WS gained pairing-token auth (2026-06-11 audit), so the
+    handshake now rejects token-less connects with 4401. Build the URL with
+    the live expected token so the connection succeeds."""
+    from xmclaw.daemon.pairing import read_token
+    return f"/api/v2/cognition/ws?token={read_token() or ''}"
+
+
 def _fake_state(
     *,
     goals: list[Goal] | None = None,
@@ -103,7 +111,7 @@ def test_ws_connects_and_first_frame_arrives_quickly(
     """Case 1: WS accepts the connection and pushes the initial frame
     on tick zero of the loop (no client-side prompt needed)."""
     t0 = time.monotonic()
-    with client.websocket_connect("/api/v2/cognition/ws") as ws:
+    with client.websocket_connect(_authed_path()) as ws:
         frame = ws.receive_json()
     elapsed = time.monotonic() - t0
     assert isinstance(frame, dict)
@@ -125,7 +133,7 @@ def test_ws_frame_shape_matches_get_state(
         "salience_threshold",
         "attention_capacity",
     }
-    with client.websocket_connect("/api/v2/cognition/ws") as ws:
+    with client.websocket_connect(_authed_path()) as ws:
         frame = ws.receive_json()
     missing = expected_keys - set(frame.keys())
     assert not missing, (
@@ -142,7 +150,7 @@ def test_ws_pushes_multiple_frames_on_heartbeat(
     is genuinely repeating, not a one-shot."""
     frames: list[dict] = []
     t_deadline = time.monotonic() + 5.0
-    with client.websocket_connect("/api/v2/cognition/ws") as ws:
+    with client.websocket_connect(_authed_path()) as ws:
         while time.monotonic() < t_deadline and len(frames) < 3:
             frames.append(ws.receive_json())
     assert len(frames) >= 2, (
@@ -173,7 +181,7 @@ def test_ws_emits_error_payload_when_cognitive_state_missing() -> None:
         agent = getattr(app.state, "agent", None)
         if agent is not None and hasattr(agent, "_cognitive_state"):
             agent._cognitive_state = None
-        with tc.websocket_connect("/api/v2/cognition/ws") as ws:
+        with tc.websocket_connect(_authed_path()) as ws:
             frame = ws.receive_json()
     assert "error" in frame, (
         f"missing-cognition path must emit an error frame so the UI "
@@ -191,10 +199,10 @@ def test_ws_clean_disconnect_allows_immediate_reconnect(
     exit cleanly (the WebSocketDisconnect branch). A subsequent
     connect on the SAME app must succeed — no "WebSocket already
     accepted" or stuck state from the prior session."""
-    with client.websocket_connect("/api/v2/cognition/ws") as ws1:
+    with client.websocket_connect(_authed_path()) as ws1:
         ws1.receive_json()
     # Reconnect inside the SAME TestClient app instance.
-    with client.websocket_connect("/api/v2/cognition/ws") as ws2:
+    with client.websocket_connect(_authed_path()) as ws2:
         frame2 = ws2.receive_json()
     assert "goals" in frame2, (
         "second connect did not receive a normal frame — handler "
@@ -212,7 +220,7 @@ def test_ws_goal_items_match_dataclass_shape(
     Cognition.js reads (``id``, ``description``, ``priority``,
     ``source``, ``status``). Missing any of these = silent UI
     breakage (e.g. status badge renders as ``undefined``)."""
-    with client.websocket_connect("/api/v2/cognition/ws") as ws:
+    with client.websocket_connect(_authed_path()) as ws:
         frame = ws.receive_json()
     assert frame["goals"], "test fixture should produce >=1 goal"
     g = frame["goals"][0]
@@ -235,7 +243,7 @@ def test_ws_salience_score_rounded_to_three_decimals(
     different precisions depending on whether the page is mid-WS-
     handshake or polling, which is exactly the kind of subtle UI
     flicker the audit flagged."""
-    with client.websocket_connect("/api/v2/cognition/ws") as ws:
+    with client.websocket_connect(_authed_path()) as ws:
         frame = ws.receive_json()
     assert frame["attention_focus"], "fixture should produce >=1 focus"
     score = frame["attention_focus"][0]["salience_score"]
@@ -252,27 +260,27 @@ def test_ws_salience_score_rounded_to_three_decimals(
 # ── Case 8: auth contract ──────────────────────────────────────────
 
 
-def test_ws_does_not_enforce_auth_token() -> None:
-    """Case 8: the cognition WS handler currently accepts anonymous
-    connections — there's no token check in cognition_ws. The
-    docstring mentions a "standard pairing-token query param" but
-    the handler does NOT close with 4401 when it's missing.
+def test_ws_enforces_auth_token() -> None:
+    """Case 8 (updated 2026-06-11): the cognition WS handler now REQUIRES
+    the pairing token. A token-less connect is rejected at the handshake
+    (close 4401), while a connect carrying the live token succeeds.
 
-    This test pins that contract: future tightening (adding a real
-    auth check) WILL fail this test, forcing whoever does it to
-    audit the dashboard's ``new WebSocket(...)`` call (which only
-    appends ``?token=`` when the React tree was given a token via
-    props) and update both sides in lockstep.
+    The old contract (anonymous connect accepted) was deliberately
+    tightened by the audit-pass-3 fix; this test pins the new one. Whoever
+    loosens it again must update Cognition.js's ``new WebSocket(...)`` call
+    (which appends ``?token=``) in lockstep.
     """
+    from starlette.websockets import WebSocketDisconnect
+
     bus = InProcessEventBus()
     app = create_app(bus=bus, config={"cognition": {"enabled": True}})
     app.state.cognitive_state = _fake_state()
     with TestClient(app) as tc:
-        # No ?token=… on the URL. Today this MUST connect.
-        with tc.websocket_connect("/api/v2/cognition/ws") as ws:
+        # No ?token=… → the handshake must be rejected.
+        with pytest.raises(WebSocketDisconnect):
+            with tc.websocket_connect("/api/v2/cognition/ws") as ws:
+                ws.receive_json()
+        # With the live token → connects and streams a frame.
+        with tc.websocket_connect(_authed_path()) as ws:
             frame = ws.receive_json()
-    assert isinstance(frame, dict), (
-        "anonymous connect was rejected — if you intentionally added "
-        "auth to /api/v2/cognition/ws, also update Cognition.js to "
-        "always send the token + update this test."
-    )
+        assert isinstance(frame, dict)
