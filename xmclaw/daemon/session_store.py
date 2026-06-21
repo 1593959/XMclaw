@@ -70,11 +70,14 @@ INTERNAL_SESSION_PREFIXES: tuple[str, ...] = (
     # Sessions UI by mistake (no prefix entry covered it).
     # See cognition/cognitive_daemon.py:1066 for the construction site.
     "goal-from-percept-",
+    ":fork:",        # fork_session spawns — B-392 fix
+    ":to:",          # submit_to_agent spawns — B-392 fix
 )
 
 
 def is_internal_session_id(session_id: str) -> bool:
-    """Return True when ``session_id`` matches any internal prefix.
+    """Return True when ``session_id`` matches any internal prefix or
+    contains a mid-string internal separator (``:fork:``, ``:to:``).
 
     Used by the Sessions API to hide reflection / autonomous / test
     plumbing from the user's main list. Keep the rule simple +
@@ -82,7 +85,10 @@ def is_internal_session_id(session_id: str) -> bool:
     """
     if not session_id:
         return False
-    return session_id.startswith(INTERNAL_SESSION_PREFIXES)
+    if session_id.startswith(INTERNAL_SESSION_PREFIXES):
+        return True
+    # :fork: and :to: are mid-string separators, not prefixes.
+    return (":fork:" in session_id) or (":to:" in session_id)
 
 
 def _toolcall_to_dict(tc: ToolCall) -> dict[str, Any]:

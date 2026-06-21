@@ -573,6 +573,26 @@ class AgentInterTools(ToolProvider):
             record.status = "error"
         finally:
             record.completed_at = time.time()
+            # Notify parent session when a fork completes so the UI
+            # can update the "subagent running" card. Best-effort.
+            if ":fork:" in record.session_id and self._bus is not None:
+                try:
+                    parent_sid = record.session_id.split(":fork:")[0]
+                    from xmclaw.core.bus.events import EventType, make_event
+                    await self._bus.publish(make_event(
+                        session_id=parent_sid,
+                        agent_id="daemon",
+                        type=EventType.SUBAGENT_COMPLETED,
+                        payload={
+                            "index": 0,
+                            "ok": record.status == "done",
+                            "output": (record.reply or "")[:2000],
+                            "error": (record.error or "")[:500],
+                            "elapsed_s": record.completed_at - record.created_at,
+                        },
+                    ))
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _store_task(self, record: _TaskRecord) -> None:
         # Bounded: drop oldest by insertion order once the cap is hit.
@@ -644,6 +664,25 @@ class AgentInterTools(ToolProvider):
             task_id=task_id, agent_id=agent_id,
             session_id=fork_session_id, content=content,
         )
+        # Notify parent session so the UI can render a "subagent running"
+        # card. Best-effort — the fork is invisible to the user without this.
+        if self._bus is not None:
+            try:
+                from xmclaw.core.bus.events import EventType, make_event
+                await self._bus.publish(make_event(
+                    session_id=parent_session_id,
+                    agent_id="daemon",
+                    type=EventType.SUBAGENT_STARTED,
+                    payload={
+                        "index": 0,
+                        "subtask": content[:240],
+                        "role": "fork",
+                        "fork_session_id": fork_session_id,
+                        "agent_id": agent_id,
+                    },
+                ))
+            except Exception:  # noqa: BLE001
+                pass
         self._store_task(record)
         bg = asyncio.create_task(
             self._run_background(record, target_loop),
