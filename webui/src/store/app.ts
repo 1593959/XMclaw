@@ -177,7 +177,12 @@ async function hydrateHistory(sid: string, token: string | null, set: (fn: (s: A
     set((s) => {
       const cur = s.chat.entries;
       if (cur.length >= hydrated.length) return {};
-      return { chat: { ...s.chat, entries: hydrated.concat(cur) } };
+      // 2026-06-22: deduplicate against entries already created by
+      // replayed WS frames (e.g. tool_call_emitted) before hydrateHistory
+      // completes. Without this, refresh shows duplicate tool cards.
+      const seen = new Set(cur.map((e) => e.id));
+      const deduped = hydrated.filter((h) => !seen.has(h.id));
+      return { chat: { ...s.chat, entries: deduped.concat(cur) } };
     });
   } catch {
     /* offline / stale token — fail silent */
