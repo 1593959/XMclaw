@@ -375,6 +375,28 @@ class UserSkillsLoader:
             return self._load_claude_plugin(skill_dir, plugin_json)
 
         if not skill_py.is_file():
+            # 2026-06-22: a directory under skills_user/ that's actually an
+            # MCP-server clone (e.g. tavily-mcp) or other non-skill code
+            # project — has package.json / pyproject.toml / mcporter.json
+            # but no skill manifest. Users install MCP servers here per the
+            # documented workflow (clone → npm install → mcpServers.json →
+            # restart), so this is NOT a failed skill. Mark ok=True with a
+            # distinct kind so it never inflates the "N 个技能加载失败"
+            # banner (mirrors the kind="duplicate" treatment in load_all).
+            if (
+                (skill_dir / "package.json").is_file()
+                or (skill_dir / "pyproject.toml").is_file()
+                or (skill_dir / "mcporter.json").is_file()
+            ):
+                return LoadResult(
+                    skill_id=skill_dir.name, ok=True, skill_path=skill_dir,
+                    error=(
+                        f"{skill_dir.name!r} is an MCP server / code project, "
+                        "not a skill — skipped (configure it in "
+                        "~/.xmclaw/mcpServers.json)."
+                    ),
+                    kind="mcp_server",
+                )
             return LoadResult(
                 skill_id=skill_dir.name, ok=False, skill_path=skill_py,
                 error="neither skill.py nor SKILL.md found",
