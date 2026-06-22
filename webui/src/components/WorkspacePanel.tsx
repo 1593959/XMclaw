@@ -37,21 +37,72 @@ const ext = (p: string) => (p.split(".").pop() || "").toLowerCase();
 
 // ── 预览 tab ───────────────────────────────────────────────────
 
+// HTML 产物（含演示文稿/PPT 幻灯片）：内联 16:9 沙箱 iframe（deck 用
+// scroll-snap 纵向翻页即可在此滚动预览），右上角「放大」进全屏大图查看 ——
+// 右侧面板窄，幻灯片挤着看不清，全屏才能真正"展示 PPT"。canvas_update
+// 会换 srcDoc → 用户实时看到一页页生成/修改。
+function HtmlArtifact({ doc, title }: { doc: string; title: string }) {
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFull(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [full]);
+  const frame = (cls: string) => (
+    <iframe sandbox="allow-scripts" srcDoc={doc} title={title} className={cls} />
+  );
+  return (
+    <div className="relative">
+      <div className="w-full aspect-video rounded border border-mc-border bg-white overflow-hidden">
+        {frame("w-full h-full")}
+      </div>
+      <button
+        onClick={() => setFull(true)}
+        className="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-black/55 text-white hover:bg-black/75 cursor-pointer"
+        title="全屏查看"
+      >
+        ⛶ 放大
+      </button>
+      {full && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-4"
+          onClick={() => setFull(false)}
+        >
+          <div
+            className="w-full max-w-6xl aspect-video bg-white rounded shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {frame("w-full h-full")}
+          </div>
+          <button
+            onClick={() => setFull(false)}
+            className="mt-3 text-xs text-white/80 hover:text-white cursor-pointer"
+          >
+            关闭 (Esc)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ArtifactView({ kind, content, title }: { kind: string; content: string; title: string }) {
   // mermaid 真正渲染成图（懒加载 mermaid），不再塞裸源码进 iframe。
   if (kind === "mermaid") {
     return <MermaidView content={content} />;
   }
-  if (kind === "html" || kind === "svg") {
-    // 沙箱 iframe（allow-scripts，无 same-origin —— 与 Phase 9 桥同纪律）。
-    const doc =
-      kind === "svg"
-        ? `<body style="margin:0;background:#fff">${content}</body>`
-        : content;
+  if (kind === "html") {
+    // 沙箱（allow-scripts，无 same-origin —— 与 Phase 9 桥同纪律）。
+    return <HtmlArtifact doc={content} title={title} />;
+  }
+  if (kind === "svg") {
     return (
       <iframe
         sandbox="allow-scripts"
-        srcDoc={doc}
+        srcDoc={`<body style="margin:0;background:#fff">${content}</body>`}
         title={title}
         className="w-full h-72 rounded border border-mc-border bg-white"
       />
