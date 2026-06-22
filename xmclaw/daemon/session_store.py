@@ -28,6 +28,24 @@ from xmclaw.core.ir import ToolCall
 from xmclaw.providers.llm.base import Message
 
 
+# Schema additions for canvas artifacts persistence (Wave-36 fix).
+# Prevents "artifact not found in this session" after daemon restart
+# or agent rebuild by storing artifacts in SQLite alongside messages.
+_CANVAS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS canvas_artifacts (
+    artifact_id  TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_canvas_artifacts_session
+    ON canvas_artifacts(session_id);
+"""
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS session_history (
     session_id     TEXT PRIMARY KEY,
@@ -37,7 +55,7 @@ CREATE TABLE IF NOT EXISTS session_history (
 );
 CREATE INDEX IF NOT EXISTS idx_session_history_updated
     ON session_history(updated_at DESC);
-"""
+""" + _CANVAS_SCHEMA
 
 
 # Wave-32+ (2026-05-19) session classification. The Sessions UI
@@ -178,6 +196,93 @@ class SessionStore:
                 """,
                 (session_id, payload, len(history), now),
             )
+
+    # ── canvas artifact persistence (Wave-36 fix) ─────────────────────
+
+    def upsert_canvas_artifact(
+        self,
+        artifact_id: str,
+        session_id: str,
+        kind: str,
+        title: str,
+        content: str,
+    ) -> None:
+        """Create or overwrite a canvas artifact in persistent storage."""
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO canvas_artifacts
+                    (artifact_id, session_id, kind, title, content, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(artifact_id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    kind       = excluded.kind,
+                    title      = excluded.title,
+                    content    = excluded.content,
+                    updated_at = excluded.updated_at
+                """,
+                (artifact_id, session_id, kind, title, content, now, now),
+            )
+
+    def get_canvas_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        """Return a single artifact by id, or None."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT artifact_id, session_id, kind, title, content, created_at, updated_at
+                FROM canvas_artifacts
+                WHERE artifact_id = ?
+                """,
+                (artifact_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "artifact_id": row[0],
+            "session_id": row[1],
+            "kind": row[2],
+            "title": row[3],
+            "content": row[4],
+            "created_at": row[5],
+            "updated_at": row[6],
+        }
+
+    def list_canvas_artifacts(self, session_id: str) -> list[dict[str, Any]]:
+        """Return all artifacts belonging to a session, ordered by creation."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT artifact_id, session_id, kind, title, content, created_at, updated_at
+                FROM canvas_artifacts
+                WHERE session_id = ?
+                ORDER BY created_at ASC
+                """,
+                (session_id,),
+            ).fetchall()
+        return [
+            {
+                "artifact_id": r[0],
+                "session_id": r[1],
+                "kind": r[2],
+                "title": r[3],
+                "content": r[4],
+                "created_at": r[5],
+                "updated_at": r[6],
+            }
+            for r in rows
+        ]
+
+    def delete_canvas_artifact(self, artifact_id: str) -> bool:
+        """Remove an artifact. Returns True if a row was actually deleted."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM canvas_artifacts WHERE artifact_id = ?",
+                (artifact_id,),
+            )
+            return cur.rowcount > 0
+
+    # ── conversation history (existing) ─────────────────────────────────
 
     def load(self, session_id: str) -> list[Message] | None:
         with self._connect() as conn:

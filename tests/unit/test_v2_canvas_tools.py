@@ -5,6 +5,7 @@ import pytest
 
 from xmclaw.core.bus import EventType
 from xmclaw.core.ir import ToolCall
+from xmclaw.daemon.session_store import SessionStore
 from xmclaw.providers.tool.builtin import BuiltinTools
 
 
@@ -187,3 +188,135 @@ async def test_canvas_session_isolation() -> None:
     )
     assert fail.ok is False
     assert "not found" in fail.content.lower()
+
+
+# ── Wave-36 persistence tests ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_canvas_create_persists_to_session_store(tmp_path) -> None:
+    """Creating an artifact writes it into the SQLite session_store."""
+    db = tmp_path / "sess.db"
+    store = SessionStore(db)
+    tools = BuiltinTools(session_store=store)
+
+    out = await tools.invoke(
+        _call("canvas_create", {"kind": "mermaid", "title": "Flow", "content": "graph TD;A-->B"})
+    )
+    assert out.ok is True
+    art_id = out.content.split("ID: ")[1].split(" —")[0]
+
+    art = store.get_canvas_artifact(art_id)
+    assert art is not None
+    assert art["kind"] == "mermaid"
+    assert art["title"] == "Flow"
+    assert art["content"] == "graph TD;A-->B"
+    assert art["session_id"] == "sess-x"
+
+
+@pytest.mark.asyncio
+async def test_canvas_survives_instance_rebuild(tmp_path) -> None:
+    """A new BuiltinTools instance wired to the same store can update and close
+    artifacts created by a previous instance."""
+    db = tmp_path / "sess.db"
+    store = SessionStore(db)
+
+    # Instance 1: create
+    tools1 = BuiltinTools(session_store=store)
+    create_out = await tools1.invoke(
+        _call("canvas_create", {"kind": "chart", "title": "C", "content": "{}"}, session_id="room-1")
+    )
+    assert create_out.ok is True
+    art_id = create_out.content.split("ID: ")[1].split(" —")[0]
+
+    # Instance 2: update (simulates daemon restart or agent rebuild)
+    tools2 = BuiltinTools(session_store=store)
+    update_out = await tools2.invoke(
+        _call("canvas_update", {"artifact_id": art_id, "content": "{\"v\":2}"}, session_id="room-1")
+    )
+    assert update_out.ok is True
+
+    # Instance 3: close
+    tools3 = BuiltinTools(session_store=store)
+    close_out = await tools3.invoke(
+        _call("canvas_close", {"artifact_id": art_id}, session_id="room-1")
+    )
+    assert close_out.ok is True
+
+    # Should be gone from DB
+    assert store.get_canvas_artifact(art_id) is None
+
+
+@pytest.mark.asyncio
+async def test_canvas_close_deletes_from_session_store(tmp_path) -> None:
+    """Closing an artifact removes it from the persistent store."""
+    db = tmp_path / "sess.db"
+    store = SessionStore(db)
+    tools = BuiltinTools(session_store=store)
+
+    out = await tools.invoke(
+        _call("canvas_create", {"kind": "table", "title": "T", "content": "{\"rows\":[]}"})
+    )
+    assert out.ok is True
+    art_id = out.content.split("ID: ")[1].split(" —")[0]
+
+    assert store.get_canvas_artifact(art_id) is not None
+    close_out = await tools.invoke(_call("canvas_close", {"artifact_id": art_id}))
+    assert close_out.ok is True
+    assert store.get_canvas_artifact(art_id) is None
+
+
+@pytest.mark.asyncio
+async def test_canvas_hydration_from_db(tmp_path) -> None:
+    """When a new instance touches a session it hydrates the in-memory registry
+    from the DB, preventing false "not found" errors."""
+    db = tmp_path / "sess.db"
+    store = SessionStore(db)
+
+    # Create with instance 1
+    tools1 = BuiltinTools(session_store=store)
+    await tools1.invoke(
+        _call("canvas_create", {"kind": "svg", "title": "S", "content": "<svg/>"}, session_id="s1")
+    )
+    # Bypass the in-memory registry to simulate a fresh process
+    arts = store.list_canvas_artifacts("s1")
+    assert len(arts) == 1
+    art_id = arts[0]["artifact_id"]
+
+    # Fresh instance should be able to update without any prior memory state
+    tools2 = BuiltinTools(session_store=store)
+    # Force a clear registry to mimic "never touched this session"
+    tools2._canvas_registry = {}
+    tools2._canvas_hydrated = set()
+    update_out = await tools2.invoke(
+        _call("canvas_update", {"artifact_id": art_id, "content": "<svg><circle/></svg>"}, session_id="s1")
+    )
+    assert update_out.ok is True
+    # Verify DB also reflects the mutation
+    art = store.get_canvas_artifact(art_id)
+    assert art is not None
+    assert art["content"] == "<svg><circle/></svg>"
+
+
+@pytest.mark.asyncio
+async def test_canvas_persistence_is_session_scoped(tmp_path) -> None:
+    """Artifacts are scoped to session_id; cross-session access is blocked
+    even when both sessions share the same store."""
+    db = tmp_path / "sess.db"
+    store = SessionStore(db)
+    tools = BuiltinTools(session_store=store)
+
+    out = await tools.invoke(
+        _call("canvas_create", {"kind": "mermaid", "title": "Alpha", "content": "A"}, session_id="alpha")
+    )
+    assert out.ok is True
+    art_id = out.content.split("ID: ")[1].split(" —")[0]
+
+    # Same store, different session → not found
+    fail = await tools.invoke(
+        _call("canvas_update", {"artifact_id": art_id, "content": "B"}, session_id="beta")
+    )
+    assert fail.ok is False
+    assert "not found" in fail.content.lower()
+    # The artifact should still exist in alpha
+    assert store.get_canvas_artifact(art_id) is not None
+    assert store.get_canvas_artifact(art_id)["session_id"] == "alpha"

@@ -11,6 +11,9 @@ visual artifacts that render inline in the chat transcript:
 
 Each tool call emits a BehavioralEvent so the frontend reducer can surface
 live mutations without polling.
+
+Wave-36 fix: artifacts are now persisted in the SQLite session_store so they
+survive daemon restarts, agent rebuilds, and cross-instance access.
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ import time
 import uuid
 from typing import Any
 
-from xmclaw.core.bus import EventType, make_event
+from xmclaw.core.bus import EventType
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool.base import ToolSpec
 
@@ -48,12 +51,12 @@ _CANVAS_CREATE_SPEC = ToolSpec(
         "**Supported kinds:**\n"
         "  • mermaid — Universal diagram language.\n"
         "      Best for: flowcharts, sequence diagrams, class diagrams, "
-        "      ER diagrams, state diagrams, Gantt charts, Git graphs, "
-        "      mind maps, timelines, C4 architecture diagrams.\n"
+        "ER diagrams, state diagrams, Gantt charts, Git graphs, "
+        "mind maps, timelines, C4 architecture diagrams.\n"
         "  • html    — Rich HTML snippets (INTERACTIVE — Phase 9 bridge).\n"
         "      Best for: styled cards, collapsible sections, "
-        "      color-coded diffs, embedded iframes, dashboards, "
-        "      AND interactive widgets: forms, buttons, option pickers.\n"
+        "color-coded diffs, embedded iframes, dashboards, "
+        "AND interactive widgets: forms, buttons, option pickers.\n"
         "      A `window.xmclaw` bridge is injected into the sandbox:\n"
         "        window.xmclaw.sendPrompt(text) — sends `text` back to you "
         "as a user chat message (e.g. an option button's value);\n"
@@ -63,13 +66,13 @@ _CANVAS_CREATE_SPEC = ToolSpec(
         "user can act on — their action arrives as the next user message.\n"
         "  • svg     — Raw vector graphics.\n"
         "      Best for: custom shapes, badges, icons, geometric art, "
-        "      precise diagrams that Mermaid cannot express.\n"
+        "precise diagrams that Mermaid cannot express.\n"
         "  • chart   — Chart.js JSON configuration.\n"
         "      Best for: bar, line, area, scatter, bubble, pie, doughnut, "
-        "      radar, polar area charts. Include labels, colors, datasets.\n"
+        "radar, polar area charts. Include labels, colors, datasets.\n"
         "  • table   — Structured data grid.\n"
         "      Best for: comparing entities, listing configurations, "
-        "      showing API parameters, matrix comparisons.\n\n"
+        "showing API parameters, matrix comparisons.\n\n"
         "Returns an artifact_id. Use ``canvas_update`` to mutate it live "
         "(e.g., streaming partial results, animating progress), "
         "and ``canvas_close`` when the visual is no longer needed."
@@ -173,21 +176,75 @@ def _fail(call: ToolCall, t0: float, msg: str) -> ToolResult:
 
 
 class BuiltinToolsCanvasMixin:
-    """Canvas artifact tools: canvas_create, canvas_update, canvas_close."""
+    """Canvas artifact tools: canvas_create, canvas_update, canvas_close.
+
+    Wave-36 fix: artifacts are persisted in ``self._session_store`` (SQLite)
+    so they survive daemon restarts, agent rebuilds, and cross-instance access.
+    The in-memory ``_canvas_registry`` serves as a read-through cache; when a
+    session is first touched after instance construction the artifacts are
+    loaded from disk.
+    """
 
     # Optional callback fired on every canvas mutation so the agent loop /
     # daemon can emit CANVAS_ARTIFACT_* events to the bus.
     # Signature: ``def listener(event_type, payload) -> None``.
     _canvas_listener: Any | None = None
 
-    # In-memory registry of active artifacts per session.
+    # In-memory registry of active artifacts per session (read-through cache).
     # Key: session_id → {artifact_id: {kind, title, content}}
     _canvas_registry: dict[str, dict[str, dict[str, str]]] | None = None
+
+    # Tracks which sessions have already been hydrated from the DB so we
+    # don't re-load on every tool call.
+    _canvas_hydrated: set[str] | None = None
 
     def _ensure_canvas_registry(self) -> dict[str, dict[str, dict[str, str]]]:
         if self._canvas_registry is None:
             self._canvas_registry = {}
+        if self._canvas_hydrated is None:
+            self._canvas_hydrated = set()
         return self._canvas_registry
+
+    def _hydrate_session(self, sid: str) -> None:
+        """Load a session's artifacts from the persistent session_store into memory."""
+        if self._canvas_hydrated is not None and sid in self._canvas_hydrated:
+            return
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        try:
+            arts = store.list_canvas_artifacts(sid)
+        except Exception:  # noqa: BLE001
+            return
+        reg = self._ensure_canvas_registry()
+        session_map = reg.setdefault(sid, {})
+        for art in arts:
+            session_map[art["artifact_id"]] = {
+                "kind": art["kind"],
+                "title": art["title"],
+                "content": art["content"],
+            }
+        if self._canvas_hydrated is None:
+            self._canvas_hydrated = set()
+        self._canvas_hydrated.add(sid)
+
+    def _persist_artifact(self, artifact_id: str, sid: str, kind: str, title: str, content: str) -> None:
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        try:
+            store.upsert_canvas_artifact(artifact_id, sid, kind, title, content)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _remove_artifact(self, artifact_id: str) -> None:
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        try:
+            store.delete_canvas_artifact(artifact_id)
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _canvas_create(self, call: ToolCall, t0: float) -> ToolResult:
         kind = call.args.get("kind")
@@ -206,11 +263,13 @@ class BuiltinToolsCanvasMixin:
         artifact_id = "art_" + uuid.uuid4().hex[:12]
         sid = call.session_id or "_default"
         reg = self._ensure_canvas_registry()
+        self._hydrate_session(sid)
         reg.setdefault(sid, {})[artifact_id] = {
             "kind": kind,
             "title": title,
             "content": content,
         }
+        self._persist_artifact(artifact_id, sid, kind, title, content)
 
         if self._canvas_listener is not None:
             try:
@@ -224,7 +283,7 @@ class BuiltinToolsCanvasMixin:
                         "turn_id": call.id or "",
                         # 2026-06-06: carry the real session so the daemon's
                         # per-socket forwarder routes this to the originating
-                        # chat. Pre-fix the listener stamped "_system" and
+                        # chat. Pre-fix this was hard-coded to "_system" and
                         # _is_relevant() filtered it out → diagram never
                         # reached the UI (only the tool-result text showed).
                         "session_id": sid,
@@ -260,11 +319,14 @@ class BuiltinToolsCanvasMixin:
 
         sid = call.session_id or "_default"
         reg = self._ensure_canvas_registry()
+        self._hydrate_session(sid)
         session_arts = reg.get(sid, {})
         if artifact_id not in session_arts:
             return _fail(call, t0, f"artifact {artifact_id!r} not found in this session")
 
         session_arts[artifact_id]["content"] = content
+        art = session_arts[artifact_id]
+        self._persist_artifact(artifact_id, sid, art["kind"], art["title"], content)
 
         if self._canvas_listener is not None:
             try:
@@ -293,11 +355,13 @@ class BuiltinToolsCanvasMixin:
 
         sid = call.session_id or "_default"
         reg = self._ensure_canvas_registry()
+        self._hydrate_session(sid)
         session_arts = reg.get(sid, {})
         if artifact_id not in session_arts:
             return _fail(call, t0, f"artifact {artifact_id!r} not found in this session")
 
         del session_arts[artifact_id]
+        self._remove_artifact(artifact_id)
 
         if self._canvas_listener is not None:
             try:
