@@ -852,6 +852,29 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       return { ...chat, entries: upsertById(chat.entries, id, patch) };
     }
 
+    case "fanout_review_requested": {
+      // #3 派发前编辑拆解：组长拆完任务先弹可编辑卡，等用户改/删/加/确认。
+      const rid = str(payload.review_id);
+      const id = `fanoutreview_${rid || ts}`;
+      if (chat.entries.some((e) => e.id === id)) return chat;
+      return {
+        ...chat,
+        entries: chat.entries.concat({
+          id,
+          role: "system",
+          kind: "fanout",
+          content: "",
+          status: "review",
+          ts,
+          reviewId: rid,
+          goal: str(payload.goal),
+          total: (payload.total as number) || 0,
+          synthesis: str(payload.synthesis),
+          plan: (payload.plan as Entry["plan"]) || [],
+        }),
+      };
+    }
+
     case "fanout_started": {
       const id = `fanout_${ts}_${Math.random().toString(36).slice(2, 6)}`;
       if (chat.entries.some((e) => e.id === id)) return chat;

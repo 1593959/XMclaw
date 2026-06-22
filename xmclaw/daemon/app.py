@@ -2295,7 +2295,7 @@ def create_app(
         # one-turn-at-a-time ordering. ``None`` = disconnect sentinel.
         import asyncio as _aio
         _frame_q: "_aio.Queue[dict | None]" = _aio.Queue()
-        _CONTROL_FRAME_TYPES = ("cancel", "answer_question")
+        _CONTROL_FRAME_TYPES = ("cancel", "answer_question", "fanout_review_decision")
         # 2026-06-15: steering watchdog state. ``last_event_ts`` is bumped
         # whenever the WS forwarder sends a business event to the client.
         # ``steer_watchdogs`` holds in-flight watchdog tasks so we can
@@ -2368,8 +2368,12 @@ def create_app(
                 try:
                     from xmclaw.providers.tool.builtin import (
                         cancel_pending_questions,
+                        cancel_pending_fanout_reviews,
                     )
                     cancelled_questions = cancel_pending_questions(session_id)
+                    # #3: 也解开在飞的 fanout 审批，否则 Stop 时派专家团
+                    # 卡在 review Future 上一样会让回合悬住。
+                    cancelled_questions += cancel_pending_fanout_reviews(session_id)
                 except Exception:  # noqa: BLE001
                     cancelled_questions = 0
                 if cancelled_questions > 0:
@@ -2423,6 +2427,28 @@ def create_app(
                     },
                 ))
                 await bus.drain()
+
+            # #3 派发前编辑拆解：FanoutCard 编辑确认/取消后发
+            # ``{"type":"fanout_review_decision","review_id":"...",
+            #   "plan":[{role,subtask,specialist}...],"synthesis":"...",
+            #   "cancelled":false}`` → resolve 守在 Future 上的
+            # parallel_subagents 调用，组长用编辑过的方案真正派发。
+            elif frame.get("type") == "fanout_review_decision":
+                rid = frame.get("review_id")
+                resolved = False
+                if isinstance(rid, str) and rid:
+                    decision = {
+                        "plan": frame.get("plan"),
+                        "synthesis": frame.get("synthesis"),
+                        "cancelled": bool(frame.get("cancelled")),
+                    }
+                    try:
+                        from xmclaw.providers.tool.builtin import (
+                            resolve_pending_fanout_review,
+                        )
+                        resolved = resolve_pending_fanout_review(rid, decision)
+                    except Exception:  # noqa: BLE001
+                        resolved = False
 
         async def _ws_reader() -> None:
             while True:

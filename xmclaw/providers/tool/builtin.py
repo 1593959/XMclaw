@@ -203,6 +203,37 @@ def cancel_pending_questions(session_id: str | None = None) -> int:
             n += 1
     return n
 
+
+def resolve_pending_fanout_review(review_id: str, decision: dict) -> bool:
+    """派发前编辑拆解（#3）：用前端回传的编辑方案 resolve 守在 Future 上的
+    parallel_subagents 调用。镜像 resolve_pending_question。"""
+    from xmclaw.providers.tool.builtin_subagent import _PENDING_FANOUT_REVIEWS
+    fut = _PENDING_FANOUT_REVIEWS.get(review_id)
+    if fut is None or fut.done():
+        return False
+    fut.set_result(decision)
+    return True
+
+
+def cancel_pending_fanout_reviews(session_id: str | None = None) -> int:
+    """取消在飞的 fanout 审批（Stop 按钮 / 断连）。session_id 限定作用域。"""
+    from xmclaw.providers.tool.builtin_subagent import (
+        _PENDING_FANOUT_REVIEWS,
+        _PENDING_FANOUT_PAYLOADS,
+    )
+    n = 0
+    for rid, fut in list(_PENDING_FANOUT_REVIEWS.items()):
+        if session_id:
+            payload = _PENDING_FANOUT_PAYLOADS.get(rid) or {}
+            sid = payload.get("session_id")
+            if sid and sid != session_id:
+                continue
+        if not fut.done():
+            fut.cancel()
+            n += 1
+    return n
+
+
 class BuiltinTools(
     BuiltinToolsCanvasMixin,
     BuiltinToolsDbMixin,

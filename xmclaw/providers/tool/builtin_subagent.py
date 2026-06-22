@@ -66,6 +66,15 @@ from xmclaw.utils.log import get_logger
 logger = get_logger(__name__)
 
 
+# 派发前编辑拆解（#3）：当用户显式点了「派专家团」时，组长拆完任务先
+# 暂停，把拆解方案(角色+子任务)推给前端可编辑，用户改/删/加/确认后再真正
+# 派发。复用 builtin_user._PENDING_QUESTIONS 的 Future 暂停/恢复套路：
+# 工具侧建 Future 并 await，WS handler 收到 fanout_review_decision 帧后
+# 用编辑过的方案 resolve。刷新恢复靠 _PENDING_FANOUT_PAYLOADS 快照。
+_PENDING_FANOUT_REVIEWS: dict[str, asyncio.Future] = {}
+_PENDING_FANOUT_PAYLOADS: dict[str, dict] = {}
+
+
 # 2026-05-25: WorkerSwarm retired — its specialty + per-worker hop
 # budget are absorbed here as optional per-call params so the LLM
 # can request the same shaping inside a single observable fanout.
@@ -370,21 +379,45 @@ class SubagentToolProvider(ToolProvider):
             specialists.append(str(s).strip().lower() if isinstance(s, str) else "")
 
         t0 = time.perf_counter()
-        await self._publish_subagent_event(
-            "fanout_started",
-            goal=goal,
-            total=len(subtasks),
-            synthesis=synthesis,
-            plan=[
-                {
-                    "index": i,
-                    "role": roles[i],
-                    "subtask": subtasks[i],
-                    "specialist": specialists[i],
-                }
-                for i in range(len(subtasks))
-            ],
+        interactive = bool(call.args.get("interactive_review")) and bool(
+            self._parent_session_id
         )
+
+        # 派发前编辑拆解（#3）：显式点了「派专家团」时先把拆解方案推给前端
+        # 编辑、阻塞等确认，再用最终方案派发；审批卡本身承担组长拆解展示，
+        # 故此分支不再发 fanout_started（前端在确认时把审批卡转入运行态）。
+        # 普通 LLM 自主 fanout 不打断 —— 照常发 fanout_started 后直接派发。
+        if interactive:
+            decision = await self._await_fanout_review(
+                goal=goal, synthesis=synthesis,
+                subtasks=subtasks, roles=roles, specialists=specialists,
+            )
+            if decision is None or decision.get("cancelled"):
+                return ToolResult(
+                    call_id=call.id, ok=False, content=None,
+                    error="fanout cancelled by user before dispatch",
+                )
+            subtasks = decision["subtasks"]
+            roles = decision["roles"]
+            specialists = decision["specialists"]
+            synthesis = decision.get("synthesis", synthesis)
+        else:
+            await self._publish_subagent_event(
+                "fanout_started",
+                goal=goal,
+                total=len(subtasks),
+                synthesis=synthesis,
+                plan=[
+                    {
+                        "index": i,
+                        "role": roles[i],
+                        "subtask": subtasks[i],
+                        "specialist": specialists[i],
+                    }
+                    for i in range(len(subtasks))
+                ],
+            )
+
         try:
             results = await asyncio.wait_for(
                 self._fanout(
@@ -560,6 +593,93 @@ class SubagentToolProvider(ToolProvider):
                 error=err,
                 elapsed_s=time.perf_counter() - t0,
             )
+
+    async def _await_fanout_review(
+        self, *, goal: str, synthesis: str,
+        subtasks: list[str], roles: list[str], specialists: list[str],
+    ) -> dict | None:
+        """派发前编辑拆解：发 FANOUT_REVIEW_REQUESTED + 阻塞在 Future 上，
+        等 WS handler 收到 fanout_review_decision 帧后用编辑过的方案
+        resolve。复用 builtin_user._PENDING_QUESTIONS 的跨边界套路。
+
+        返回 ``{cancelled: True}`` 表示用户取消；否则返回校验补齐后的
+        subtasks/roles/specialists/synthesis。无 UI 通道时不阻塞，原样派发。"""
+        import uuid
+
+        if self._bus is None or not self._parent_session_id:
+            return {
+                "subtasks": subtasks, "roles": roles,
+                "specialists": specialists, "synthesis": synthesis,
+            }
+
+        review_id = uuid.uuid4().hex
+        plan = [
+            {"index": i, "role": roles[i], "subtask": subtasks[i],
+             "specialist": specialists[i]}
+            for i in range(len(subtasks))
+        ]
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        _PENDING_FANOUT_REVIEWS[review_id] = future
+        # 刷新恢复快照（对位 ask_user 的 _PENDING_QUESTION_PAYLOADS）。
+        _PENDING_FANOUT_PAYLOADS[review_id] = {
+            "review_id": review_id,
+            "session_id": self._parent_session_id,
+            "goal": goal,
+            "synthesis": synthesis,
+            "plan": plan,
+        }
+        await self._publish_subagent_event(
+            "fanout_review_requested",
+            review_id=review_id, goal=goal, synthesis=synthesis,
+            total=len(plan), plan=plan,
+        )
+        try:
+            decision = await future
+        except asyncio.CancelledError:
+            return {"cancelled": True}
+        finally:
+            _PENDING_FANOUT_REVIEWS.pop(review_id, None)
+            _PENDING_FANOUT_PAYLOADS.pop(review_id, None)
+        return self._normalise_review_decision(
+            decision, fallback_synthesis=synthesis,
+        )
+
+    @staticmethod
+    def _normalise_review_decision(
+        decision: Any, *, fallback_synthesis: str,
+    ) -> dict | None:
+        """校验/补齐前端回传的编辑方案。非法(空 / 不在 2-8 范围) → None，
+        当取消处理，绝不让坏方案派发。"""
+        if not isinstance(decision, dict):
+            return None
+        if decision.get("cancelled"):
+            return {"cancelled": True}
+        raw_plan = decision.get("plan")
+        if not isinstance(raw_plan, list):
+            return None
+        subtasks: list[str] = []
+        roles: list[str] = []
+        specialists: list[str] = []
+        for item in raw_plan:
+            if not isinstance(item, dict):
+                continue
+            st = str(item.get("subtask") or "").strip()
+            if not st:
+                continue
+            subtasks.append(st)
+            r = str(item.get("role") or "general").lower()
+            roles.append(r if r in _VALID_ROLES else "general")
+            specialists.append(str(item.get("specialist") or "").strip().lower())
+        if not (2 <= len(subtasks) <= 8):
+            return None
+        syn = str(decision.get("synthesis") or fallback_synthesis).lower()
+        if syn not in ("concat", "llm"):
+            syn = fallback_synthesis
+        return {
+            "subtasks": subtasks, "roles": roles,
+            "specialists": specialists, "synthesis": syn,
+        }
 
     async def _publish_subagent_event(
         self, kind: str, **payload: Any,

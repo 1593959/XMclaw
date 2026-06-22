@@ -20,6 +20,7 @@ export type EntryStatus =
   | "error"
   | "done"
   | "pending"
+  | "review"
   | "cancelled";
 
 export interface Block {
@@ -70,6 +71,9 @@ export interface Entry {
   plan?: Array<{ index: number; role: string; subtask: string; specialist: string }>;
   total?: number;
   synthesis?: string;
+  // #3 派发前编辑拆解：status==="review" 时 FanoutCard 进可编辑态，
+  // reviewId 用于回传 fanout_review_decision 帧。
+  reviewId?: string;
   // worker / subagent（并行子代理执行组）
   workerId?: string;
   taskId?: string;

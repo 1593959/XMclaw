@@ -330,8 +330,27 @@ class MCPHub(ToolProvider):
         ``command`` / ``args`` / ``env`` / ``disabled`` / etc. Lets
         the user manage MCP servers from the same config they edit
         for everything else, without learning about a second file.
+
+        2026-06-22 fix: this now genuinely loads "in addition to" the
+        ``~/.xmclaw/mcpServers.json`` file, as the docstring always
+        promised. Previously it ONLY used the config dict, so a daemon
+        booting with no ``config.json``→``mcp_servers`` key (the common
+        case — most users keep the Claude-Desktop ``mcpServers.json``)
+        applied an EMPTY config and ``_apply_configs`` then stopped every
+        server. Result: MCP servers silently never started. Now the file
+        is the base layer and the config dict overlays it.
         """
         configs: dict[str, McpServerConfig] = {}
+        # Base layer: the Claude-Desktop ``mcpServers.json`` file.
+        if self._settings_path.exists():
+            try:
+                file_cfgs = parse_settings_file(
+                    self._settings_path.read_text(encoding="utf-8")
+                )
+                configs.update(file_cfgs)
+            except OSError as exc:
+                _log.warning("mcp.settings_read_failed: %s", exc)
+        # Overlay: ``daemon/config.json``→``mcp_servers`` (same-name wins).
         if isinstance(mcp_servers, dict):
             for name, raw in mcp_servers.items():
                 cfg = _parse_server_config(str(name), raw)

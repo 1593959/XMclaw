@@ -359,6 +359,181 @@ function docIcon(mime?: string, name?: string): string {
   return "📄";
 }
 
+// ── fanout：组长任务拆解 + 角色/任务分配总览 ───────────────────
+// 对位「派专家团」：fanout_started 事件带 goal/synthesis/plan[]，
+// plan 的每一项是 { index, role, subtask, specialist } —— 即拆出的
+// 子任务 + 指派的专家角色。之前 Timeline 没有 fanout 分支，这条只
+// 当普通文字泡渲染，拆解与分配完全不可见（用户报「流程未直观展示」）。
+
+const _ROLES = ["general", "code", "research", "ops", "comm"] as const;
+
+type PlanItem = { index: number; role: string; subtask: string; specialist: string };
+
+function FanoutReviewEditor({ e }: { e: Entry }) {
+  // 派发前编辑拆解：本地可编辑副本，确认后回传 submitFanoutReview。
+  const submit = useApp((s) => s.submitFanoutReview);
+  const [items, setItems] = useState<PlanItem[]>(() =>
+    (e.plan || []).map((p) => ({ ...p })),
+  );
+  const [synthesis, setSynthesis] = useState(e.synthesis || "concat");
+  const reviewId = e.reviewId || "";
+
+  const update = (i: number, patch: Partial<PlanItem>) =>
+    setItems((arr) => arr.map((it, j) => (j === i ? { ...it, ...patch } : it)));
+  const remove = (i: number) => setItems((arr) => arr.filter((_, j) => j !== i));
+  const add = () =>
+    setItems((arr) => [...arr, { index: arr.length, role: "general", subtask: "", specialist: "" }]);
+
+  const cleaned = items
+    .map((it) => ({ ...it, subtask: it.subtask.trim() }))
+    .filter((it) => it.subtask)
+    .map((it, i) => ({ ...it, index: i }));
+  const valid = cleaned.length >= 2 && cleaned.length <= 8;
+
+  return (
+    <div className="border border-mc-warn/50 bg-mc-warn/5 rounded-md min-w-0">
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <span className="text-sm">👥</span>
+        <span className="text-xs font-medium text-mc-warn">专家团 · 派发前确认拆解</span>
+        <span className="text-[11px] text-mc-faint shrink-0">{cleaned.length} 个子任务</span>
+      </div>
+      <div className="px-3 pb-2.5 space-y-2">
+        {e.goal && (
+          <div className="text-[11.5px] text-mc-muted">
+            <span className="text-mc-faint">目标：</span>
+            {e.goal}
+          </div>
+        )}
+        <div className="space-y-1.5">
+          {items.map((it, i) => (
+            <div key={i} className="flex gap-1.5 items-start">
+              <span className="text-[10px] font-mono text-mc-faint mt-2 shrink-0 w-5">#{i}</span>
+              <select
+                value={it.role}
+                onChange={(ev) => update(i, { role: ev.target.value })}
+                className="text-[11px] bg-mc-panel border border-mc-border rounded px-1 py-1 mt-0.5 text-mc-accent outline-none focus:border-mc-accent cursor-pointer"
+              >
+                {_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+              <textarea
+                value={it.subtask}
+                onChange={(ev) => update(i, { subtask: ev.target.value })}
+                rows={2}
+                placeholder="子任务描述…"
+                className="flex-1 text-[11.5px] bg-mc-panel border border-mc-border rounded px-2 py-1 text-mc-text outline-none focus:border-mc-accent resize-y min-w-0"
+              />
+              <button
+                onClick={() => remove(i)}
+                className="text-mc-faint hover:text-mc-err text-xs mt-1.5 cursor-pointer px-1"
+                title="删除子任务"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={add}
+            disabled={items.length >= 8}
+            className="text-[11px] px-2 py-1 rounded border border-mc-border text-mc-muted hover:border-mc-accent/60 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+          >
+            + 加子任务
+          </button>
+          <span className="text-[11px] text-mc-faint">汇总：</span>
+          <select
+            value={synthesis}
+            onChange={(ev) => setSynthesis(ev.target.value)}
+            className="text-[11px] bg-mc-panel border border-mc-border rounded px-1 py-1 text-mc-muted outline-none focus:border-mc-accent cursor-pointer"
+          >
+            <option value="concat">拼接</option>
+            <option value="llm">LLM 归纳</option>
+          </select>
+          <div className="flex-1" />
+          <button
+            onClick={() => submit(reviewId, [], synthesis, true)}
+            className="text-[11px] px-3 py-1 rounded border border-mc-border text-mc-faint hover:text-mc-err cursor-pointer"
+          >
+            取消
+          </button>
+          <button
+            onClick={() => valid && submit(reviewId, cleaned, synthesis, false)}
+            disabled={!valid}
+            className="text-[11px] px-3 py-1 rounded bg-mc-accent/20 border border-mc-accent/50 text-mc-accent hover:bg-mc-accent/30 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            title={valid ? "确认并派发" : "子任务需 2-8 个且非空"}
+          >
+            确认派发
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function FanoutCard({ e }: { e: Entry }) {
+  const [open, setOpen] = useState(true);
+  // 派发前编辑态：渲染可编辑的拆解方案，等用户确认。
+  if (e.status === "review") return <FanoutReviewEditor e={e} />;
+  const plan = e.plan || [];
+  const total = e.total || plan.length;
+  return (
+    <div className="border border-mc-accent/40 bg-mc-accent/5 rounded-md min-w-0">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer"
+      >
+        <span className="text-sm">👥</span>
+        <span className="text-xs font-medium text-mc-text">专家团 · 任务拆解</span>
+        <span className="text-[11px] text-mc-accent shrink-0">{total} 个子任务</span>
+        {e.status === "cancelled" && (
+          <span className="text-[11px] text-mc-faint shrink-0">· 已取消</span>
+        )}
+        <div className="flex-1" />
+        <span className="text-mc-faint text-xs">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-2.5 space-y-2">
+          {e.goal && (
+            <div className="text-[11.5px] text-mc-muted">
+              <span className="text-mc-faint">目标：</span>
+              {e.goal}
+            </div>
+          )}
+          {plan.length > 0 ? (
+            <div className="space-y-1.5">
+              {plan.map((p) => (
+                <div
+                  key={p.index}
+                  className="flex gap-2 items-start border-l-2 border-mc-accent/40 pl-2.5 py-0.5"
+                >
+                  <span className="text-[10px] font-mono text-mc-faint mt-0.5 shrink-0">#{p.index}</span>
+                  <div className="min-w-0 flex-1">
+                    <span className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-mc-accent/15 text-mc-accent mr-1.5">
+                      {p.role || p.specialist || "general"}
+                    </span>
+                    <span className="text-[11.5px] text-mc-text whitespace-pre-wrap">{p.subtask}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-[11.5px] text-mc-faint">{e.content || "组长正在拆解任务…"}</div>
+          )}
+          {e.synthesis && (
+            <div className="text-[11px] text-mc-faint border-t border-mc-border/60 pt-1.5">
+              汇总策略：{e.synthesis}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── worker / subagent 执行组（对位 Claude Code 的 Agent 折叠组） ──
 
 export function AgentGroupCard({ e }: { e: Entry }) {
@@ -366,7 +541,7 @@ export function AgentGroupCard({ e }: { e: Entry }) {
   const title =
     e.kind === "worker"
       ? `Worker ${e.workerId} · 任务 ${e.taskId}`
-      : `Agent ${e.roleHint || "general"} #${e.subagentIndex}`;
+      : `专家 · ${e.roleHint || "general"} #${e.subagentIndex}`;
   return (
     <div
       className={
@@ -396,6 +571,7 @@ export function AgentGroupCard({ e }: { e: Entry }) {
         <div className="px-3 pb-2 space-y-1.5">
           {e.promptPreview && (
             <div className="text-[11.5px] text-mc-faint border-l-2 border-mc-border pl-2 whitespace-pre-wrap">
+              <span className="text-mc-muted">分配任务：</span>
               {e.promptPreview}
             </div>
           )}

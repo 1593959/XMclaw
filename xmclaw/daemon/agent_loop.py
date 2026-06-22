@@ -4070,7 +4070,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 from xmclaw.core.ir.toolcall import ToolCall
                 _swarm_call = ToolCall(
                     name="parallel_subagents",
-                    args={"subtasks": _subtasks},
+                    # interactive_review: 用户显式点了「派专家团」→ 派发前
+                    # 把拆解方案推给前端编辑（#3 派发前编辑拆解）。
+                    args={"subtasks": _subtasks, "interactive_review": True},
                     provenance="synthetic",
                     session_id=session_id,
                 )

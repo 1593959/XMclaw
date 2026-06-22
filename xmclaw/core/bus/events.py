@@ -474,6 +474,10 @@ class EventType(str, Enum):
     # Mission Control "TeamView" can render a leader card with the goal,
     # plan, and synthesis strategy before the per-leaf subagent events.
     FANOUT_STARTED = "fanout_started"
+    # 派发前编辑拆解（#3）：显式「派专家团」时，组长拆完任务先发这个事件
+    # 把方案推给前端编辑，工具侧阻塞等用户确认；用户决定经
+    # fanout_review_decision 客户端帧回到守在 Future 上的工具。
+    FANOUT_REVIEW_REQUESTED = "fanout_review_requested"
     # 2026-05-26: memory curation events. Pre-fix the new
     # forget / correct / dedup_scope service methods only logged to
     # stdlib — the "记忆活动" UI tab + audit replay had no way to

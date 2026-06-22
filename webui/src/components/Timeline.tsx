@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "../store/app";
 import type { Entry } from "../lib/types";
-import ToolCard, { AgentGroupCard } from "./ToolCards";
+import ToolCard, { AgentGroupCard, FanoutCard } from "./ToolCards";
 import ThinkingBlock from "./ThinkingBlock";
 import Markdown from "./LazyMarkdown";
 
@@ -179,6 +179,16 @@ function Row({ e }: { e: Entry }) {
           }
         >
           {e.content}
+        </div>
+      </div>
+    );
+  }
+  if (e.kind === "fanout") {
+    return (
+      <div className="flex gap-2.5">
+        <span className="text-mc-accent text-sm mt-1 shrink-0">👥</span>
+        <div className="flex-1 min-w-0">
+          <FanoutCard e={e} />
         </div>
       </div>
     );

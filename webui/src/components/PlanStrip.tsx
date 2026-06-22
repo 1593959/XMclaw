@@ -1,4 +1,4 @@
-﻿// 计划步骤条：plan_* 事件驱动；无显式 plan 时退化为 todo_updated 列表；
+// 计划步骤条：plan_* 事件驱动；无显式 plan 时退化为 todo_updated 列表；
 // 无 plan/todo 但有正在执行的工具调用时显示「执行中…」指示器。
 import { useApp } from "../store/app";
 
@@ -14,8 +14,8 @@ export default function PlanStrip() {
   const todos = useApp((s) => s.chat.todos);
   const entries = useApp((s) => s.chat.entries);
 
-  // 1. plan 步骤条（最高优先级）
-  if (plan.steps.length > 0) {
+  // 1. plan 步骤条（仅当 plan 活跃时；完成后回退到 todo 或 fallback）。
+  if (plan.steps.length > 0 && plan.active) {
     const done = plan.steps.filter((s) => s.status === "done").length;
     const running = plan.steps.filter((s) => s.status === "running").length;
     return (
@@ -73,7 +73,31 @@ export default function PlanStrip() {
     );
   }
 
-  // 3. fallback：有运行中的工具调用时显示「执行中…」
+  // 3. plan 已结束且无 todo 时，仍保留步骤条作为归档。
+  if (plan.steps.length > 0) {
+    const done = plan.steps.filter((s) => s.status === "done").length;
+    return (
+      <div className="px-4 py-2 border-b border-mc-border flex items-center gap-1.5 flex-wrap shrink-0">
+        <span className="text-xs text-mc-faint mr-1">
+          计划 {done}/{plan.steps.length}
+        </span>
+        {plan.steps.map((s) => (
+          <span
+            key={s.id}
+            title={s.id}
+            className={
+              "text-[11px] px-2 py-0.5 rounded-full border " + (STEP_CLS[s.status] || STEP_CLS.pending)
+            }
+          >
+            {s.status === "done" ? "✓" : s.status === "running" ? "▶" : s.status === "failed" ? "✗" : "○"}{" "}
+            {s.index + 1}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  // 4. fallback：有运行中的工具调用时显示「执行中…」
   const hasRunningTool = entries.some(
     (e) => e.kind === "tool_use" && e.status === "running",
   );

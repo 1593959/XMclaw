@@ -120,6 +120,12 @@ interface AppState {
   sendUser(text: string): void;
   cancelTurn(): void;
   answerQuestion(questionId: string, value: unknown): void;
+  submitFanoutReview(
+    reviewId: string,
+    plan: NonNullable<Entry["plan"]>,
+    synthesis: string,
+    cancelled: boolean,
+  ): void;
   setDraft(v: string): void;
   startNewSession(): void;
   resumeSession(sid: string): void;
@@ -457,6 +463,34 @@ export const useApp = create<AppState>((set, get) => {
 
     answerQuestion(questionId: string, value: unknown) {
       wsHandle?.send({ type: "answer_question", question_id: questionId, value });
+    },
+
+    submitFanoutReview(reviewId, plan, synthesis, cancelled) {
+      // #3 派发前编辑拆解：回传编辑后的方案，并把审批卡本地转入运行/取消态
+      // （后端确认后不再发 fanout_started，靠这步收尾审批卡）。
+      wsHandle?.send({
+        type: "fanout_review_decision",
+        review_id: reviewId,
+        plan,
+        synthesis,
+        cancelled,
+      });
+      set((s) => ({
+        chat: {
+          ...s.chat,
+          entries: s.chat.entries.map((e) =>
+            e.reviewId === reviewId
+              ? {
+                  ...e,
+                  status: cancelled ? ("cancelled" as const) : ("running" as const),
+                  plan,
+                  total: plan.length,
+                  synthesis,
+                }
+              : e,
+          ),
+        },
+      }));
     },
 
     setDraft(v: string) {
