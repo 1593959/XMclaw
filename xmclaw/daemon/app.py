@@ -2833,6 +2833,7 @@ def create_app(
                                         user_images=_imgs,
                                         tools_allowlist=_allow,
                                         ultrathink=_ultra,
+                                        forced_mode=_forced,
                                     )
                                 else:
                                     await active_agent.run_turn(

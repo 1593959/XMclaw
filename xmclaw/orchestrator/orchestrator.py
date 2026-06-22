@@ -89,6 +89,7 @@ class JarvisOrchestrator:
         user_correlation_id: str | None = None,
         user_images: tuple[str, ...] | None = None,
         ultrathink: bool = False,
+        forced_mode: str | None = None,
     ) -> OrchestratorResult:
         """Route a user message to ``AgentLoop.run_turn``.
 
@@ -115,6 +116,7 @@ class JarvisOrchestrator:
             user_correlation_id=user_correlation_id,
             user_images=user_images,
             ultrathink=ultrathink,
+            forced_mode=forced_mode,
         )
         text = (
             getattr(result, "content", "")
