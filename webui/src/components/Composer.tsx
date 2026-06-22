@@ -4,6 +4,7 @@
 
 import { useRef, useState } from "react";
 import { useApp } from "../store/app";
+import { useVoice } from "../lib/voice";
 import SlashMenu, { matchSlash, type SlashCommand } from "./SlashMenu";
 
 function fileIcon(mime: string): string {
@@ -62,6 +63,7 @@ export default function Composer() {
   const addAttachments = useApp((s) => s.addAttachments);
   const removeAttachment = useApp((s) => s.removeAttachment);
   const fileRef = useRef<HTMLInputElement>(null);
+  const voice = useVoice();
   const [dragOver, setDragOver] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
   const slashMatches = matchSlash(draft);
@@ -102,6 +104,15 @@ export default function Composer() {
         <Chip active={teamMode} onClick={toggleTeam} title="强制派专家团并行执行（swarm 模式）">
           👥 专家团
         </Chip>
+        {voice.supported && (
+          <Chip
+            active={voice.voiceOn}
+            onClick={() => voice.setVoiceOn(!voice.voiceOn)}
+            title="语音对话：说话→实时转写→自动发送，回复用 EdgeTTS 朗读，播完自动再听（免提循环）"
+          >
+            🎙 语音对话
+          </Chip>
+        )}
         {profiles.length > 0 && (
           <select
             value={llmProfileId || profiles[0].id}
@@ -188,6 +199,19 @@ export default function Composer() {
         >
           ＋
         </button>
+        {voice.supported && (
+          <button
+            onClick={() => (voice.listening ? voice.stopListening() : voice.startListening())}
+            title={voice.listening ? "停止聆听" : "点击说话（语音输入）"}
+            className={
+              "cursor-pointer shrink-0 text-lg leading-none mb-0.5 " +
+              (voice.listening ? "text-mc-err animate-pulse" : "text-mc-faint hover:text-mc-accent")
+            }
+            aria-label="语音输入"
+          >
+            {voice.listening ? "●" : "🎤"}
+          </button>
+        )}
         {slashMatches && slashMatches.length > 0 && (
           <SlashMenu matches={slashMatches} active={slashIdx} onPick={runSlash} />
         )}

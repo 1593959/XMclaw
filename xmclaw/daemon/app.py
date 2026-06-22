@@ -1501,6 +1501,35 @@ def create_app(
             items = []
         return JSONResponse({"items": items})
 
+    @app.post("/api/v2/voice/tts")
+    async def voice_tts(payload: dict[str, Any]) -> Any:
+        """语音对话 TTS：文本 → EdgeTTS → mp3。前端语音模式直接调（不经
+        agent 工具）。零密钥；edge-tts 未装 → 503 + 安装提示。voice 取请求
+        覆盖 > config.voice.tts.voice > 默认 zh-CN-XiaoxiaoNeural。"""
+        from starlette.responses import Response as _Resp
+        text = str((payload or {}).get("text") or "").strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "missing text"}, status_code=400)
+        text = text[:4000]  # 合成上限，防超长卡顿
+        _vcfg = (config or {}).get("voice", {}) if isinstance(config, dict) else {}
+        _tcfg = _vcfg.get("tts", {}) if isinstance(_vcfg, dict) else {}
+        voice = str(
+            (payload or {}).get("voice")
+            or _tcfg.get("voice")
+            or "zh-CN-XiaoxiaoNeural"
+        )
+        try:
+            from xmclaw.providers.voice.edge_tts import EdgeTTS
+            audio = await EdgeTTS(voice=voice).synthesize(text)
+        except ImportError:
+            return JSONResponse(
+                {"ok": False, "error": "edge-tts 未安装：pip install edge-tts（或 .[voice]）"},
+                status_code=503,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return _Resp(content=audio, media_type="audio/mpeg")
+
     @app.get("/api/v2/setup")
     async def setup_status() -> JSONResponse:
         from xmclaw.daemon.factory import _resolve_persona_profile_dir
