@@ -74,8 +74,12 @@ do to make progress toward the goal.
 
 Rules:
   * STRICT JSON array of strings. No prose, no markdown, no code fences.
-  * Each step ≤ 200 characters, imperative voice ("Search for X", "Read
-    file Y", "Aggregate results").
+  * Write every step in the SAME language as the user's message below.
+    A Chinese request → Chinese steps; an English request → English
+    steps. Never switch to English just because these instructions are
+    in English. Match the user.
+  * Each step ≤ 200 characters, imperative voice (e.g. "搜索 X" / "Search
+    for X", "读取文件 Y" / "Read file Y", "汇总结果" / "Aggregate results").
   * Order matters — earlier steps unblock later ones.
   * If the request is actually simple (e.g. "what time is it"), return
     a 1-element list with the answer-shaped step, NOT a forced 2-step.
