@@ -4074,7 +4074,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             and effective_tools is not None
         ):
             _swarm_fanout_ok = False
-            _swarm_fanout_text = ""
+            _swarm_report = ""
             try:
                 _subtasks = list(self._active_plan_steps)
                 from xmclaw.core.ir.toolcall import ToolCall
@@ -4082,15 +4082,31 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     name="parallel_subagents",
                     # interactive_review: 用户显式点了「派专家团」→ 派发前
                     # 把拆解方案推给前端编辑（#3 派发前编辑拆解）。
-                    args={"subtasks": _subtasks, "interactive_review": True},
+                    # synthesis=llm + goal: reduce 阶段把各腿产出整合成「可读
+                    # 报告」，而非 concat 的 JSON blob（修「完成却无产出」）。
+                    args={
+                        "subtasks": _subtasks,
+                        "interactive_review": True,
+                        "synthesis": "llm",
+                        "goal": (user_message or "")[:500],
+                    },
                     provenance="synthetic",
                     session_id=session_id,
                 )
                 _swarm_result = await effective_tools.invoke(_swarm_call)
                 if _swarm_result and getattr(_swarm_result, "ok", False):
                     _raw = getattr(_swarm_result, "content", None)
-                    _swarm_fanout_text = str(_raw) if _raw is not None else ""
-                    _swarm_fanout_ok = bool(_swarm_fanout_text)
+                    # 工具返回 json.dumps({result, completed, ...})；取 result
+                    # 作为可读报告正文，解析失败回退裸内容。
+                    _swarm_report = str(_raw) if _raw is not None else ""
+                    try:
+                        import json as _json
+                        _parsed = _json.loads(_swarm_report)
+                        if isinstance(_parsed, dict) and _parsed.get("result"):
+                            _swarm_report = str(_parsed["result"])
+                    except (ValueError, TypeError):
+                        pass
+                    _swarm_fanout_ok = bool(_swarm_report.strip())
                     await publish(EventType.INNER_MONOLOGUE, {
                         "kind": "swarm_fanout_completed",
                         "subtasks_count": len(_subtasks),
@@ -4102,9 +4118,51 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     "error": str(_swarm_exc),
                 })
             if _swarm_fanout_ok:
+                _swarm_corr = f"{turn_uuid}-0"
+                # #3: 把整合报告作为 assistant 最终回答正常发射。此前 swarm
+                # 路径直接 return（events=[]），绕过了 LLM_RESPONSE → 前端
+                # 收不到回答 → 用户看到「什么都没有」。
+                await publish(EventType.LLM_RESPONSE, {
+                    "hop": 0,
+                    "text": _swarm_report,
+                    "stop_reason": "stop",
+                    "mode": "swarm",
+                }, correlation_id=_swarm_corr)
+                # #1: 计划条收尾。swarm 早返回绕过了 hop_loop 的 plan 收尾
+                # (hop_loop.py:2529-2540)，顶部 PlanStrip 永远停在执行中。
+                # 这里补发 PLAN_STEP_COMPLETED×N + PLAN_COMPLETED。
+                _plan_id = getattr(self, "_active_plan_id", None)
+                _plan_step_ids = list(
+                    getattr(self, "_active_plan_step_ids", []) or []
+                )
+                if _plan_id and _plan_step_ids:
+                    try:
+                        for _idx, _sid in enumerate(_plan_step_ids):
+                            await publish(EventType.PLAN_STEP_COMPLETED, {
+                                "plan_id": _plan_id,
+                                "step_id": _sid,
+                                "step_index": _idx,
+                                "n_steps": len(_plan_step_ids),
+                                "action_kind": "subagent",
+                            })
+                        await publish(EventType.PLAN_COMPLETED, {
+                            "plan_id": _plan_id,
+                            "n_steps": len(_plan_step_ids),
+                            "status": "completed",
+                        })
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                    finally:
+                        self._active_plan_id = None
+                # 持久化整合报告，与 instant/hop 路径一致，存活重启。
+                try:
+                    messages.append(Message(role="assistant", content=_swarm_report))
+                    await self._persist_history(session_id, messages)
+                except Exception:  # noqa: BLE001
+                    pass
                 return AgentTurnResult(
                     ok=True,
-                    text=_swarm_fanout_text,
+                    text=_swarm_report,
                     hops=0,
                     tool_calls=[],
                     events=[],
