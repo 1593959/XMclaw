@@ -145,9 +145,17 @@ function DiffTab() {
 
   useEffect(() => {
     if (!token || !sid) return;
-    apiGet<{ commits?: Commit[] }>(`/api/v2/session_workspaces/${encodeURIComponent(sid)}/commits`, token)
+    apiGet<{ commits?: Array<{ sha: string; subject?: string; message?: string; ts?: number }> }>(
+      `/api/v2/session_workspaces/${encodeURIComponent(sid)}/commits`,
+      token,
+    )
       .then((d) => {
-        const list = d?.commits || [];
+        // 后端字段是 subject，旧前端读 c.message → commit 消息全空白。
+        const list: Commit[] = (d?.commits || []).map((c) => ({
+          sha: c.sha,
+          message: c.subject ?? c.message ?? "",
+          ts: c.ts,
+        }));
         setCommits(list);
         // 新变更进来时自动选中最新 commit（实时感）。
         if (list.length > 0) setSel((cur) => cur ?? list[0].sha);
@@ -212,14 +220,24 @@ function FilesTab() {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [selPath, setSelPath] = useState<string | null>(null);
   const [file, setFile] = useState<{ content?: string; kind?: string } | null>(null);
+  const [crossSession, setCrossSession] = useState<{
+    sid: string;
+    rel: string;
+    content?: string;
+    kind?: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!token || !sid) return;
-    apiGet<{ tree?: TreeNode[]; files?: TreeNode[] }>(
+    // 后端契约：{ entries: [{ rel_path, kind, size, mtime }] }。
+    // 旧前端读的是 d.tree / d.files（键名不存在）+ n.path（应为 rel_path）
+    // → tree 永远空 → 「工作区暂无文件」，且 file_write 后不刷新。
+    // 这是一处前后端契约漂移；按真实响应对齐 entries→rel_path。
+    apiGet<{ entries?: Array<{ rel_path: string; size?: number }> }>(
       `/api/v2/session_workspaces/${encodeURIComponent(sid)}/tree`,
       token,
     )
-      .then((d) => setTree(d?.tree || d?.files || []))
+      .then((d) => setTree((d?.entries || []).map((e) => ({ path: e.rel_path, size: e.size }))))
       .catch(() => setTree([]));
   }, [token, sid, version]);
 
@@ -227,7 +245,12 @@ function FilesTab() {
   // 不在工作区的文件给出明确反馈而不是没反应。
   const [focusMiss, setFocusMiss] = useState<string | null>(null);
   useEffect(() => {
-    if (!focus) return;
+    if (!focus) {
+      setFocusMiss(null);
+      setCrossSession(null);
+      return;
+    }
+    setCrossSession(null);
     const base = focus.path.split(/[\\/]/).pop() || focus.path;
     const hit = tree.find((n) => n.path === focus.path || n.path.endsWith(base));
     if (hit) {
@@ -235,6 +258,12 @@ function FilesTab() {
       setFocusMiss(null);
     } else {
       setFocusMiss(focus.path);
+      const match = focus.path.match(/session_workspaces[\\/]([^\\/]+)[\\/](.+)/);
+      if (match) {
+        setCrossSession({ sid: match[1], rel: match[2] });
+      } else {
+        setCrossSession(null);
+      }
     }
   }, [focus, tree]);
 
@@ -248,11 +277,79 @@ function FilesTab() {
       .catch(() => setFile(null));
   }, [token, sid, selPath]);
 
+  const openCrossSession = async () => {
+    if (!token || !crossSession) return;
+    try {
+      const res = await apiGet<{ content?: string; kind?: string; ok?: boolean }>(
+        `/api/v2/session_workspaces/${encodeURIComponent(crossSession.sid)}/file?path=${encodeURIComponent(crossSession.rel)}`,
+        token,
+      );
+      if (res?.ok) {
+        setCrossSession({ ...crossSession, content: res.content || "", kind: res.kind || "" });
+        setFocusMiss(null);
+      }
+    } catch {
+      // 保持原状态
+    }
+  };
+
   const missNotice = focusMiss && (
     <div className="mx-2 mt-2 px-2.5 py-1.5 rounded border border-mc-warn/40 bg-mc-warn/5 text-[11px] text-mc-warn break-all">
-      该文件不在本会话工作区（{focusMiss}）— 工作区只索引 agent 在 scratch 目录的产物
+      {crossSession ? (
+        <div className="flex flex-col gap-1">
+          <div>该文件在另一会话工作区：{crossSession.rel.split(/[\\/]/).pop() || crossSession.rel}</div>
+          <div className="flex gap-3 mt-1">
+            <button
+              onClick={openCrossSession}
+              className="text-mc-accent hover:underline cursor-pointer"
+            >
+              → 打开
+            </button>
+            <a
+              href={`/api/v2/session_workspaces/${encodeURIComponent(crossSession.sid)}/raw?path=${encodeURIComponent(crossSession.rel)}${token ? `&token=${encodeURIComponent(token)}` : ""}`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-mc-accent hover:underline"
+              download={crossSession.rel}
+            >
+              下载
+            </a>
+          </div>
+        </div>
+      ) : (
+        `该文件不在本会话工作区（${focusMiss}）— 工作区只索引 agent 在 scratch 目录的产物`
+      )}
     </div>
   );
+
+  // 当跨 session 文件已加载内容时，直接渲染
+  if (crossSession?.content != null) {
+    const e = ext(crossSession.rel);
+    const rawUrl = `/api/v2/session_workspaces/${encodeURIComponent(crossSession.sid)}/raw?path=${encodeURIComponent(crossSession.rel)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+    return (
+      <div className="flex flex-col h-full min-h-0">
+        <button
+          onClick={() => setCrossSession(null)}
+          className="shrink-0 text-left px-3 py-1.5 text-[11.5px] text-mc-muted hover:text-mc-text cursor-pointer border-b border-mc-border font-mono truncate"
+        >
+          ← {crossSession.rel}（会话 {crossSession.sid}）
+        </button>
+        <div className="flex-1 overflow-y-auto p-3">
+          {IMG_EXTS.has(e) ? (
+            <img src={rawUrl} className="max-w-full rounded border border-mc-border" alt={crossSession.rel} />
+          ) : MD_EXTS.has(e) ? (
+            <Markdown text={crossSession.content} />
+          ) : crossSession.kind === "binary" ? (
+            <div className="text-xs text-mc-faint">二进制文件</div>
+          ) : (
+            <pre className="text-[11.5px] font-mono text-mc-text whitespace-pre-wrap break-all">
+              {crossSession.content.slice(0, 40000)}
+            </pre>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (tree.length === 0)
     return (
