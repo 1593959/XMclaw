@@ -423,7 +423,12 @@ _BASH_SPEC = ToolSpec(
             },
             "timeout_seconds": {
                 "type": "number",
-                "description": "Kill after N seconds. Default 30.",
+                "description": (
+                    "Kill after N seconds. Default 120. For known long-"
+                    "running commands (pip/npm install, builds, data "
+                    "processing, generation scripts) set this explicitly "
+                    "higher (e.g. 300-600) so the run isn't killed mid-way."
+                ),
             },
         },
         "required": ["command"],

@@ -20,7 +20,10 @@ from xmclaw.providers.tool._helpers import (
     _parse_ddg_html as _parse_ddg_html,
 )
 
-_BASH_DEFAULT_TIMEOUT = 30.0
+# 2026-06-23: 默认 30s 对本地 agent 干真活太激进 —— 写完脚本直接执行
+# （生成产物/装依赖/处理数据）很容易撞 30s 被判超时（用户反馈）。提到
+# 120s 覆盖绝大多数真实脚本；更长的让模型显式传 timeout_seconds。
+_BASH_DEFAULT_TIMEOUT = 120.0
 _BASH_MAX_OUTPUT = 100_000
 _MAX_WEB_BYTES = 50_000
 
