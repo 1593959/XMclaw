@@ -22,7 +22,9 @@
       "default_model": "anthropic/claude-sonnet-4"
     },
     "_comment_profiles_schema": "each entry: {id (slug, [a-z0-9][a-z0-9_-]*), label?, provider (anthropic|openai|openrouter), model, api_key, base_url?}. Empty by default; manage via Settings page or edit here directly.",
-    "profiles": []
+    "profiles": [],
+    "_comment_stream_stall_timeout": "Wave-37: LLM 流式响应「停顿超时」容忍秒数。默认 120s — 连续 120 秒没有 token 输出即判定 provider 卡死并中止。复杂任务（深度推理、长代码生成、大文件分析）可能需要更长等待时间，可增大为 300–600。此值越大，对「真正卡死」的误容忍越高，但复杂任务被误杀的概率越低。HARD_CAP(1800s) 仍是绝对兜底，不会无限阻塞。",
+    "stream_stall_timeout_s": 120
   },
   "skills": {
     "_comment": "Epic #27 G-04 (2026-05-19) — skill 工具暴露的渐进披露 (progressive disclosure)。disclosure_mode 决定 LLM 一回合看到几个 skill 工具：'inline' = 每个注册 skill 单独一个 skill_<id> 工具（受 prefilter top-12 收窄，legacy 行为）；'unified' = 只暴露 6 个 meta-tool (browse / view / status / install / uninstall / run)，所有调用走 skill_run(skill_id, args)，强制 LLM 走显式 browse→view→run 三步流程，大库下显著省 prompt token 预算；'auto' = 默认，注册 skill 数 > unified_threshold (默认 20) 时自动切 unified，否则保持 inline 的直接调用便利。",
