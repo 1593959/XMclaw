@@ -247,11 +247,50 @@ async function rehydrateQuestions(token: string | null, set: (fn: (s: AppState) 
   }
 }
 
+// #3 派发前编辑拆解：daemon 侧仍在 await 的 fanout 审批，重连/刷新后把
+// 可编辑审批卡放回（否则审批中刷新会丢卡、回合卡死在 Future 上）。
+async function rehydrateFanoutReviews(
+  token: string | null,
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+) {
+  try {
+    const url = "/api/v2/pending_fanout_reviews" + (token ? `?token=${encodeURIComponent(token)}` : "");
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const data = await r.json();
+    const items: Array<Record<string, unknown>> = Array.isArray(data?.items) ? data.items : [];
+    if (!items.length) return;
+    set((s) => {
+      const existing = new Set(s.chat.entries.map((e) => e.reviewId).filter(Boolean));
+      const fresh: Entry[] = items
+        .filter((it) => !existing.has(it.review_id as string))
+        .map((it) => ({
+          id: `fanoutreview_${it.review_id}`,
+          role: "system" as const,
+          kind: "fanout" as const,
+          content: "",
+          status: "review" as const,
+          ts: Date.now() / 1000,
+          reviewId: it.review_id as string,
+          goal: (it.goal as string) || "",
+          synthesis: (it.synthesis as string) || "concat",
+          plan: (Array.isArray(it.plan) ? it.plan : []) as Entry["plan"],
+          total: Array.isArray(it.plan) ? it.plan.length : 0,
+        }));
+      if (!fresh.length) return {};
+      return { chat: { ...s.chat, entries: s.chat.entries.concat(fresh) } };
+    });
+  } catch {
+    /* 非关键 */
+  }
+}
+
 export const useApp = create<AppState>((set, get) => {
   function connectFor(sid: string, token: string | null) {
     wsHandle?.close();
     hydrateHistory(sid, token, set);
     rehydrateQuestions(token, set);
+    rehydrateFanoutReviews(token, set);
     wsHandle = createWsClient({
       sessionId: sid,
       token,

@@ -204,6 +204,13 @@ def cancel_pending_questions(session_id: str | None = None) -> int:
     return n
 
 
+def list_pending_fanout_reviews() -> list[dict]:
+    """派发前编辑拆解（#3）：返回所有在飞的 fanout 审批快照，供 WS 重连/
+    刷新后重建 FanoutReviewEditor 卡（对位 list_pending_questions）。"""
+    from xmclaw.providers.tool.builtin_subagent import _PENDING_FANOUT_PAYLOADS
+    return list(_PENDING_FANOUT_PAYLOADS.values())
+
+
 def resolve_pending_fanout_review(review_id: str, decision: dict) -> bool:
     """派发前编辑拆解（#3）：用前端回传的编辑方案 resolve 守在 Future 上的
     parallel_subagents 调用。镜像 resolve_pending_question。"""

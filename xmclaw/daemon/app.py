@@ -1490,6 +1490,17 @@ def create_app(
             items = []
         return JSONResponse({"items": items})
 
+    @app.get("/api/v2/pending_fanout_reviews")
+    async def pending_fanout_reviews() -> JSONResponse:
+        # #3 派发前编辑拆解：刷新/重连后把仍在 await 的审批卡放回（对位
+        # pending_questions）。否则审批中刷新会丢卡、回合阻塞在 Future 上。
+        try:
+            from xmclaw.providers.tool.builtin import list_pending_fanout_reviews
+            items = list_pending_fanout_reviews()
+        except Exception:  # noqa: BLE001
+            items = []
+        return JSONResponse({"items": items})
+
     @app.get("/api/v2/setup")
     async def setup_status() -> JSONResponse:
         from xmclaw.daemon.factory import _resolve_persona_profile_dir

@@ -3838,11 +3838,21 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             or _um.startswith("```")
             or _looks_like_single_step(_um)
         )
+        # #3 修2：用户显式点了「派专家团」(forced_mode=swarm) 时，必须拆出
+        # ≥2 步计划，否则下方 swarm fanout 门(需 _active_plan_steps>=2)永远
+        # 跳过 → 退回 LLM 自主决定 → 常常不 fanout → 看板空。此处让强制
+        # swarm 压过「看着简单就不拆」的启发式（trivial / 单步 skip）。
+        _forced_swarm = forced_mode == "swarm"
         if (
             self._active_run_modes.get(session_id) != "instant"
-            and not self._active_is_trivial.get(session_id, False)
             and not _skip_plan_session
-            and not _skip_plan_single_step
+            and (
+                _forced_swarm
+                or (
+                    not self._active_is_trivial.get(session_id, False)
+                    and not _skip_plan_single_step
+                )
+            )
         ):
             # B-LATENCY-prep: plan-first decomposition fires a real LLM
             # call before the first hop. Cap at 15s — past that, run
@@ -3882,7 +3892,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         _cached = None
                         self._plan_cache.pop(_plan_hash, None)
 
-                if _cached is None and _gate.is_complex(user_message):
+                if _cached is None and (_forced_swarm or _gate.is_complex(user_message)):
                     # Cap aligned to the B-LATENCY-prep comment's intent
                     # (15s, not 25s): decomposing a goal into 2-4 bullets
                     # never legitimately needs more, and a tighter cap
