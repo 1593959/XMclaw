@@ -3922,35 +3922,45 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         "cached": _cached is not None,
                     })
 
-                    # Emit plan_started so the frontend PlanStrip shows steps
-                    # in real-time (not only after execute_plan path).
-                    _plan_id = f"plan_{turn_uuid}"
-                    _step_ids = [
-                        f"step_{i}_{step[:60]}"
-                        for i, step in enumerate(_steps)
-                    ]
-                    await publish(EventType.PLAN_STARTED, {
-                        "plan_id": _plan_id,
-                        "n_steps": len(_steps),
-                        "step_ids": _step_ids,
-                    })
-                    # Cache plan identifiers so the hop-loop tail can emit
-                    # plan_step_completed / plan_completed without
-                    # re-deriving them at turn end.
-                    self._active_plan_id = _plan_id
-                    self._active_plan_step_ids = list(_step_ids)
-                    # Optimistically flip step 0 to running so the UI
-                    # shows live progress immediately instead of a row
-                    # of pending pills until the very end of the turn.
-                    # Later steps are advanced by hop_loop's tail.
-                    if _step_ids:
-                        await publish(EventType.PLAN_STEP_STARTED, {
+                    # swarm（派专家团）回合不驱动顶部线性「计划」条 —— 专家团
+                    # 是并行 DAG，不是顺序计划；顶部线性条会误导（伪线性、不
+                    # 体现并行、要到收尾才一次性更新）。实时更新的专家卡
+                    # (subagent_*) 才是正确视图。故 swarm 下跳过 PLAN_* UI 事件
+                    # 与 plan-id 簿记（Phase A 的 plan_completed 也因此不触发）。
+                    # _active_plan_steps 已在上面保留，供 swarm fanout 使用。
+                    _is_swarm_turn = (
+                        self._active_run_modes.get(session_id) == "swarm"
+                    )
+                    if not _is_swarm_turn:
+                        # Emit plan_started so the frontend PlanStrip shows steps
+                        # in real-time (not only after execute_plan path).
+                        _plan_id = f"plan_{turn_uuid}"
+                        _step_ids = [
+                            f"step_{i}_{step[:60]}"
+                            for i, step in enumerate(_steps)
+                        ]
+                        await publish(EventType.PLAN_STARTED, {
                             "plan_id": _plan_id,
-                            "step_id": _step_ids[0],
-                            "step_index": 0,
                             "n_steps": len(_steps),
-                            "action_kind": "llm_turn",
+                            "step_ids": _step_ids,
                         })
+                        # Cache plan identifiers so the hop-loop tail can emit
+                        # plan_step_completed / plan_completed without
+                        # re-deriving them at turn end.
+                        self._active_plan_id = _plan_id
+                        self._active_plan_step_ids = list(_step_ids)
+                        # Optimistically flip step 0 to running so the UI
+                        # shows live progress immediately instead of a row
+                        # of pending pills until the very end of the turn.
+                        # Later steps are advanced by hop_loop's tail.
+                        if _step_ids:
+                            await publish(EventType.PLAN_STEP_STARTED, {
+                                "plan_id": _plan_id,
+                                "step_id": _step_ids[0],
+                                "step_index": 0,
+                                "n_steps": len(_steps),
+                                "action_kind": "llm_turn",
+                            })
                     # 2026-05-30: autonomous subagent trigger.
                     # Not every multi-step plan needs subagents — tool
                     # parallelism handles 2-step tasks fine. We upgrade
