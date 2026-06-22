@@ -465,6 +465,19 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         self._recently_finished_runs: list[dict[str, Any]] = []
         self._max_hops = max_hops
         self._llm_timeout_s = max(5.0, float(llm_timeout_s))
+        # Wave-37: allow configurable stream-stall timeout for complex tasks
+        # (deep reasoning, long generation) that pause without emitting tokens.
+        if cfg is not None:
+            _custom_stall = (
+                cfg.get("llm", {}).get("stream_stall_timeout_s")
+                or cfg.get("agent", {}).get("stream_stall_timeout_s")
+            )
+            if _custom_stall is not None:
+                try:
+                    from xmclaw.daemon.hop_loop import set_stream_stall_timeout
+                    set_stream_stall_timeout(float(_custom_stall))
+                except Exception:  # noqa: BLE001
+                    pass
         # Wave-27 fix-17 (2026-05-16): per-tool-call wall-clock cap.
         # Default 180s — generous enough for slow browser navigations
         # + cold-start MCP servers + heavy subprocess work, but
@@ -3641,28 +3654,41 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         except Exception:  # noqa: BLE001
             workspace_hint_block = ""
 
+        # 上下文卫生（2026-06-23）：把系统注入的动态块（时钟/记忆/召回/
+        # 工作区/深思/课程/技能路由/纠错/schema 等）从「用户消息」里剥离，
+        # 作为 system 上下文段拼到系统消息尾部，在一个 cache breakpoint
+        # 之后（静态系统提示仍命中缓存）。用户消息只保留**纯 user_message**
+        # —— 不再以用户身份夹带系统内容。Anthropic 折叠进 system 参数、
+        # OpenAI 透传，保持单条 system 消息对所有后端最稳。
+        _turn_context_block = (
+            continuation_anchor
+            + time_block
+            + memory_ctx_block
+            + memory_files_block
+            + unified_recall_block
+            + workspace_hint_block
+            + ("\n\n" + "\n\n".join(_user_dynamic_blocks) if _user_dynamic_blocks else "")
+            + curriculum_hint_block
+            + curriculum_strategies_block
+            + skill_router_hint
+            + skill_browse_hint
+            + _correction_hint
+            + _schema_block
+        )
+        if _turn_context_block.strip():
+            system_content = (
+                system_content
+                + "\n\n" + CACHE_BREAKPOINT_MARKER + "\n\n"
+                + "## 本回合上下文（系统注入，非用户输入）\n"
+                + _turn_context_block.lstrip()
+            )
+
         messages: list[Message] = [
             Message(role="system", content=system_content),
             *prior,
             Message(
                 role="user",
-                content=(
-                    continuation_anchor
-                    + time_block
-                    + memory_ctx_block
-                    + memory_files_block
-                    + unified_recall_block
-                    + workspace_hint_block
-                    + ("\n\n" + "\n\n".join(_user_dynamic_blocks) if _user_dynamic_blocks else "")
-                    + "\n\n"
-                    + user_message
-                    + curriculum_hint_block
-                    + curriculum_strategies_block
-                    + skill_router_hint
-                    + skill_browse_hint
-                    + _correction_hint
-                    + _schema_block
-                ),
+                content=user_message,
                 # B-MULTIMODAL-UI: user uploaded images in the composer.
                 # WS handler wrote them to ~/.xmclaw/v2/uploads/ and passed
                 # the paths here. LLM translator (openai.py / anthropic.py
@@ -3778,14 +3804,15 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     "FIRST action. Do NOT try to do everything in a single "
                     "linear tool chain."
                 )
-                # Append to the last message (user message).
-                if messages and len(messages) >= 2:
-                    _last = messages[-1]
-                    _new_content = _last.content + _swarm_hint
-                    messages[-1] = Message(
-                        role=_last.role,
-                        content=_new_content,
-                        images=getattr(_last, "images", ()),
+                # 上下文卫生：swarm 提示作为 system 注入，不再拼进用户消息。
+                # 追加到系统消息尾部（已在 cache breakpoint 之后，不动缓存
+                # 前缀）—— Anthropic 折叠进 system 参数、OpenAI 透传。
+                if messages and messages[0].role == "system":
+                    _sys = messages[0]
+                    messages[0] = Message(
+                        role="system",
+                        content=_sys.content + _swarm_hint,
+                        images=getattr(_sys, "images", ()),
                     )
                 await publish(EventType.INNER_MONOLOGUE, {
                     "kind": "swarm_mode_prompt_injected",
@@ -4040,8 +4067,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                         except Exception:  # noqa: BLE001
                             pass
                     if _plan_skill_hint:
+                        # 上下文卫生：技能路由提示是系统注入，用 system 身份。
                         messages.append(Message(
-                            role="user",
+                            role="system",
                             content=_plan_skill_hint,
                         ))
             except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001

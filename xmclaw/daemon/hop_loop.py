@@ -40,13 +40,19 @@ _MEMORY_TOOLS: frozenset[str] = frozenset({"remember", "learn_about_user", "memo
 _HOP_BASE_TIMEOUT_S = 240.0
 _HOP_STEP_TIMEOUT_S = 120.0
 
-# 2026-06-16 流式完成超时改成「停顿/空闲」语义,而不是总时长硬上限。
-# 旧 bug:模型在正常逐 token 吐一个大文件(如整页 HTML)时,整体超过
-# _eff_timeout(封顶 600s)就被一刀切——一个正在推进的调用被误杀。
-# 现在:只要还在吐 token 就重置计时,只有连续 STALL 秒没有任何 token
-# 才判定 provider 卡死并中止;HARD_CAP 是防病态无限流的绝对兜底。
+# 2026-06-16: stream stall timeout defaults to 120s, but is configurable
+# via cfg["llm"]["stream_stall_timeout_s"] at AgentLoop boot. Bump this
+# default for complex tasks (deep reasoning, long generation, etc.) that
+# may pause for extended periods without emitting tokens.
 _STREAM_STALL_TIMEOUT_S = 120.0
 _STREAM_HARD_CAP_S = 1800.0
+
+
+def set_stream_stall_timeout(value: float) -> None:
+    """Override the stream-stall timeout. Called from AgentLoop.__init__
+    when the user supplies ``cfg.llm.stream_stall_timeout_s``."""
+    global _STREAM_STALL_TIMEOUT_S
+    _STREAM_STALL_TIMEOUT_S = max(30.0, float(value))
 
 
 def _hop_timeout(hop: int, bound: float) -> float:
@@ -559,8 +565,9 @@ class HopLoopMixin:
                 and str(it.get("status") or "").lower() not in ("completed", "done", "cancelled")
             ]
             if _pending_todos and _hops_since_todo >= _TODO_NUDGE_EVERY:
+                # 上下文卫生：系统催促用 system 身份，不再伪装成用户发言。
                 messages.append(Message(
-                    role="user",
+                    role="system",
                     content=(
                         "[系统提示] 你的待办列表还有未完成项,且已经几步没更新了。"
                         "请立刻用 todo_write 重写整张列表,把已完成的标 completed、"
@@ -622,7 +629,8 @@ class HopLoopMixin:
                         if not tc.get("ok", True) and tc.get("error")
                     ] or None,
                 ))
-                messages.append(Message(role="user", content=anchor_text))
+                # 上下文卫生：GoalAnchor 是系统提醒，用 system 身份注入。
+                messages.append(Message(role="system", content=anchor_text))
                 await publish(EventType.INNER_MONOLOGUE, {
                     "hop": hop,
                     "kind": "goal_anchor_injected",
@@ -711,8 +719,9 @@ class HopLoopMixin:
                 # call. State lives in the NarrationEnforcer
                 # observer constructed above.
                 if _narration_nudge_pending is not None:
+                    # 上下文卫生：narration nudge 是系统提示，用 system 身份。
                     messages.append(Message(
-                        role="user", content=_narration_nudge_pending,
+                        role="system", content=_narration_nudge_pending,
                     ))
                     _narration_nudge_pending = None
                 _did_compress, _did_emit = False, False
