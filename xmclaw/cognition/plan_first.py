@@ -242,6 +242,75 @@ class PlanFirstGate:
         return steps
 
 
+_DEPS_PROMPT_TEMPLATE = """\
+You are analyzing an ORDERED plan. For EACH step, list the indices of EARLIER
+steps whose OUTPUT that step directly needs as input.
+
+Rules:
+  * STRICT JSON array of arrays — no prose, no markdown, no code fences.
+  * Element i = list of 0-based indices (all < i) that step i depends on.
+  * Only DIRECT data dependencies (step i consumes step j's result), NOT mere
+    ordering or topic similarity. Steps that can run on their own → [].
+  * Never reference an index >= the step's own index, and never itself.
+
+Steps (index: text):
+{numbered_steps}
+
+Return the JSON array of arrays now (length must equal the number of steps).
+"""
+
+
+async def infer_plan_deps(
+    llm: Any, steps: list[str], *, timeout_s: float = 12.0,
+) -> list[list[int]]:
+    """#2 DAG：给已按序拆出的 plan 步骤推断「每步依赖哪些前置步」。
+
+    返回与 ``steps`` 等长的列表，``deps[i]`` 为 i 直接依赖的前置下标。
+    任何失败（无 LLM / 超时 / 解析失败）→ 全空（= 全并行，安全退化，
+    绝不比现状更差）。下游 executor 还会再做一次 d<i 规范化兜底。
+    """
+    if llm is None or not isinstance(steps, list) or len(steps) < 2:
+        return [[] for _ in (steps or [])]
+    from xmclaw.providers.llm.base import Message
+    numbered = "\n".join(f"{i}: {s}" for i, s in enumerate(steps))
+    prompt = _DEPS_PROMPT_TEMPLATE.format(numbered_steps=numbered[:4000])
+    try:
+        resp = await asyncio.wait_for(
+            llm.complete([Message(role="user", content=prompt)]),
+            timeout=timeout_s,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("plan_first.deps_infer_failed err=%s", exc)
+        return [[] for _ in steps]
+    raw = (getattr(resp, "content", "") or "").strip()
+    return _parse_deps(raw, len(steps))
+
+
+def _parse_deps(raw: str, n: int) -> list[list[int]]:
+    """Tolerant parse of a JSON array-of-arrays. Fences stripped. On any
+    failure returns all-empty. Only structural parsing here — the executor
+    enforces the d<i invariant."""
+    out: list[list[int]] = [[] for _ in range(n)]
+    if not raw:
+        return out
+    candidates = [raw] + [m.group(1).strip() for m in _FENCE_RE.finditer(raw)]
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if isinstance(obj, list):
+            for i in range(min(n, len(obj))):
+                row = obj[i]
+                if isinstance(row, list):
+                    out[i] = [
+                        d for d in row
+                        if isinstance(d, int) and not isinstance(d, bool)
+                    ]
+            return out
+    return out
+
+
 # ── Tolerant parser ───────────────────────────────────────────────
 
 

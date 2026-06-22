@@ -4077,6 +4077,20 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             _swarm_report = ""
             try:
                 _subtasks = list(self._active_plan_steps)
+                # #2 DAG：推断子任务间依赖，让执行器按依赖图编排（无依赖
+                # 并行、有依赖等前置完成并注入其产出），而不是把有依赖的
+                # 步骤全并行盲跑（用户报「后置任务比前置先完成」）。推断
+                # 失败 → None → 执行器退化为全并行（安全）。
+                _swarm_deps = None
+                try:
+                    from xmclaw.cognition.plan_first import infer_plan_deps
+                    from xmclaw.daemon.aux_llm import resolve_aux_llm
+                    _deps_llm = resolve_aux_llm(
+                        getattr(self, "_llm_registry", None), llm,
+                    )
+                    _swarm_deps = await infer_plan_deps(_deps_llm, _subtasks)
+                except Exception:  # noqa: BLE001
+                    _swarm_deps = None
                 from xmclaw.core.ir.toolcall import ToolCall
                 _swarm_call = ToolCall(
                     name="parallel_subagents",
@@ -4084,8 +4098,10 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     # 把拆解方案推给前端编辑（#3 派发前编辑拆解）。
                     # synthesis=llm + goal: reduce 阶段把各腿产出整合成「可读
                     # 报告」，而非 concat 的 JSON blob（修「完成却无产出」）。
+                    # deps: DAG 依赖编排（#2）。
                     args={
                         "subtasks": _subtasks,
+                        "deps": _swarm_deps,
                         "interactive_review": True,
                         "synthesis": "llm",
                         "goal": (user_message or "")[:500],

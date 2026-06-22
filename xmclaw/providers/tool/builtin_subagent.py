@@ -218,6 +218,29 @@ _PARALLEL_SUBAGENTS_SPEC = ToolSpec(
 )
 
 
+def _normalize_deps(raw: Any, n: int) -> list[list[int]]:
+    """DAG 依赖规范化（#2）。``raw`` 形如 ``[[..前置下标..], ...]``。
+
+    只保留 ``0 <= d < i`` 的后向边 —— 拆解阶段按依赖序产出，限定后向
+    引用即保证拓扑序 = 下标序、**无环**，调度时不可能死锁。越界/自环/
+    重复/非整数一律丢弃。``raw`` 非法或缺失 → 全空（= 全并行，向后兼容）。
+    """
+    out: list[list[int]] = [[] for _ in range(n)]
+    if not isinstance(raw, list):
+        return out
+    for i in range(n):
+        if i >= len(raw) or not isinstance(raw[i], list):
+            continue
+        kept: list[int] = []
+        for d in raw[i]:
+            if isinstance(d, bool):
+                continue
+            if isinstance(d, int) and 0 <= d < i and d not in kept:
+                kept.append(d)
+        out[i] = sorted(kept)
+    return out
+
+
 @dataclass(slots=True)
 class _SubResult:
     index: int
@@ -418,11 +441,14 @@ class SubagentToolProvider(ToolProvider):
                 ],
             )
 
+        # DAG 依赖（#2）：按 review 后的最终 subtasks 长度规范化 deps。
+        # 若 review 改了子任务数，越界边会被自动丢弃 → 安全退化为更少依赖。
+        _deps = _normalize_deps(call.args.get("deps"), len(subtasks))
         try:
             results = await asyncio.wait_for(
                 self._fanout(
                     subtasks, roles=roles, max_hops=effective_hops,
-                    specialists=specialists, depth=1,
+                    specialists=specialists, deps=_deps, depth=1,
                 ),
                 timeout=self._fanout_timeout,
             )
@@ -476,6 +502,7 @@ class SubagentToolProvider(ToolProvider):
         roles: list[str],
         max_hops: int,
         specialists: list[str],
+        deps: "list[list[int]] | None" = None,
         depth: int = 1,
         sem: "asyncio.Semaphore | None" = None,
     ) -> list[_SubResult]:
@@ -484,8 +511,27 @@ class SubagentToolProvider(ToolProvider):
         # on the top-level ``self._sem`` while it waits for its children,
         # so reusing it would deadlock at low concurrency.
         _sem = sem or self._sem
+        n = len(subtasks)
+        # DAG 调度（#2）：deps[i] = i 依赖的前置下标（已规范化，保证 d<i 无环）。
+        # 缺省/长度不符 → 全空 = 全并行（向后兼容 LLM 自主 fanout）。
+        _deps = deps if (deps and len(deps) == n) else [[] for _ in range(n)]
+        tasks: dict[int, asyncio.Task] = {}
 
-        async def _one(i: int, s: str) -> _SubResult:
+        async def _node(i: int) -> _SubResult:
+            # 先等所有前置完成，把它们的产出注入本任务 prompt —— 这是
+            # 「后置任务需要前置结果」的关键（修「前面没做完后面先做完」）。
+            dep_ctx: list[str] = []
+            for d in _deps[i]:
+                try:
+                    dr = await tasks[d]
+                except Exception:  # noqa: BLE001 — 前置异常不连坐，照常跑本任务
+                    dr = None
+                if dr is not None:
+                    body = (dr.content if dr.ok else f"(前置失败: {dr.error})") or ""
+                    dep_ctx.append(f"【前置任务 #{d} 的产出】\n{str(body)[:4000]}")
+            s = subtasks[i]
+            if dep_ctx:
+                s = "\n\n".join(dep_ctx) + f"\n\n【你的任务】\n{subtasks[i]}"
             async with _sem:
                 return await self._run_one(
                     i, s, role=roles[i], max_hops=max_hops,
@@ -493,9 +539,12 @@ class SubagentToolProvider(ToolProvider):
                     depth=depth,
                 )
 
-        return await asyncio.gather(
-            *(_one(i, s) for i, s in enumerate(subtasks)),
-        )
+        # 同步创建所有 Task（创建期间无 await）→ 任一 _node 执行到
+        # ``await tasks[d]`` 时 tasks 已就绪；无依赖节点立即并行启动，
+        # 有依赖节点在其前置完成前挂起。d<i 保证无环、不会死锁。
+        for i in range(n):
+            tasks[i] = asyncio.create_task(_node(i))
+        return await asyncio.gather(*(tasks[i] for i in range(n)))
 
     async def _run_nested_fanout(self, args: dict[str, Any], *, depth: int) -> str:
         """Run a parallel_subagents call issued from INSIDE a sub-agent.
