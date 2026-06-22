@@ -140,13 +140,27 @@ _CODE_PYTHON_SPEC = ToolSpec(
         "Use ``reset=True`` to wipe the namespace (equivalent of "
         "%reset) — start fresh when an experiment has gone sideways.\n\n"
         "Same Python interpreter as the daemon, so import paths match. "
-        "Default timeout 30s, max 300s; on timeout the kernel is "
+        "Default timeout 120s, max 300s; on timeout the kernel is "
         "interrupted (like Ctrl+C) but its namespace survives. No "
         "internet sandbox — pair with ``allowed_dirs`` when threat "
         "model requires it.\n\n"
         "Falls back to a one-shot subprocess (no state, no persistence) "
         "if ``jupyter_client`` / ``ipykernel`` aren't installed — the "
         "result shape is identical so callers don't branch.\n\n"
+        "★ Keep each call SMALL and incremental — ONE step per cell (one "
+        "slide, one section, one transformation). Do NOT cram a whole "
+        "multi-page artifact or a giant helper-function blob into a single "
+        "cell: a huge ``code`` arg is ONE long generation that stalls / "
+        "times out and shows the user no progress. Build the object in one "
+        "cell, add to it across later cells, save at the end — the "
+        "persistent kernel exists precisely so you don't need one big script.\n\n"
+        "★ 演示文稿 / PPT the user wants to WATCH build or view in the side "
+        "preview → do NOT generate a binary .pptx here. Use ``canvas_create`` "
+        "/ ``canvas_update`` to build an HTML slide deck (one slide per "
+        "update) so it renders live in the preview. Only reach for "
+        "python-pptx in this kernel when the user EXPLICITLY needs a "
+        "downloadable .pptx file — and even then add one slide per cell, "
+        "never the whole deck in one cell.\n\n"
         "⛔ DO NOT run Playwright / Selenium / a browser here. This kernel "
         "is INSIDE an asyncio loop, so Playwright's sync API refuses to "
         "start, and its async API can't spawn the browser subprocess from "
@@ -158,7 +172,7 @@ _CODE_PYTHON_SPEC = ToolSpec(
         "type": "object",
         "properties": {
             "code": {"type": "string", "description": "Python source."},
-            "timeout_s": {"type": "integer", "description": "1-300, default 30."},
+            "timeout_s": {"type": "integer", "description": "1-300, default 120."},
             "reset": {
                 "type": "boolean",
                 "description": (
@@ -373,7 +387,7 @@ class AutomationTools(ToolProvider):
                 "http://localhost:<port>/<file>.",
             )
 
-        timeout_s = max(1, min(int(args.get("timeout_s", 30)), 300))
+        timeout_s = max(1, min(int(args.get("timeout_s", 120)), 300))
         reset_ns = bool(args.get("reset", False))
 
         # Wave-27 fix-LAT2 (2026-05-16): prefer the persistent kernel
