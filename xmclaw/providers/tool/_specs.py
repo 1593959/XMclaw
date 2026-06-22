@@ -63,7 +63,13 @@ _FILE_WRITE_SPEC = ToolSpec(
         "Write UTF-8 text to a file, creating parent directories as "
         "needed. Overwrites existing files (undo cabinet snapshots "
         "pre-state so an accidental overwrite is reversible). Omit "
-        "``content`` (or pass empty string) to scaffold an empty file."
+        "``content`` (or pass empty string) to scaffold an empty file.\n\n"
+        "**Anti-pattern to avoid:** Do NOT write a single giant file "
+        "(>10 KB) in one call for multi-page artifacts (PPT, reports, "
+        "webpages). Instead build incrementally: create the scaffold, "
+        "then append or patch page-by-page / section-by-section. This "
+        "keeps each step small, retryable, and within the LLM token "
+        "budget."
     ),
     parameters_schema={
         "type": "object",
@@ -350,7 +356,13 @@ def _bash_description() -> str:
         "Run a shell command on the local machine and return combined "
         "stdout+stderr plus the exit code. Use for directory listings, "
         "finding files, git status, etc. Be careful with destructive "
-        "commands — there is no undo."
+        "commands — there is no undo.\n\n"
+        "**Anti-pattern to avoid:** Do NOT generate a single massive "
+        "script that tries to do everything (e.g. 'create a 20-slide PPT "
+        "in one Python script'). Such scripts are error-prone, hard to "
+        "debug, and often exceed the LLM output limit or stall. Instead "
+        "break complex work into small, verifiable steps — use the "
+        "file_write / apply_patch tools to build incrementally."
     )
     if sys.platform == "win32":
         return (

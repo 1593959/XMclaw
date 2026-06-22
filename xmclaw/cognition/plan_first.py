@@ -85,6 +85,12 @@ Rules:
     a 1-element list with the answer-shaped step, NOT a forced 2-step.
   * Do NOT include tool names or implementation details — those are
     chosen at execution time. Only describe the WORK to do.
+  * **For creative/generative tasks (PPT, documents, reports, webpages):**
+    decompose into **incremental page-by-page or section-by-section**
+    steps. NEVER write a single step like "Generate the entire PPT in
+    one script" — instead: "Draft slide 1 outline", "Create slide 1",
+    "Create slide 2", etc. Small increments are safer, retryable, and
+    avoid stalling the LLM with massive single-step outputs.
 
 User message:
 \"\"\"
