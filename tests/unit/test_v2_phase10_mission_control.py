@@ -118,6 +118,28 @@ def test_derive_todo_steps_when_no_plan() -> None:
     assert out["steps_done"] == 1
 
 
+def test_derive_todo_takes_precedence_over_plan() -> None:
+    """plan 与 todo 并存时，todo 更实时、更细粒度，应优先使用。
+    修复：旧逻辑优先 plan 导致 TaskRail 进度与前端 PlanStrip 不一致。"""
+    out = _derive([
+        _ev("plan_started", NOW - 100, step_ids=["a", "b", "c"], n_steps=3),
+        _ev("plan_step_completed", NOW - 80, step_id="a"),
+        _ev("plan_step_completed", NOW - 60, step_id="b"),
+        # plan 只完成 2/3，但后续 todo 全部完成
+        _ev("todo_updated", NOW - 40, items=[
+            {"content": "x", "status": "done"},
+            {"content": "y", "status": "done"},
+            {"content": "z", "status": "done"},
+            {"content": "w", "status": "done"},
+            {"content": "v", "status": "done"},
+        ]),
+        _ev("llm_response", NOW - 30, ok=True, tool_calls_count=0),
+    ], NOW)
+    assert out["steps_total"] == 5
+    assert out["steps_done"] == 5
+    assert out["status"] == "done"
+
+
 def test_derive_pure_chat() -> None:
     out = _derive([
         _ev("user_message", NOW - 600),

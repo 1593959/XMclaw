@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool._helpers import (
     _fail as _fail,
+    _parse_baidu_html as _parse_baidu_html,
     _parse_bing_html as _parse_bing_html,
     _parse_ddg_html as _parse_ddg_html,
 )
@@ -771,6 +772,16 @@ class BuiltinToolsShellMixin:
                         query.strip(), max_results, cfg,
                     ),
                 )
+            if name == "baidu":
+                return await _retry_with_backoff(
+                    name, lambda: self._search_baidu(query.strip(), max_results),
+                )
+            if name == "tavily":
+                return await _retry_with_backoff(
+                    name, lambda: self._search_tavily(
+                        query.strip(), max_results, cfg,
+                    ),
+                )
             raise _SearchBackendError(f"unknown engine: {name}")
 
         # Build the engine try-order. Primary = configured provider;
@@ -778,10 +789,19 @@ class BuiltinToolsShellMixin:
         # tack Bing CN on the end.
         try_order = [provider]
         if not disable_fallback:
-            if provider == "ddg" and "bing_cn" not in try_order:
-                try_order.append("bing_cn")
-            elif provider == "bing_cn" and "ddg" not in try_order:
-                try_order.append("ddg")  # other direction too
+            if provider == "ddg":
+                if "bing_cn" not in try_order:
+                    try_order.append("bing_cn")
+                if "baidu" not in try_order:
+                    try_order.append("baidu")
+            elif provider == "bing_cn":
+                if "baidu" not in try_order:
+                    try_order.append("baidu")
+                if "ddg" not in try_order:
+                    try_order.append("ddg")
+            else:
+                if "baidu" not in try_order:
+                    try_order.append("baidu")
 
         for engine in try_order:
             try:
@@ -811,6 +831,9 @@ class BuiltinToolsShellMixin:
                 fallback_urls.append(
                     f"https://duckduckgo.com/html/?q={quote_plus(query)}"
                 )
+                fallback_urls.append(
+                    f"https://m.baidu.com/s?word={quote_plus(query)}"
+                )
             _fetch_err = None
             for fb_url in fallback_urls:
                 try:
@@ -837,10 +860,17 @@ class BuiltinToolsShellMixin:
                         html_text = r.text
                         if "bing.com" in fb_url:
                             parsed = _parse_bing_html(html_text, max_results)
+                        elif "baidu" in fb_url:
+                            parsed = _parse_baidu_html(html_text, max_results)
                         else:
                             parsed = _parse_ddg_html(html_text, max_results)
                         if parsed:
-                            engine_name = "bing_cn_fetch" if "bing.com" in fb_url else "ddg_fetch"
+                            if "bing.com" in fb_url:
+                                engine_name = "bing_cn_fetch"
+                            elif "baidu" in fb_url:
+                                engine_name = "baidu_fetch"
+                            else:
+                                engine_name = "ddg_fetch"
                             blocks = [
                                 f"{i+1}. {row['title']}\n   {row['url']}\n   {row['snippet']}"
                                 for i, row in enumerate(parsed)
@@ -998,26 +1028,23 @@ class BuiltinToolsShellMixin:
             "Accept-Encoding": "gzip, deflate, br",
         }
         timeout = httpx.Timeout(connect=8.0, read=15.0, write=5.0, pool=5.0)
-        for attempt, use_proxy in enumerate(("proxy", "direct")):
-            try:
-                async with httpx.AsyncClient(
-                    follow_redirects=True, timeout=timeout,
-                    trust_env=(use_proxy == "proxy"),
-                ) as c:
-                    r = await c.get(endpoint, headers=headers)
-                if r.status_code != 200:
-                    raise _SearchBackendError(
-                        f"Bing CN returned HTTP {r.status_code}"
-                    )
-                return _parse_bing_html(r.text, max_results)
-            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.RemoteProtocolError):
-                if attempt == 0:
-                    continue
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=timeout,
+                trust_env=False,  # 直接连接，不读系统代理（Windows 代理设置常导致超时）
+            ) as c:
+                r = await c.get(endpoint, headers=headers)
+            if r.status_code != 200:
                 raise _SearchBackendError(
-                    "Bing CN unreachable (tried proxy + direct)"
+                    f"Bing CN returned HTTP {r.status_code}"
                 )
+            return _parse_bing_html(r.text, max_results)
+        except (httpx.ConnectTimeout, httpx.ConnectError, httpx.RemoteProtocolError):
+            raise _SearchBackendError(
+                "Bing CN unreachable (direct)"
+            )
 
-    async def _search_bing(
+    async def _search_baidu(
         self, query: str, max_results: int, cfg: dict,
     ) -> list[dict[str, str]]:
         key = cfg.get("bing_api_key")
@@ -1122,6 +1149,94 @@ class BuiltinToolsShellMixin:
             }
             for row in items[:max_results]
         ]
+
+    async def _search_tavily(
+        self, query: str, max_results: int, cfg: dict,
+    ) -> list[dict[str, str]]:
+        """2026-06-22: Tavily AI Search API — purpose-built for agents.
+
+        Requires ``evolution.search.tavily_api_key`` in config.
+        Tavily returns structured JSON with both search results and an
+        optional AI-generated answer, which is surfaced as the first
+        snippet. Free tier: 1000 requests/month.
+
+        Endpoint: https://api.tavily.com/search
+        """
+        key = cfg.get("tavily_api_key")
+        if not key:
+            raise _SearchBackendError(
+                "tavily requires evolution.search.tavily_api_key in config"
+            )
+        import httpx
+        endpoint = "https://api.tavily.com/search"
+        payload = {
+            "api_key": key,
+            "query": query,
+            "search_depth": cfg.get("tavily_depth", "advanced"),
+            "max_results": max(1, min(max_results, 20)),
+            "include_answer": cfg.get("tavily_include_answer", True),
+            "include_raw_content": False,
+        }
+        async with httpx.AsyncClient(timeout=20.0) as c:
+            r = await c.post(endpoint, json=payload)
+        if r.status_code != 200:
+            raise _SearchBackendError(
+                f"Tavily returned HTTP {r.status_code}: {r.text[:200]}"
+            )
+        data = r.json()
+        results: list[dict[str, str]] = []
+        # Tavily can return an AI-generated answer; prepend it as a
+        # synthetic result so the agent sees the synthesis before the
+        # raw links.
+        answer = (data.get("answer") or "").strip()
+        if answer:
+            results.append({
+                "title": "Tavily Answer",
+                "url": "",
+                "snippet": answer,
+            })
+        for row in (data.get("results") or [])[:max_results]:
+            results.append({
+                "title": (row.get("title") or "").strip(),
+                "url": (row.get("url") or "").strip(),
+                "snippet": (row.get("content") or "").strip(),
+            })
+        return results
+
+    async def _search_baidu(
+        self, query: str, max_results: int,
+    ) -> list[dict[str, str]]:
+        """2026-06-22: Baidu HTML scrape — no API key, reachable from
+        CN networks where Bing CN / DDG both fail. Uses the mobile
+        endpoint (m.baidu.com) which has simpler HTML than the desktop
+        version. Result shape matches the other backends.
+        """
+        import httpx
+        from urllib.parse import quote_plus
+        endpoint = f"https://m.baidu.com/s?word={quote_plus(query)}"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/145.0.0.0 Mobile Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+        }
+        timeout = httpx.Timeout(connect=8.0, read=15.0, write=5.0, pool=5.0)
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=timeout,
+                trust_env=False,
+            ) as c:
+                r = await c.get(endpoint, headers=headers)
+            if r.status_code != 200:
+                raise _SearchBackendError(
+                    f"Baidu returned HTTP {r.status_code}"
+                )
+            return _parse_baidu_html(r.text, max_results)
+        except (httpx.ConnectTimeout, httpx.ConnectError, httpx.RemoteProtocolError):
+            raise _SearchBackendError("Baidu unreachable (direct)")
 
     # ── todos (per-session plan tracker) ───────────────────────────────
 

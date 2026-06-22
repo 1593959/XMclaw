@@ -357,6 +357,16 @@ class PersonaStore:
             be deleted (Phase 4 — schedule TBD based on user-base
             telemetry).
         """
+        # Epic #27 fix (2026-06-22): skip render_to_disk when v2 is
+        # wired.  v2 MemoryService has a ``recall`` method; legacy
+        # providers do not.  Pre-fix this path ran even in v2 mode,
+        # and the two ``query(..., k=200)`` calls inside ``get_text``
+        # routinely exceeded the 30 s persona-write timeout on Windows
+        # (LanceDB file-lock contention).  The DB row is already
+        # committed; v2_renderer refreshes the disk cache
+        # independently.
+        if hasattr(self._mem, "recall"):
+            return
         targets = [basename] if basename else list(AUTO_SECTIONS.keys())
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         for name in targets:

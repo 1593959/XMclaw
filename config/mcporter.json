@@ -2,6 +2,12 @@
   "mcpServers": {
     "weibo": {
       "command": "mcp-server-weibo"
+    },
+    "tavily-mcp": {
+      "command": "node",
+      "args": [
+        "C:\\Users\\15978\\.xmclaw\\skills_user\\tavily-mcp\\build\\index.js"
+      ]
     }
   }
 }

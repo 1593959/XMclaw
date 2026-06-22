@@ -445,3 +445,54 @@ def _parse_bing_html(html: str, max_results: int) -> list[dict[str, str]]:
         if len(results) >= max_results:
             break
     return results
+
+
+def _parse_baidu_html(html: str, max_results: int) -> list[dict[str, str]]:
+    """2026-06-22: parser for Baidu mobile SERP HTML (m.baidu.com).
+
+    Baidu's mobile results are in ``<div class="result">`` blocks.
+    Each block has a title link and a snippet. The markup is
+    relatively stable for the mobile endpoint. We degrade to zero
+    results if the markup changes (same posture as the other parsers).
+    """
+    import html as _html
+    import re
+
+    def _clean(s: str) -> str:
+        s = re.sub(r"<[^>]+>", "", s)
+        s = _html.unescape(s)
+        return " ".join(s.split())
+
+    # Match each result block.
+    block_re = re.compile(
+        r'<div[^>]*class="[^"]*\bresult\b[^"]*"[^>]*>(.*?)(?=<div[^>]*class="[^"]*\bresult\b|</div>\s*</div>\s*</div>)',
+        re.DOTALL,
+    )
+    # Title: <a ... href="...">TITLE</a> inside a heading or div
+    title_re = re.compile(
+        r'<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        re.DOTALL,
+    )
+    # Snippet: usually in a <div class="content-right"> or similar
+    snippet_re = re.compile(
+        r'<(?:div|span|p)[^>]*class="[^"]*(?:content-right|abstract|c-abstract|content)[^"]*"[^>]*>(.*?)</(?:div|span|p)>',
+        re.DOTALL,
+    )
+
+    results: list[dict[str, str]] = []
+    for block_html in block_re.findall(html):
+        t = title_re.search(block_html)
+        if not t:
+            continue
+        url = _html.unescape(t.group(1))
+        title = _clean(t.group(2))
+        if not title or not url:
+            continue
+        snippet = ""
+        m = snippet_re.search(block_html)
+        if m:
+            snippet = _clean(m.group(1))
+        results.append({"title": title, "url": url, "snippet": snippet})
+        if len(results) >= max_results:
+            break
+    return results
