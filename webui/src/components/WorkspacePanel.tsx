@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../store/app";
 import { apiGet } from "../lib/api";
 import Markdown from "./LazyMarkdown";
+import MermaidView from "./MermaidView";
 import { parseUnifiedDiff } from "../lib/difflines";
 import { DiffBlock } from "./ToolCards";
 
@@ -37,7 +38,11 @@ const ext = (p: string) => (p.split(".").pop() || "").toLowerCase();
 // ── 预览 tab ───────────────────────────────────────────────────
 
 function ArtifactView({ kind, content, title }: { kind: string; content: string; title: string }) {
-  if (kind === "html" || kind === "svg" || kind === "mermaid") {
+  // mermaid 真正渲染成图（懒加载 mermaid），不再塞裸源码进 iframe。
+  if (kind === "mermaid") {
+    return <MermaidView content={content} />;
+  }
+  if (kind === "html" || kind === "svg") {
     // 沙箱 iframe（allow-scripts，无 same-origin —— 与 Phase 9 桥同纪律）。
     const doc =
       kind === "svg"
@@ -50,6 +55,14 @@ function ArtifactView({ kind, content, title }: { kind: string; content: string;
         title={title}
         className="w-full h-72 rounded border border-mc-border bg-white"
       />
+    );
+  }
+  // table / 其它结构化文本 → markdown 渲染（表格、列表、代码块都比裸 <pre> 好看）。
+  if (kind === "table" || kind === "markdown" || kind === "md") {
+    return (
+      <div className="max-h-[28rem] overflow-auto rounded border border-mc-border p-2 text-sm">
+        <Markdown text={content.slice(0, 12000)} />
+      </div>
     );
   }
   return (
