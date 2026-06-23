@@ -107,7 +107,7 @@ export default function Composer() {
         {voice.supported && (
           <Chip
             active={voice.voiceOn}
-            onClick={() => voice.setVoiceOn(!voice.voiceOn)}
+            onClick={voice.toggleVoice}
             title="语音对话：说话→实时转写→自动发送，回复用 EdgeTTS 朗读，播完自动再听（免提循环）"
           >
             🎙 语音对话
