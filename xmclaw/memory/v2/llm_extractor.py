@@ -120,7 +120,12 @@ scope 含义：
 - text 必须是**事实陈述句**，不是问题或闲聊
 - 跨越多个事实的复杂消息应拆成多条
 - 不要复述消息原文，要**归纳**成简洁陈述
-- **bucket 字段必填**，无法分类时填 "misc"（不要填空字符串）
+- **bucket 字段必填**，且**先尽力归到具体 bucket，misc 是最后手段**
+  （绝大多数事实都有更合适的归类，滥用 misc 会让专门的段落空着）。
+  典型对应：用户身份→user_identity，用户偏好/习惯/要求→user_preference，
+  学到的硬规则/纠正→rules，项目客观事实/决定→project_fact，
+  时限承诺→commitment，工具坑→tool_quirks，已知失败场景→failure_modes。
+  实在无法归类才填 "misc"（不要填空字符串）。
 - 输出 JSON 数组之外**不要**任何字符（包括代码块标记）
 
 【最重要：只记"稳定事实"，不记"当下指令"】
@@ -446,17 +451,21 @@ async def llm_extract_and_remember(
             scope = f["scope"]
             bucket = (f.get("bucket") or "").strip()
             if not bucket:
-                # Legacy fallback for payloads from a pre-v3 extractor:
-                # infer from (kind, scope). New extractor sets bucket
-                # explicitly. Empty bucket here will get coerced to
-                # "misc" by remember() — both paths converge.
+                # 2026-06-23: 按 kind 推到具体 bucket，而不是让 remember()
+                # 把没分桶的全 coerce 成 misc —— 那导致 lesson/decision/
+                # commitment 全堆进 MEMORY.md「## 近期其它事实」，而「项目
+                # 事实」「进行中的承诺」等专段永远空（用户报"大量缺失"）。
                 if kind == "identity":
-                    if scope == "session":
-                        bucket = "agent_identity"
-                    elif scope == "user":
-                        bucket = "user_identity"
-                elif kind == "preference" and scope == "user":
+                    bucket = "agent_identity" if scope == "session" else "user_identity"
+                elif kind == "preference":
                     bucket = "user_preference"
+                elif kind == "commitment":
+                    bucket = "commitment"
+                elif kind in ("project", "decision"):
+                    bucket = "project_fact"
+                elif kind in ("lesson", "correction"):
+                    bucket = "rules"
+                # else（未知 kind）: 留空 → remember() coerce 成 misc（真兜底）
             fact = await memory_service.remember(
                 f["text"],
                 kind=kind,
