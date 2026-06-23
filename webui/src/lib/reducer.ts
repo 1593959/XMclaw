@@ -146,11 +146,19 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
       if (isScaffoldingUserMessage(str(payload.content))) {
         return chat;
       }
+      // 新回合开始 → 清掉上一轮残留的待办（否则顶部「待办 5/5（已完成）」
+      // 会和新任务的真实进度对不上）。steering（中途追加指令）不清，避免
+      // 误删当前回合的在途待办。新回合的 agent 会用 todo_write 重新写。
+      const isSteering = str(payload.channel) === "steering";
+      const turnReset = isSteering
+        ? {}
+        : { todos: { items: [] as TodoItem[], count: 0, ts } };
       // 新用户消息 = 上一轮彻底结束 → 收尾所有残留 running 工具卡。
       const swept = finalizeStaleTools(chat.entries, null);
       if (swept.some((e) => e.id === id)) {
         return {
           ...chat,
+          ...turnReset,
           entries: upsertById(swept, id, (e) => ({
             ...e,
             content: content || e.content,
@@ -181,10 +189,11 @@ export function applyEvent(chat: ChatState, envelope: Envelope): ChatState {
           ts,
           images: serverImages.length > 0 ? serverImages : next[restoredIdx].images || [],
         };
-        return { ...chat, entries: next };
+        return { ...chat, ...turnReset, entries: next };
       }
       return {
         ...chat,
+        ...turnReset,
         entries: swept.concat({
           id,
           role: "user",
