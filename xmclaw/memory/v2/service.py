@@ -829,15 +829,17 @@ class MemoryService:
                     + 0.05 * min(near_dup.confidence, confidence),
                 )
                 near_dup.ts_last = time.time()
-                # Merge variant text: if the new wording differs from the
-                # surviving text, append it so we don't lose the rephrasing.
-                # F1 fix: previously the variant was silently discarded.
+                # 近似重复 = 同一事实的不同措辞。保留**一条**干净表述，取
+                # 更完整（更长）的那条，而不是把每个变体追加上去。
+                # 2026-06-23: 旧实现 ``near_dup.text + "\n" + text`` 把近似改写
+                # 不断堆积成 "A B C" 式啰嗦长条目（用户报"重复啰嗦"）。改为
+                # 「更完整则替换、否则保留」，杜绝拼接累积。
                 _merged = False
-                if text and text.strip() and near_dup.text and text.strip() != near_dup.text.strip():
-                    _existing_lines = set(near_dup.text.split("\n"))
-                    if text not in _existing_lines:
-                        near_dup.text = near_dup.text + "\n" + text
-                        _merged = True
+                _new = (text or "").strip()
+                _old = (near_dup.text or "").strip()
+                if _new and _new != _old and len(_new) > len(_old):
+                    near_dup.text = _new
+                    _merged = True
                 # Promote layer if threshold crossed.
                 if near_dup.evidence_count >= LONG_TERM_PROMOTE_THRESHOLD:
                     near_dup.layer = FactLayer.LONG_TERM.value
