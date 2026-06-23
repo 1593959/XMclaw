@@ -112,7 +112,17 @@ class SkillSemanticIndex:
                 self._vecs.pop(stale, None)
             if not todo_descs:
                 return
-            vecs = await self._embedder.embed_batch(todo_descs)
+            # 兼容不同 embedder 接口（镜像漂移修复 2026-06-23）：本类原按
+            # EmbeddingService.embed_batch 写，但实际注入的常是
+            # OpenAIEmbeddingProvider —— 它只有 embed（单条）、无 embed_batch。
+            # 之前 warm 调 embed_batch 直接 AttributeError → 语义索引全空 →
+            # 中文 query 对英文技能零浮现 → 安装的技能一个都无法自主调用。
+            # 有 embed_batch 就用（快），否则退回逐条 embed。
+            _eb = getattr(self._embedder, "embed_batch", None)
+            if callable(_eb):
+                vecs = await _eb(todo_descs)
+            else:
+                vecs = [await self._embedder.embed(d) for d in todo_descs]
             for n, d, v in zip(todo_names, todo_descs, vecs):
                 self._vecs[n] = (d, tuple(v))
         except Exception as exc:  # noqa: BLE001 — warming is best-effort
