@@ -3578,6 +3578,54 @@ def make_lifespan(
                 type(exc).__name__,
             )
 
+        # 2026-06-23: persona 文件热重载。persona 在 daemon 启动时烤进
+        # agent._system_prompt，外部直接编辑 SOUL.md / IDENTITY.md / USER.md
+        # 等不会生效（用户改了 soul、开新会话仍看不到变化 —— 工作区文件
+        # 一点作用没起）。轮询 profile dir 的 .md mtime，变了就复用
+        # _persona_writeback 重建系统提示（下一回合即生效，无需重启）。
+        _persona_reaper = None
+        try:
+            from xmclaw.daemon.factory import (
+                _persona_writeback,
+                _resolve_persona_profile_dir,
+            )
+            _persona_reload = _persona_writeback(lambda: _app.state)
+            _persona_profile_dir = _resolve_persona_profile_dir(config or {})
+
+            def _persona_sig() -> str:
+                try:
+                    return "|".join(
+                        f"{f.name}:{f.stat().st_mtime_ns}"
+                        for f in sorted(Path(_persona_profile_dir).glob("*.md"))
+                    )
+                except Exception:  # noqa: BLE001
+                    return ""
+
+            async def _persona_watch_loop() -> None:
+                last = _persona_sig()
+                while True:
+                    await asyncio.sleep(5.0)
+                    try:
+                        sig = _persona_sig()
+                        if sig and sig != last:
+                            last = sig
+                            _persona_reload("SOUL.md")
+                            log.info(
+                                "persona.hot_reloaded — external persona edit "
+                                "picked up (no daemon restart needed)",
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("persona.watch_failed err=%s", exc)
+
+            _persona_reaper = asyncio.create_task(
+                _persona_watch_loop(), name="xmclaw-persona-watcher",
+            )
+            log.info("persona_watcher.wired dir=%s interval=5s", _persona_profile_dir)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("persona_watcher.skipped err=%s", exc)
+
         try:
             yield
         finally:
@@ -3587,6 +3635,12 @@ def make_lifespan(
             # rapid restart), every subsequent shutdown step was
             # skipped and background tasks leaked across the daemon's
             # lifetime. Now: each step is independent.
+            if _persona_reaper is not None:
+                _persona_reaper.cancel()
+                try:
+                    await _persona_reaper
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             if _kernel_pool_reaper is not None:
                 _kernel_pool_reaper.cancel()
                 try:
