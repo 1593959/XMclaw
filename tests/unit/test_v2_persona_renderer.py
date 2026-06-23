@@ -82,7 +82,7 @@ async def test_render_writes_identity_md_from_agent_identity_facts(
     assert wrote is True
 
     content = (tmp_path / "IDENTITY.md").read_text(encoding="utf-8")
-    assert "## Auto-extracted" in content
+    assert "## 自动提取（身份）" in content
     assert "AI 的名字是小咪" in content
     assert "conf 0.95" in content
 
@@ -108,8 +108,8 @@ async def test_render_writes_user_md_combining_identity_and_preference(
     )
     await render_persona_file(svc, tmp_path, "USER.md")
     content = (tmp_path / "USER.md").read_text(encoding="utf-8")
-    assert "## Auto-identity" in content
-    assert "## Auto-extracted preferences" in content
+    assert "## 自动识别（用户身份）" in content
+    assert "## 自动提取（偏好）" in content
     assert "用户哥的称呼是哥或敬宇" in content
     assert "用户偏好简洁直接的回复" in content
 
@@ -153,7 +153,7 @@ async def test_render_empty_section_emits_placeholder(tmp_path: Path):
     # No matching facts written.
     await render_persona_file(svc, tmp_path, "IDENTITY.md")
     content = (tmp_path / "IDENTITY.md").read_text(encoding="utf-8")
-    assert "## Auto-extracted" in content
+    assert "## 自动提取（身份）" in content
     assert "nothing extracted yet" in content
 
 
@@ -232,17 +232,17 @@ def test_phase2_routes_cover_five_lesson_buckets():
     are sourced from the central BUCKETS registry (memory v3).
 
     2026-05-28 memory v3: AGENTS.md / TOOLS.md sections were
-    renamed from the generic ``## Auto-extracted`` to topic-
+    renamed from the generic ``## 自动提取（身份）`` to topic-
     specific ``## Workflows`` / ``## Tool quirks`` for clarity.
     The agent read path still works the same — it reads the whole
     file regardless of section names.
     """
     expected = {
-        "workflow":      ("AGENTS.md",   "## Workflows"),
-        "tool_quirks":   ("TOOLS.md",    "## Tool quirks"),
-        "failure_modes": ("MEMORY.md",   "## Failure Modes"),
-        "values":        ("SOUL.md",     "## Auto-extracted"),
-        "rules":         ("LEARNING.md", "## Auto-extracted"),
+        "workflow":      ("AGENTS.md",   "## 工作流"),
+        "tool_quirks":   ("TOOLS.md",    "## 工具坑与窍门"),
+        "failure_modes": ("MEMORY.md",   "## 失败模式"),
+        "values":        ("SOUL.md",     "## 自动提取（价值观）"),
+        "rules":         ("LEARNING.md", "## 自动提取（规则）"),
     }
     for bucket, (file, header) in expected.items():
         assert bucket in BUCKET_TO_FILE, (
@@ -271,7 +271,7 @@ async def test_render_writes_soul_md_from_values_bucket(tmp_path: Path):
     wrote = await render_persona_file(svc, tmp_path, "SOUL.md")
     assert wrote is True
     content = (tmp_path / "SOUL.md").read_text(encoding="utf-8")
-    assert "## Auto-extracted" in content
+    assert "## 自动提取（价值观）" in content
     assert "诚实优于完美的形象" in content
 
 
@@ -374,9 +374,9 @@ async def test_render_merges_manual_section_with_auto_sections(
 
     assert "用户叫嘉鸿" in content
     assert "AI 的名字是小咪" in content
-    assert "## Auto-extracted" in content
+    assert "## 自动提取（身份）" in content
     # Manual section physically precedes auto section.
-    assert content.index("用户叫嘉鸿") < content.index("## Auto-extracted")
+    assert content.index("用户叫嘉鸿") < content.index("## 自动提取（身份）")
 
 
 @pytest.mark.asyncio
@@ -406,7 +406,7 @@ async def test_render_preserves_disk_manual_when_v2_has_none(
     """
     target = tmp_path / "IDENTITY.md"
     target.write_text(
-        "# IDENTITY.md\n用户手写内容\n\n## Auto-extracted\n_(nothing yet)_\n",
+        "# IDENTITY.md\n用户手写内容\n\n## 自动提取（身份）\n_(nothing yet)_\n",
         encoding="utf-8",
     )
     svc = _make_service()
@@ -437,7 +437,7 @@ async def test_upsert_persona_manual_rejects_empty_basename():
 async def test_render_preserves_user_bullets_inside_auto_section(
     tmp_path: Path,
 ):
-    """User edits within the ``## Auto-extracted`` heading but
+    """User edits within the ``## 自动提取（身份）`` heading but
     OUTSIDE the daemon-managed marker block must survive renders.
 
     Pre-fix the renderer wiped everything between the heading and
@@ -458,7 +458,7 @@ async def test_render_preserves_user_bullets_inside_auto_section(
     assert ":BEGIN " in first
     assert ":END -->" in first
 
-    # User manually adds a bullet UNDER ## Auto-extracted but
+    # User manually adds a bullet UNDER ## 自动提取（身份） but
     # OUTSIDE the marker block — simulates them correcting a fact
     # in place via a text editor. Markers are slugged per section
     # so we find the first END marker and insert after its line.

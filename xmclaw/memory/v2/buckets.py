@@ -93,7 +93,7 @@ BUCKETS: dict[str, BucketDef] = {
     "agent_identity": BucketDef(
         tag="agent_identity",
         target_file="IDENTITY.md",
-        section="## Auto-extracted",
+        section="## 自动提取（身份）",
         cap_chars=800, cap_items=10,
         default_kind="identity",
         description=(
@@ -104,7 +104,7 @@ BUCKETS: dict[str, BucketDef] = {
     "user_identity": BucketDef(
         tag="user_identity",
         target_file="USER.md",
-        section="## Auto-identity",
+        section="## 自动识别（用户身份）",
         cap_chars=600, cap_items=8,
         default_kind="identity",
         description=(
@@ -115,7 +115,7 @@ BUCKETS: dict[str, BucketDef] = {
     "user_preference": BucketDef(
         tag="user_preference",
         target_file="USER.md",
-        section="## Auto-extracted preferences",
+        section="## 自动提取（偏好）",
         cap_chars=2000, cap_items=15,
         default_kind="preference",
         description=(
@@ -126,7 +126,7 @@ BUCKETS: dict[str, BucketDef] = {
     "values": BucketDef(
         tag="values",
         target_file="SOUL.md",
-        section="## Auto-extracted",
+        section="## 自动提取（价值观）",
         cap_chars=1500, cap_items=10,
         default_kind="identity",
         description=(
@@ -138,7 +138,7 @@ BUCKETS: dict[str, BucketDef] = {
     "workflow": BucketDef(
         tag="workflow",
         target_file="AGENTS.md",
-        section="## Workflows",
+        section="## 工作流",
         cap_chars=3000, cap_items=20,
         default_kind="procedure",
         description=(
@@ -149,7 +149,7 @@ BUCKETS: dict[str, BucketDef] = {
     "tool_quirks": BucketDef(
         tag="tool_quirks",
         target_file="TOOLS.md",
-        section="## Tool quirks",
+        section="## 工具坑与窍门",
         cap_chars=3000, cap_items=20,
         default_kind="lesson",
         description=(
@@ -160,7 +160,7 @@ BUCKETS: dict[str, BucketDef] = {
     "rules": BucketDef(
         tag="rules",
         target_file="LEARNING.md",
-        section="## Auto-extracted",
+        section="## 自动提取（规则）",
         cap_chars=2500, cap_items=15,
         default_kind="lesson",
         description=(
@@ -172,7 +172,7 @@ BUCKETS: dict[str, BucketDef] = {
     "failure_modes": BucketDef(
         tag="failure_modes",
         target_file="MEMORY.md",
-        section="## Failure Modes",
+        section="## 失败模式",
         cap_chars=2000, cap_items=15,
         default_kind="lesson",
         description=(
@@ -184,7 +184,7 @@ BUCKETS: dict[str, BucketDef] = {
     "project_fact": BucketDef(
         tag="project_fact",
         target_file="MEMORY.md",
-        section="## Project facts",
+        section="## 项目事实",
         cap_chars=3000, cap_items=20,
         default_kind="fact",
         description=(
@@ -196,7 +196,7 @@ BUCKETS: dict[str, BucketDef] = {
     "commitment": BucketDef(
         tag="commitment",
         target_file="MEMORY.md",
-        section="## Active commitments",
+        section="## 进行中的承诺",
         cap_chars=1000, cap_items=10,
         default_kind="commitment",
         description=(
@@ -208,7 +208,7 @@ BUCKETS: dict[str, BucketDef] = {
     "misc": BucketDef(
         tag="misc",
         target_file="MEMORY.md",
-        section="## Other facts (recent)",
+        section="## 近期其它事实",
         cap_chars=1500, cap_items=12,
         default_kind="fact",
         description=(
