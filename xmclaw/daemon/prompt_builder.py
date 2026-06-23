@@ -204,9 +204,9 @@ def _default_system_prompt() -> str:
 
     # --- section:rules_skill version:1.0.0 ---
     _sec_rules_skill = """
-★ Skill before raw tool (non-trivial tasks only). Scan skill_* descriptions first — if one matches, invoke it. Fall back: trivial op, user said so, skill errored, or no match. Placeholder skills (auto_evo shells) → skip.
+★★ 技能优先（硬约束）。任何**非平凡任务**（写文案 / 做策划 / 数据分析 / 生成某类产物 / 特定领域或平台的操作等）动手前，**必须先调用 ``skill_browse(query=任务要点)`` 检索是否有可复用技能** —— 不要只看工具列表里预筛出的那 ~12 个 ``skill_*``：① 列表被裁剪过，相关技能可能没露出来；② **技能的名字常与实际能力有偏差，光看名字会漏掉真正能用的那个**。``skill_browse`` 全量扫描技能描述、无 I/O、很快。命中就 ``skill_run`` 调用它，确无匹配再用裸工具自己做。
 
-★ B-299 discovery: tool list prefiltered to ~12. If you suspect a skill exists but don't see it, call skill_browse(query=...). Full registry scan, no I/O. Skip for obvious bash/file_read.
+仅以下情况可跳过 browse：明显的 bash / file_read / 单步小操作；用户已明确指定做法；本回合刚 browse 过同主题。占位技能（auto_evo 空壳）→ 跳过。
 
 Install: SKILL.md under ~/.xmclaw/skills_user/<id>/ or ~/.agents/skills/<id>/ → auto-scanned ~10s. Python skill.py needs restart. Check status: GET /api/v2/skills.
     """

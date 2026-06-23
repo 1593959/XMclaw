@@ -43,6 +43,7 @@ class _CaptureLLM(LLMProvider):
 
     model: str = "test"
     captured_user_content: str | None = None
+    captured_system_content: str | None = None
 
     async def stream(self, messages, tools=None, *, cancel=None):  # pragma: no cover
         if False:
@@ -53,11 +54,18 @@ class _CaptureLLM(LLMProvider):
         messages: list[Message],
         tools: list[ToolSpec] | None = None,
     ) -> LLMResponse:
+        _sys: list[str] = []
         for m in messages:
-            if getattr(m, "role", None) == "user":
+            role = getattr(m, "role", None)
+            if role == "user":
                 # Last user message wins (multi-turn would have
                 # multiple but we only run one turn).
                 self.captured_user_content = getattr(m, "content", "") or ""
+            elif role == "system":
+                _sys.append(getattr(m, "content", "") or "")
+        # 2026-06-23 上下文卫生（da4e6a9a）后：turn hint / skill_browse
+        # nudge 等系统注入已从用户消息移到 system 消息。断言改查这里。
+        self.captured_system_content = "\n".join(_sys)
         return LLMResponse(content="ok", tool_calls=())
 
     @property
@@ -117,12 +125,12 @@ async def test_b300_hint_fires_when_no_skill_survives_prefilter() -> None:
     await agent.run_turn("test-sess", "帮我看看怎么写文档")
     await bus.drain()
 
-    assert llm.captured_user_content is not None
-    assert "[turn hint]" in llm.captured_user_content, (
+    assert llm.captured_system_content is not None
+    assert "[turn hint]" in llm.captured_system_content, (
         "B-300 nudge missing — vague CJK query against English skill "
         "registry is exactly the case it should fire on"
     )
-    assert "skill_browse" in llm.captured_user_content
+    assert "skill_browse" in llm.captured_system_content
 
 
 @pytest.mark.asyncio
@@ -148,7 +156,7 @@ async def test_b300_hint_silent_when_skills_match_query() -> None:
     await bus.drain()
 
     assert llm.captured_user_content is not None
-    assert "[turn hint]" not in llm.captured_user_content
+    assert "[turn hint]" not in (llm.captured_system_content or "")
 
 
 @pytest.mark.asyncio
@@ -174,7 +182,7 @@ async def test_b300_hint_silent_below_filter_threshold() -> None:
     assert llm.captured_user_content is not None
     # Either no hint, or some hint but NOT the B-300 one. The
     # specific marker we added shouldn't show up.
-    assert "[turn hint]" not in llm.captured_user_content
+    assert "[turn hint]" not in (llm.captured_system_content or "")
 
 
 @pytest.mark.asyncio
@@ -195,7 +203,7 @@ async def test_b300_hint_silent_with_zero_registered_skills() -> None:
     await bus.drain()
 
     assert llm.captured_user_content is not None
-    assert "[turn hint]" not in llm.captured_user_content
+    assert "[turn hint]" not in (llm.captured_system_content or "")
 
 
 @pytest.mark.asyncio
@@ -218,5 +226,5 @@ async def test_b300_hint_text_mentions_skill_count() -> None:
     await agent.run_turn("test-sess", "完全不匹配的 CJK 查询")
     await bus.drain()
 
-    assert llm.captured_user_content is not None
-    assert str(skill_count) in llm.captured_user_content
+    assert llm.captured_system_content is not None
+    assert str(skill_count) in llm.captured_system_content

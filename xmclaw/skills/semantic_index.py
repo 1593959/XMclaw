@@ -86,6 +86,21 @@ class SkillSemanticIndex:
                 return True
         return False
 
+    async def _embed_many(self, texts: list[str]) -> list[Any]:
+        """统一不同 embedder 接口（镜像漂移修复 2026-06-23）。本类原按
+        ``EmbeddingService`` 写（``embed(str)->vec`` + ``embed_batch(list)->
+        list[vec]``），但实际注入的常是 ``OpenAIEmbeddingProvider`` —— 它的
+        ``embed`` 本身就是**批量**接口（``embed(list[str])->list[vec]``），
+        传单字符串会被当字符迭代。两处差异曾导致：warm 调 embed_batch →
+        AttributeError、scores 调 embed(单串) → 嵌套向量 TypeError → 语义
+        索引全空 → 中文 query 对英文技能零浮现 → 安装的技能一个都调不动。
+        统一：有 embed_batch 用它，否则把 list 交给 embed（批量）。
+        """
+        eb = getattr(self._embedder, "embed_batch", None)
+        if callable(eb):
+            return list(await eb(texts))
+        return list(await self._embedder.embed(texts))
+
     async def warm(self, specs: list[Any]) -> None:
         """Embed any skill descriptions not yet cached (or changed).
         Batched in a single provider call; cache hits are free. Intended
@@ -112,17 +127,7 @@ class SkillSemanticIndex:
                 self._vecs.pop(stale, None)
             if not todo_descs:
                 return
-            # 兼容不同 embedder 接口（镜像漂移修复 2026-06-23）：本类原按
-            # EmbeddingService.embed_batch 写，但实际注入的常是
-            # OpenAIEmbeddingProvider —— 它只有 embed（单条）、无 embed_batch。
-            # 之前 warm 调 embed_batch 直接 AttributeError → 语义索引全空 →
-            # 中文 query 对英文技能零浮现 → 安装的技能一个都无法自主调用。
-            # 有 embed_batch 就用（快），否则退回逐条 embed。
-            _eb = getattr(self._embedder, "embed_batch", None)
-            if callable(_eb):
-                vecs = await _eb(todo_descs)
-            else:
-                vecs = [await self._embedder.embed(d) for d in todo_descs]
+            vecs = await self._embed_many(todo_descs)
             for n, d, v in zip(todo_names, todo_descs, vecs):
                 self._vecs[n] = (d, tuple(v))
         except Exception as exc:  # noqa: BLE001 — warming is best-effort
@@ -147,7 +152,7 @@ class SkillSemanticIndex:
         if not self._vecs:
             return {}
         try:
-            qvec = tuple(await self._embedder.embed(query))
+            qvec = tuple((await self._embed_many([query]))[0])
         except Exception as exc:  # noqa: BLE001 — discovery is best-effort
             _log.debug("skill_semantic_index.embed_failed err=%s", exc)
             return {}
