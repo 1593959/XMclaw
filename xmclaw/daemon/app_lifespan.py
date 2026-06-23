@@ -169,6 +169,31 @@ def make_lifespan(
                         sid, job.prompt,
                         tools_allowlist=tools_allowlist,
                     )
+                    # 2026-06-23: 投递定时任务产出。之前 cron 只 write_output
+                    # 存盘、从不投递 → "定时汇总发飞书" 做不到（用户长期未修，
+                    # 即使绑了飞书也收不到）。这里把产出作为 PROACTIVE_PROPOSAL
+                    # 发到总线，ProactiveChannelBridge 会推送到已配置
+                    # proactive_chat_id 的 IM channel（飞书/TG/Slack）。无配置
+                    # 推送目标的 channel 会被 bridge 静默跳过，不影响。
+                    _txt = (res.text or "").strip()
+                    if _txt and bus is not None:
+                        try:
+                            from xmclaw.core.bus import EventType, make_event
+                            await bus.publish(make_event(
+                                session_id=sid,
+                                agent_id="main",
+                                type=EventType.PROACTIVE_PROPOSAL,
+                                payload={
+                                    "message": f"【{job.name}】\n{_txt}",
+                                    "urgency": "normal",
+                                    "source": "cron",
+                                    "job_id": job.id,
+                                },
+                            ))
+                        except Exception as _pexc:  # noqa: BLE001
+                            log.warning(
+                                "cron.deliver_failed job=%s err=%s", job.id, _pexc,
+                            )
                     return (
                         f"# {job.name} @ {time_module.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                         f"## Result\n\n{res.text or '(no text)'}\n\n"
