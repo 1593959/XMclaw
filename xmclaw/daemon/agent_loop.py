@@ -570,6 +570,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         self._state_graph_emit_phase_events = bool(
             _state_graph_cfg.get("emit_phase_events", True),
         )
+        self._state_graph_enforce_phase_order = bool(
+            _state_graph_cfg.get("enforce_phase_order", True),
+        )
         self._post_sampling_registry = post_sampling_registry
         # B-198 Phase 3: optional PersonaStore set post-construction
         # by the daemon lifespan (the store is built AFTER the agent
@@ -1961,6 +1964,9 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     session_id=session_id,
                     run_id=turn_uuid,
                     user_message=user_message,
+                    enforce_order=bool(
+                        getattr(self, "_state_graph_enforce_phase_order", True),
+                    ),
                 )
                 self._last_turn_graph_state = _turn_phase_graph.state
             except Exception:  # noqa: BLE001
@@ -2109,8 +2115,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             ar_cfg = (cog_cfg.get("auto_recall") or {}) if isinstance(
                 cog_cfg, dict,
             ) else {}
-            ar_enabled = bool(ar_cfg.get("enabled", False))  # default OFF
             _gateway = getattr(self, "_memory_gateway", None)
+            ar_enabled = bool(ar_cfg.get("enabled", True if _gateway is not None else False))
             if ar_enabled and user_message:
                 if _gateway is not None:
                     # Phase 1: route through CognitiveMemoryGateway.
@@ -3832,7 +3838,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             )
             _prompt_memory_pack_block = _prompt_memory_pack.render()
         except Exception:  # noqa: BLE001
-            _prompt_memory_pack_block = (
+            _legacy_pack_body = (
                 memory_ctx_block
                 + memory_files_block
                 + unified_recall_block
@@ -3844,6 +3850,18 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 + skill_browse_hint
                 + _correction_hint
                 + _schema_block
+            )
+            _prompt_memory_pack_block = (
+                "<prompt-memory-pack>\n"
+                "[System note: dynamic context pack fallback. Treat this as "
+                "the only authorized dynamic context for this turn. If it is "
+                "insufficient, call memory(action='search'), artifact_ledger, "
+                "or skill_browse/skill_view instead of guessing.]\n"
+                "<section name=\"legacy-fallback\" source=\"agent_loop\">\n"
+                f"{_legacy_pack_body.strip()}\n"
+                "</section>\n"
+                "</prompt-memory-pack>"
+                if _legacy_pack_body.strip() else ""
             )
         finally:
             await _mark_turn_phase(

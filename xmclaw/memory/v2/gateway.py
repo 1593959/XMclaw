@@ -40,8 +40,8 @@ _DEFAULT_CFG: dict[str, Any] = {
         "max_neighbors": 16,
     },
     "recall": {
-        "gate_enabled": False,   # Phase 3: disabled until implemented
-        "classify_enabled": False,
+        "gate_enabled": True,
+        "classify_enabled": True,
         "hybrid_enabled": True,
         "timeout_s": 3.0,
         "k": 4,
@@ -338,7 +338,13 @@ class CognitiveMemoryGateway:
         expensive LLM call entirely.
         """
         text = (observation.content or "").lower()
-        return any(kw in text for kw in self._TIER1_KEYWORDS)
+        clean_keywords = (
+            "名叫", "名字是", "称呼我", "叫我", "我是", "我的名字", "我的全名",
+            "记住", "记下来", "别忘了", "记着",
+            "偏好使用", "习惯使用", "以后都用", "默认使用", "优先使用",
+            "不喜欢", "不想用", "不愿用", "必须", "不要", "禁止",
+        )
+        return any(kw in text for kw in (*self._TIER1_KEYWORDS, *clean_keywords))
 
     async def _think(
         self,

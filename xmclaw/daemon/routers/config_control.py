@@ -20,251 +20,305 @@ _SECRET_KEYS = {
     "password", "secret", "authorization",
 }
 
+
+def _field(
+    group: str,
+    label: str,
+    typ: str,
+    *,
+    description: str,
+    restart_required: bool = False,
+    options: list[str] | None = None,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "group": group,
+        "label": label,
+        "description": description,
+        "type": typ,
+        "restart_required": restart_required,
+    }
+    if options is not None:
+        out["options"] = options
+    return out
+
+
 CONFIG_FIELDS: dict[str, dict[str, Any]] = {
-    "security.prompt_injection": {
-        "group": "security", "label": "提示词注入策略",
-        "type": "select", "options": ["off", "detect_only", "redact", "block"],
-        "restart_required": False,
-    },
-    "security.guardians.enabled": {
-        "group": "security", "label": "启用安全护栏",
-        "type": "boolean", "restart_required": False,
-    },
-    "security.guardians.computer_use_mode": {
-        "group": "security", "label": "电脑控制策略",
-        "type": "select", "options": ["allow", "approve", "deny"],
-        "restart_required": False,
-    },
-    "tools.enable_bash": {
-        "group": "security", "label": "启用 Shell 工具",
-        "type": "boolean", "restart_required": True,
-    },
-    "tools.enable_web": {
-        "group": "security", "label": "启用 Web 工具",
-        "type": "boolean", "restart_required": True,
-    },
-    "tools.enable_browser": {
-        "group": "security", "label": "启用浏览器工具",
-        "type": "boolean", "restart_required": True,
-    },
-    "tools.shell.execution_policy": {
-        "group": "security", "label": "Shell 执行策略",
-        "type": "select", "options": ["host_guarded", "docker", "disabled"],
-        "restart_required": True,
-    },
-    "tools.shell.guardrails_mode": {
-        "group": "security", "label": "Shell 护栏模式",
-        "type": "select", "options": ["strict", "permissive", "disabled"],
-        "restart_required": True,
-    },
-    "tools.shell.sandbox_image": {
-        "group": "security", "label": "Shell 沙箱镜像",
-        "type": "string", "restart_required": True,
-    },
-    "tools.allowed_dirs": {
-        "group": "security", "label": "允许访问目录",
-        "type": "string_list", "restart_required": False,
-    },
+    "security.prompt_injection": _field(
+        "security", "提示词注入策略", "select",
+        description="控制网页、文件、工具输出中的提示词注入风险如何处理。",
+        options=["off", "detect_only", "redact", "block"],
+    ),
+    "security.guardians.enabled": _field(
+        "security", "启用安全护栏", "boolean",
+        description="打开后会对高风险工具和输入做额外检查。",
+    ),
+    "security.guardians.computer_use_mode": _field(
+        "security", "电脑控制策略", "select",
+        description="控制桌面自动化是否直接允许、需要确认或拒绝。",
+        options=["allow", "approve", "deny"],
+    ),
+    "tools.enable_bash": _field(
+        "security", "启用 Shell 工具", "boolean",
+        description="允许 Agent 调用本地命令行工具。",
+        restart_required=True,
+    ),
+    "tools.enable_web": _field(
+        "security", "启用 Web 工具", "boolean",
+        description="允许 Agent 使用联网搜索和网页读取能力。",
+        restart_required=True,
+    ),
+    "tools.enable_browser": _field(
+        "security", "启用浏览器工具", "boolean",
+        description="允许 Agent 控制真实浏览器或浏览器自动化工具。",
+        restart_required=True,
+    ),
+    "tools.shell.execution_policy": _field(
+        "security", "Shell 执行策略", "select",
+        description="选择命令在宿主机护栏下运行、Docker 沙箱运行或完全禁用。",
+        options=["host_guarded", "docker", "disabled"],
+        restart_required=True,
+    ),
+    "tools.shell.guardrails_mode": _field(
+        "security", "Shell 护栏模式", "select",
+        description="严格模式会阻止更多危险命令，宽松模式只拦截明显高危操作。",
+        options=["strict", "permissive", "disabled"],
+        restart_required=True,
+    ),
+    "tools.shell.sandbox_image": _field(
+        "security", "Shell 沙箱镜像", "string",
+        description="Docker 沙箱模式使用的镜像名称。",
+        restart_required=True,
+    ),
+    "tools.allowed_dirs": _field(
+        "security", "允许访问目录", "string_list",
+        description="文件和命令工具优先遵守的本地目录 allowlist。",
+    ),
 
-    "voice.stt.model": {
-        "group": "voice", "label": "语音识别模型",
-        "type": "string", "restart_required": True,
-    },
-    "voice.stt.device": {
-        "group": "voice", "label": "语音识别设备",
-        "type": "select", "options": ["cpu", "cuda", "auto"],
-        "restart_required": True,
-    },
-    "voice.stt.compute_type": {
-        "group": "voice", "label": "语音识别计算精度",
-        "type": "string", "restart_required": True,
-    },
-    "voice.stt.language": {
-        "group": "voice", "label": "语音识别语言",
-        "type": "string", "restart_required": True,
-    },
-    "voice.tts.voice": {
-        "group": "voice", "label": "语音合成声音",
-        "type": "string", "restart_required": True,
-    },
-    "voice.tts.rate": {
-        "group": "voice", "label": "语音合成语速",
-        "type": "string", "restart_required": True,
-    },
-    "voice.tts.volume": {
-        "group": "voice", "label": "语音合成音量",
-        "type": "string", "restart_required": True,
-    },
+    "voice.stt.model": _field(
+        "voice", "语音识别模型", "string",
+        description="STT 使用的模型名称，例如 Whisper/faster-whisper 模型。",
+        restart_required=True,
+    ),
+    "voice.stt.device": _field(
+        "voice", "语音识别设备", "select",
+        description="STT 推理设备，cpu/cuda/auto。",
+        options=["cpu", "cuda", "auto"],
+        restart_required=True,
+    ),
+    "voice.stt.compute_type": _field(
+        "voice", "语音识别计算精度", "string",
+        description="faster-whisper 等后端使用的 compute_type。",
+        restart_required=True,
+    ),
+    "voice.stt.language": _field(
+        "voice", "语音识别语言", "string",
+        description="留空表示自动检测，常用值如 zh/en。",
+        restart_required=True,
+    ),
+    "voice.tts.voice": _field(
+        "voice", "语音合成声音", "string",
+        description="TTS 声音名称，例如 zh-CN-XiaoxiaoNeural。",
+        restart_required=True,
+    ),
+    "voice.tts.rate": _field(
+        "voice", "语音合成语速", "string",
+        description="TTS 语速，例如 +0%、+10%、-10%。",
+        restart_required=True,
+    ),
+    "voice.tts.volume": _field(
+        "voice", "语音合成音量", "string",
+        description="TTS 音量，例如 +0%、+20%、-20%。",
+        restart_required=True,
+    ),
 
-    "evolution.memory.embedding.provider": {
-        "group": "models", "label": "向量模型提供方",
-        "type": "string", "restart_required": True,
-    },
-    "evolution.memory.embedding.base_url": {
-        "group": "models", "label": "向量模型接口地址",
-        "type": "string", "restart_required": True,
-    },
-    "evolution.memory.embedding.model": {
-        "group": "models", "label": "向量模型名称",
-        "type": "string", "restart_required": True,
-    },
-    "evolution.memory.embedding.dimensions": {
-        "group": "models", "label": "向量维度",
-        "type": "integer", "restart_required": True,
-    },
-    "evolution.memory.embedding.max_batch_size": {
-        "group": "models", "label": "向量批处理大小",
-        "type": "integer", "restart_required": True,
-    },
+    "evolution.memory.embedding.provider": _field(
+        "models", "向量模型提供方", "string",
+        description="记忆和技能语义检索使用的 embedding provider。",
+        restart_required=True,
+    ),
+    "evolution.memory.embedding.base_url": _field(
+        "models", "向量模型接口地址", "string",
+        description="OpenAI-compatible embedding API base URL。",
+        restart_required=True,
+    ),
+    "evolution.memory.embedding.model": _field(
+        "models", "向量模型名称", "string",
+        description="用于生成记忆向量的模型名。",
+        restart_required=True,
+    ),
+    "evolution.memory.embedding.dimensions": _field(
+        "models", "向量维度", "integer",
+        description="必须与当前向量库表结构一致，修改后通常需要重建索引。",
+        restart_required=True,
+    ),
+    "evolution.memory.embedding.max_batch_size": _field(
+        "models", "向量批处理大小", "integer",
+        description="embedding 批量请求的最大条数。",
+        restart_required=True,
+    ),
 
-    "cognition.memory_v2.enabled": {
-        "group": "memory", "label": "启用记忆 v2",
-        "type": "boolean", "restart_required": True,
-    },
-    "cognition.memory_v2.recall_top_k": {
-        "group": "memory", "label": "记忆召回数量",
-        "type": "integer", "restart_required": False,
-    },
-    "cognition.memory_v2.gateway.recall.hybrid_enabled": {
-        "group": "memory", "label": "启用混合召回",
-        "type": "boolean", "restart_required": False,
-    },
-    "cognition.memory_v2.gateway.recall.gate_enabled": {
-        "group": "memory", "label": "启用召回门控",
-        "type": "boolean", "restart_required": False,
-    },
-    "cognition.memory_v2.write_decision.enabled": {
-        "group": "memory", "label": "启用写入决策",
-        "type": "boolean", "restart_required": False,
-    },
-    "cognition.memory_v2.candidates.min_quality_score": {
-        "group": "memory", "label": "候选记忆最低质量分",
-        "type": "number", "restart_required": False,
-    },
-    "cognition.memory_v2.candidates.auto_reject_below": {
-        "group": "memory", "label": "低于该分数自动拒绝",
-        "type": "number", "restart_required": False,
-    },
-    "cognition.memory_v2.candidates.reject_duplicates": {
-        "group": "memory", "label": "自动拒绝重复候选",
-        "type": "boolean", "restart_required": False,
-    },
-    "cognition.memory_v2.md_sync.enabled": {
-        "group": "memory", "label": "启用 MD 同步",
-        "type": "boolean", "restart_required": False,
-    },
-    "cognition.memory_v2.md_sync.direction": {
-        "group": "memory", "label": "MD 同步方向",
-        "type": "select",
-        "options": ["manual_to_facts", "facts_to_view", "bidirectional_review"],
-        "restart_required": False,
-    },
-    "cognition.memory_v2.md_sync.authority": {
-        "group": "memory", "label": "冲突时权威来源",
-        "type": "select", "options": ["structured_facts", "manual_md"],
-        "restart_required": False,
-    },
-    "cognition.memory_v2.curator.enabled": {
-        "group": "memory", "label": "启用记忆整理器",
-        "type": "boolean", "restart_required": False,
-    },
-    "cognition.self_critique.enabled": {
-        "group": "memory", "label": "启用自我反思",
-        "type": "boolean", "restart_required": False,
-    },
+    "cognition.memory_v2.enabled": _field(
+        "memory", "启用记忆 v2", "boolean",
+        description="启用结构化长期记忆、候选审核和召回管线。",
+        restart_required=True,
+    ),
+    "cognition.memory_v2.recall_top_k": _field(
+        "memory", "记忆召回数量", "integer",
+        description="每轮最多注入多少条相关记忆。",
+    ),
+    "cognition.memory_v2.gateway.recall.hybrid_enabled": _field(
+        "memory", "启用混合召回", "boolean",
+        description="同时使用向量、BM25 和结构化 bucket 进行召回。",
+    ),
+    "cognition.memory_v2.gateway.recall.gate_enabled": _field(
+        "memory", "启用召回门控", "boolean",
+        description="跳过寒暄和无记忆价值的短消息，降低噪声。",
+    ),
+    "cognition.memory_v2.gateway.recall.classify_enabled": _field(
+        "memory", "启用召回分类", "boolean",
+        description="先判断任务需要哪些记忆类型，再定向检索。",
+    ),
+    "cognition.memory_v2.write_decision.enabled": _field(
+        "memory", "启用写入决策", "boolean",
+        description="写入前执行 ADD/UPDATE/DELETE/NOOP 与候选审核策略。",
+    ),
+    "cognition.memory_v2.candidates.min_quality_score": _field(
+        "memory", "候选记忆最低质量分", "number",
+        description="低于该分数的候选需要人工审核或被拒绝。",
+    ),
+    "cognition.memory_v2.candidates.auto_reject_below": _field(
+        "memory", "自动拒绝分数线", "number",
+        description="低于该分数的自动候选会直接被拒绝。",
+    ),
+    "cognition.memory_v2.candidates.reject_duplicates": _field(
+        "memory", "自动拒绝重复候选", "boolean",
+        description="检测重复候选，避免记忆库越用越乱。",
+    ),
+    "cognition.memory_v2.md_sync.enabled": _field(
+        "memory", "启用 MD 同步", "boolean",
+        description="把用户手动维护的 MD 内容导入结构化记忆；不把自动事实默认写回 MD。",
+    ),
+    "cognition.memory_v2.md_sync.direction": _field(
+        "memory", "MD 同步方向", "select",
+        description="控制 MD 与结构化事实之间的同步方式。",
+        options=["manual_to_facts", "facts_to_view", "bidirectional_review"],
+    ),
+    "cognition.memory_v2.md_sync.authority": _field(
+        "memory", "冲突时权威来源", "select",
+        description="MD 与结构化事实冲突时优先相信哪一侧。",
+        options=["structured_facts", "manual_md"],
+    ),
+    "cognition.memory_v2.curator.enabled": _field(
+        "memory", "启用记忆整理器", "boolean",
+        description="定期归并、降权、去重和整理长期记忆。",
+    ),
+    "cognition.self_critique.enabled": _field(
+        "memory", "启用自我反思", "boolean",
+        description="失败后生成反思候选，但不直接把未验证经验固化。",
+    ),
 
-    "skills.disclosure_mode": {
-        "group": "skills", "label": "技能展示模式",
-        "type": "select", "options": ["auto", "inline", "unified"],
-        "restart_required": True,
-    },
-    "skills.unified_threshold": {
-        "group": "skills", "label": "统一技能入口阈值",
-        "type": "integer", "restart_required": True,
-    },
-    "skills.semantic_discovery.enabled": {
-        "group": "skills", "label": "启用语义技能发现",
-        "type": "boolean", "restart_required": False,
-    },
-    "skills.semantic_discovery.floor": {
-        "group": "skills", "label": "语义发现最低分",
-        "type": "number", "restart_required": False,
-    },
-    "skills.autonomous_invocation.enabled": {
-        "group": "skills", "label": "启用技能自主调用",
-        "type": "boolean", "restart_required": False,
-    },
-    "skills.autonomous_invocation.mode": {
-        "group": "skills", "label": "自主技能策略",
-        "type": "select", "options": ["suggest", "prefer", "force"],
-        "restart_required": False,
-    },
-    "skills.autonomous_invocation.min_score": {
-        "group": "skills", "label": "自主技能最低分",
-        "type": "number", "restart_required": False,
-    },
-    "skills.autonomous_invocation.max_loaded": {
-        "group": "skills", "label": "每轮最多加载技能数",
-        "type": "integer", "restart_required": False,
-    },
-    "skills.autonomous_invocation.require_decision": {
-        "group": "skills", "label": "强制记录技能使用决策",
-        "type": "boolean", "restart_required": False,
-    },
-    "skills.autonomous_invocation.auto_browse_on_no_match": {
-        "group": "skills", "label": "无匹配时主动查技能库",
-        "type": "boolean", "restart_required": False,
-    },
-    "skills.install.compatibility_mode": {
-        "group": "skills", "label": "安装兼容模式",
-        "type": "select", "options": ["strict", "adapt_markdown", "permissive"],
-        "restart_required": False,
-    },
+    "skills.disclosure_mode": _field(
+        "skills", "技能展示模式", "select",
+        description="控制技能作为独立工具、统一入口或自动模式暴露给模型。",
+        options=["auto", "inline", "unified"],
+        restart_required=True,
+    ),
+    "skills.unified_threshold": _field(
+        "skills", "统一技能入口阈值", "integer",
+        description="超过该数量后优先使用统一技能入口降低工具噪声。",
+        restart_required=True,
+    ),
+    "skills.semantic_discovery.enabled": _field(
+        "skills", "启用语义技能发现", "boolean",
+        description="用向量语义匹配技能，解决中文任务看不到英文技能的问题。",
+    ),
+    "skills.semantic_discovery.floor": _field(
+        "skills", "语义发现最低分", "number",
+        description="低于该分数的技能不会被主动推荐。",
+    ),
+    "skills.autonomous_invocation.enabled": _field(
+        "skills", "启用技能自主调用", "boolean",
+        description="要求 Agent 主动查找、选择、使用或解释跳过技能。",
+    ),
+    "skills.autonomous_invocation.mode": _field(
+        "skills", "自主技能策略", "select",
+        description="suggest 只提示，prefer 优先使用，force 强制先查技能。",
+        options=["suggest", "prefer", "force"],
+    ),
+    "skills.autonomous_invocation.min_score": _field(
+        "skills", "自主技能最低分", "number",
+        description="低于该分数的技能不会进入候选。",
+    ),
+    "skills.autonomous_invocation.max_loaded": _field(
+        "skills", "每轮最多加载技能数", "integer",
+        description="限制每轮注入模型的技能数量。",
+    ),
+    "skills.autonomous_invocation.require_decision": _field(
+        "skills", "强制记录技能使用决策", "boolean",
+        description="要求模型说明使用、跳过或查询技能库的理由。",
+    ),
+    "skills.autonomous_invocation.auto_browse_on_no_match": _field(
+        "skills", "无匹配时主动查技能库", "boolean",
+        description="没有直接候选时，先调用 skill_browse 再决定是否使用通用工具。",
+    ),
+    "skills.install.compatibility_mode": _field(
+        "skills", "安装兼容模式", "select",
+        description="处理 Claude Code/agentskills 等外部格式时的转换策略。",
+        options=["strict", "adapt_markdown", "permissive"],
+    ),
 
-    "agent.max_hops": {
-        "group": "runtime", "label": "最大工具步数",
-        "type": "integer", "restart_required": True,
-    },
-    "agent.max_react_loop": {
-        "group": "runtime", "label": "最大 ReAct 循环",
-        "type": "integer", "restart_required": True,
-    },
-    "agent.state_graph.enabled": {
-        "group": "runtime", "label": "启用 StateGraph 回合状态",
-        "type": "boolean", "restart_required": False,
-    },
-    "agent.state_graph.emit_phase_events": {
-        "group": "runtime", "label": "发送阶段状态事件",
-        "type": "boolean", "restart_required": False,
-    },
-    "agent.failure_strategy.repeat_threshold": {
-        "group": "runtime", "label": "连续失败切换阈值",
-        "type": "integer", "restart_required": False,
-    },
-    "agent.failure_strategy.force_strategy_switch": {
-        "group": "runtime", "label": "连续失败强制换策略",
-        "type": "boolean", "restart_required": False,
-    },
-    "tools.invoke_timeout_s": {
-        "group": "runtime", "label": "工具超时时间（秒）",
-        "type": "number", "restart_required": False,
-    },
-    "cognition.continuous_loop.enabled": {
-        "group": "runtime", "label": "连续运行循环",
-        "type": "boolean", "restart_required": False,
-    },
-    "cognition.continuous_loop.autonomy_level": {
-        "group": "runtime", "label": "自主等级",
-        "type": "integer", "restart_required": False,
-    },
-    "swarm.enabled": {
-        "group": "runtime", "label": "启用子 Agent 群",
-        "type": "boolean", "restart_required": True,
-    },
-    "swarm.max_subagents": {
-        "group": "runtime", "label": "最大子 Agent 数",
-        "type": "integer", "restart_required": True,
-    },
+    "agent.max_hops": _field(
+        "runtime", "最大工具步数", "integer",
+        description="单轮 Agent 最多执行多少个工具 hop。",
+        restart_required=True,
+    ),
+    "agent.max_react_loop": _field(
+        "runtime", "最大 ReAct 循环", "integer",
+        description="限制显式 ReAct 循环次数，防止无限思考/行动。",
+        restart_required=True,
+    ),
+    "agent.state_graph.enabled": _field(
+        "runtime", "启用 StateGraph 回合状态", "boolean",
+        description="用 reducer-backed GraphState 记录并驱动每轮主要阶段。",
+    ),
+    "agent.state_graph.enforce_phase_order": _field(
+        "runtime", "强制 StateGraph 阶段顺序", "boolean",
+        description="开启后 recall、skill、prompt、hop、writeback 必须按图状态推进。",
+    ),
+    "agent.state_graph.emit_phase_events": _field(
+        "runtime", "发送阶段状态事件", "boolean",
+        description="向前端和日志广播 recall/skill/prompt/hop/writeback 阶段状态。",
+    ),
+    "agent.failure_strategy.repeat_threshold": _field(
+        "runtime", "连续失败切换阈值", "integer",
+        description="同类失败达到该次数后强制换策略。",
+    ),
+    "agent.failure_strategy.force_strategy_switch": _field(
+        "runtime", "连续失败强制换策略", "boolean",
+        description="启用后同类失败会要求先查记忆、技能、产物并更换方法。",
+    ),
+    "tools.invoke_timeout_s": _field(
+        "runtime", "工具超时时间（秒）", "number",
+        description="单个工具调用的默认超时时间。",
+    ),
+    "cognition.continuous_loop.enabled": _field(
+        "runtime", "连续运行循环", "boolean",
+        description="启用后台认知循环和主动任务。",
+    ),
+    "cognition.continuous_loop.autonomy_level": _field(
+        "runtime", "自主等级", "integer",
+        description="后台主动性等级，越高越积极。",
+    ),
+    "swarm.enabled": _field(
+        "runtime", "启用子 Agent 群", "boolean",
+        description="允许复杂任务拆分给多个子 Agent。",
+        restart_required=True,
+    ),
+    "swarm.max_subagents": _field(
+        "runtime", "最大子 Agent 数", "integer",
+        description="单轮任务最多并发多少个子 Agent。",
+        restart_required=True,
+    ),
 }
 
 

@@ -26,7 +26,9 @@ DEFAULT_TURN_PHASES: tuple[str, ...] = (
 class TurnStateGraph:
     state: GraphState
     phases: tuple[str, ...] = DEFAULT_TURN_PHASES
+    enforce_order: bool = False
     _started_at: dict[str, float] = field(default_factory=dict)
+    _completed: set[str] = field(default_factory=set)
 
     @classmethod
     def create(
@@ -36,6 +38,7 @@ class TurnStateGraph:
         run_id: str,
         user_message: str,
         phases: tuple[str, ...] = DEFAULT_TURN_PHASES,
+        enforce_order: bool = False,
     ) -> "TurnStateGraph":
         state = GraphState(
             thread_id=session_id,
@@ -58,9 +61,15 @@ class TurnStateGraph:
                 "phase_order": list(phases),
             },
         }
-        return cls(state=apply_updates(state, updates), phases=phases)
+        return cls(
+            state=apply_updates(state, updates),
+            phases=phases,
+            enforce_order=enforce_order,
+        )
 
     def start(self, phase: str, **metadata: Any) -> GraphState:
+        if self.enforce_order:
+            self._assert_can_start(phase)
         self._started_at[phase] = time.perf_counter()
         return self._update_phase(phase, "running", metadata=metadata)
 
@@ -68,6 +77,7 @@ class TurnStateGraph:
         elapsed_ms = self._elapsed_ms(phase)
         if elapsed_ms is not None:
             metadata = {**metadata, "elapsed_ms": elapsed_ms}
+        self._completed.add(phase)
         return self._update_phase(phase, "completed", metadata=metadata)
 
     def fail(self, phase: str, error: str, **metadata: Any) -> GraphState:
@@ -90,6 +100,20 @@ class TurnStateGraph:
             error=error,
             metadata=metadata,
         )
+
+    def _assert_can_start(self, phase: str) -> None:
+        if phase not in self.phases:
+            raise ValueError(f"unknown StateGraph phase: {phase}")
+        idx = self.phases.index(phase)
+        missing = [
+            prev for prev in self.phases[:idx]
+            if prev not in self._completed
+        ]
+        if missing:
+            raise ValueError(
+                f"StateGraph phase {phase!r} started before dependencies "
+                f"completed: {', '.join(missing)}"
+            )
 
     def finalize(self, final: str, **metadata: Any) -> GraphState:
         self.state = apply_updates(

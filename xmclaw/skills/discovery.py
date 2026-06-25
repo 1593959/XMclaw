@@ -144,6 +144,10 @@ class SkillDiscoveryMiddleware:
         desc = cand.description
         if cand.triggers:
             desc += "\nUse when: " + ", ".join(cand.triggers[:6])
+        desc += (
+            "\nBefore running this skill, inspect its procedure with skill_view "
+            "unless the full procedure is already in context."
+        )
         return ToolSpec(
             name=cand.tool_name,
             description=f"Skill: {desc}",
@@ -216,6 +220,7 @@ class SkillDiscoveryMiddleware:
         text = (user_message or "").lower()
         failure_signals = (
             "失败", "报错", "卡住", "超时", "找不到", "重复", "死磕",
+            "换一种", "还有别的办法", "不行",
             "failed", "error", "timeout", "stuck",
         )
         return not candidates or any(sig in text for sig in failure_signals)
@@ -260,6 +265,9 @@ class SkillDiscoveryMiddleware:
                 "candidates: []\n"
                 f"{browse_line}\n"
                 f"{run_line}"
+                "Hard rule: do not claim no skill exists until skill_browse "
+                "has returned no useful result or the configuration disables "
+                "auto browsing.\n"
                 f"recommended_browse_query: {browse_query}\n"
                 f"{structured}\n"
                 "</skill-discovery>"
@@ -278,6 +286,11 @@ class SkillDiscoveryMiddleware:
             "Decision rule: prefer the best applicable skill, but decision "
             "logging is optional for this configuration.\n"
         )
+        inspect_rule = (
+            "Inspection rule: before executing a matched skill for the first "
+            "time in this turn, inspect its content with skill_view unless "
+            "the current tool call already contains the full procedure.\n"
+        )
         return (
             "\n\n<skill-discovery>\n"
             f"mode: {policy.mode}\n"
@@ -285,6 +298,7 @@ class SkillDiscoveryMiddleware:
             "candidates:\n"
             f"{rows}\n"
             f"{decision_rule}"
+            f"{inspect_rule}"
             f"{browse_line}\n"
             "Allowed skip_reasons: " + ", ".join(skip_reasons) + "\n"
             f"recommended_browse_query: {browse_query}\n"
@@ -322,6 +336,9 @@ class SkillDiscoveryMiddleware:
             "required_action": required_action,
             "must_browse_catalog": must_browse_catalog,
             "decision_tool": "skill_decision",
+            "query_tool": "skill_browse",
+            "inspect_tool": "skill_view",
+            "execute_tool": "skill_run",
         }
         return (
             "<skill-discovery-json>\n"

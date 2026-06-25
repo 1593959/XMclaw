@@ -11,6 +11,7 @@ interface ControlField {
   path: string;
   group: GroupId;
   label: string;
+  description?: string;
   type: FieldType;
   value: unknown;
   options?: string[];
@@ -139,7 +140,7 @@ export default function ControlCenter() {
                   : "border-mc-accent/50 bg-mc-accent/15 text-mc-accent")
               }
             >
-              {saving ? "保存中" : dirtyCount ? `保存 ${dirtyCount} 项` : "已同步"}
+              {saving ? "保存中..." : dirtyCount ? `保存 ${dirtyCount} 项` : "已同步"}
             </button>
           </div>
         </div>
@@ -167,6 +168,9 @@ export default function ControlCenter() {
                   onChange={(value) => setDrafts((d) => ({ ...d, [field.path]: value }))}
                 />
               ))}
+              {fields.length === 0 && (
+                <div className="px-4 py-6 text-sm text-mc-faint">这个分组暂无可配置项。</div>
+              )}
             </div>
           </div>
         )}
@@ -185,10 +189,13 @@ function ConfigRow({
   onChange: (value: DraftValue) => void;
 }) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[minmax(180px,260px)_1fr_auto] gap-3 md:gap-4 md:items-center px-4 py-3 border-b border-mc-border/60 last:border-b-0 bg-mc-panel/30">
+    <div className="grid grid-cols-1 md:grid-cols-[minmax(220px,300px)_1fr_auto] gap-3 md:gap-4 md:items-center px-4 py-3 border-b border-mc-border/60 last:border-b-0 bg-mc-panel/30">
       <div className="min-w-0">
-        <div className="text-sm font-medium truncate">{field.label}</div>
-        <div className="text-[11px] text-mc-faint font-mono truncate">{field.path}</div>
+        <div className="text-sm font-medium">{field.label}</div>
+        {field.description && (
+          <div className="text-[11px] text-mc-muted mt-1 leading-relaxed">{field.description}</div>
+        )}
+        <div className="text-[11px] text-mc-faint font-mono truncate mt-1">{field.path}</div>
       </div>
       <FieldInput field={field} value={value} onChange={onChange} />
       <div className="text-[10px] md:text-right md:min-w-20">
@@ -264,25 +271,25 @@ function FieldInput({
 
 function valueToDraft(field: ControlField): DraftValue {
   if (field.type === "boolean") return Boolean(field.value);
-  if (field.type === "string_list") {
-    return Array.isArray(field.value) ? field.value.join("\n") : "";
-  }
-  return field.value == null ? "" : String(field.value);
-}
-
-function draftToValue(field: ControlField, value: DraftValue): unknown {
-  if (field.type === "boolean") return Boolean(value);
-  if (field.type === "integer") return Number.parseInt(String(value || "0"), 10);
-  if (field.type === "number") return Number.parseFloat(String(value || "0"));
-  if (field.type === "string_list") {
-    return String(value)
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-  }
-  return String(value);
+  if (field.type === "string_list") return Array.isArray(field.value) ? field.value.join("\n") : "";
+  if (field.value === null || field.value === undefined) return "";
+  return String(field.value);
 }
 
 function normalizedCurrent(field: ControlField): unknown {
-  return draftToValue(field, valueToDraft(field));
+  if (field.type === "string_list") return Array.isArray(field.value) ? field.value : [];
+  return field.value;
+}
+
+function draftToValue(field: ControlField, draft: DraftValue): unknown {
+  if (field.type === "boolean") return Boolean(draft);
+  if (field.type === "integer") return Number.parseInt(String(draft || "0"), 10);
+  if (field.type === "number") return Number(String(draft || "0"));
+  if (field.type === "string_list") {
+    return String(draft || "")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return String(draft);
 }

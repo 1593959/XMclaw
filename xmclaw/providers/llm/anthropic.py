@@ -64,8 +64,11 @@ class AnthropicLLM(LLMProvider):
     # Message-list conversion cache: key = tuple(id(msg) for msg in messages),
     # value = (system, converted).  Avoids re-running _repair_tool_pairing
     # and _mark_history_cache_breakpoint on every hop when the message list
-    # hasn't changed.
-    _messages_cache: "OrderedDict[tuple[int, ...], tuple[Any, list[dict[str, Any]]]]" = OrderedDict()
+    # hasn't changed.  The cached value keeps strong refs to those Message
+    # objects; that prevents CPython from reusing their addresses while the
+    # entry is live, closing the stale-cache hole without making cache hits
+    # pay the cost of a full semantic fingerprint.
+    _messages_cache: "OrderedDict[tuple[int, ...], tuple[tuple[Message, ...], Any, list[dict[str, Any]]]]" = OrderedDict()
     _MAX_MESSAGES_CACHE = 100
 
     def __init__(
@@ -215,13 +218,13 @@ class AnthropicLLM(LLMProvider):
         cache_key = tuple(id(m) for m in messages)
         cached = AnthropicLLM._messages_cache.get(cache_key)
         if cached is not None:
-            system, converted = cached
+            _refs, system, converted = cached
             # Copy system.
             if isinstance(system, list):
                 system = [dict(b) if isinstance(b, dict) else b for b in system]
-            # Shallow copy of the converted list; each dict is also copied
-            # so caller mutations cannot pollute the cache.
-            converted = [d.copy() for d in converted]
+            # Copy nested content blocks too, so cache_control injection or
+            # caller mutations cannot pollute the cached conversion.
+            converted = [_copy_message_dict(d) for d in converted]
             return system, converted
 
         system_parts: list[str] = []
@@ -275,7 +278,7 @@ class AnthropicLLM(LLMProvider):
             # LRU: evict oldest if at capacity.
             if len(AnthropicLLM._messages_cache) >= AnthropicLLM._MAX_MESSAGES_CACHE:
                 AnthropicLLM._messages_cache.popitem(last=False)
-            AnthropicLLM._messages_cache[cache_key] = result
+            AnthropicLLM._messages_cache[cache_key] = (tuple(messages), *result)
             return result
 
         from xmclaw.providers.llm.base import CACHE_BREAKPOINT_MARKER
@@ -316,7 +319,7 @@ class AnthropicLLM(LLMProvider):
                 result = (system_blocks, converted)
                 if len(AnthropicLLM._messages_cache) >= AnthropicLLM._MAX_MESSAGES_CACHE:
                     AnthropicLLM._messages_cache.popitem(last=False)
-                AnthropicLLM._messages_cache[cache_key] = result
+                AnthropicLLM._messages_cache[cache_key] = (tuple(messages), *result)
                 return result
             # Fewer than 2 effective parts after strip — fall through.
             system_text = raw_parts[0] if raw_parts else system_text
@@ -332,7 +335,7 @@ class AnthropicLLM(LLMProvider):
         result = (system_blocks, converted)
         if len(AnthropicLLM._messages_cache) >= AnthropicLLM._MAX_MESSAGES_CACHE:
             AnthropicLLM._messages_cache.popitem(last=False)
-        AnthropicLLM._messages_cache[cache_key] = result
+        AnthropicLLM._messages_cache[cache_key] = (tuple(messages), *result)
         return result
     @staticmethod
     def _count_msg_breakpoint(converted: list[dict[str, Any]]) -> int:

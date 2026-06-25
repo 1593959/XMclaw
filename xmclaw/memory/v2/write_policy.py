@@ -20,16 +20,35 @@ class MemoryWritePolicyDecision:
     reason: str
 
 
-_UNVERIFIED_LESSON_RE = re.compile(
-    r"(?:下次|以后|应该|可以尝试|尝试|可能|也许|计划|方法|方案|经验|规律|"
-    r"推测|猜测|大概|似乎|next time|should|try|maybe|plan|approach|"
-    r"possibly|probably|seems)",
+_SPECULATIVE_RE = re.compile(
+    r"(?:"
+    r"下次|以后|应该|可以尝试|尝试|可能|也许|计划|方案|方法|经验|规律|"
+    r"推测|猜测|大概|似乎|看起来|未验证|待验证|需要验证|"
+    r"next time|should|try|maybe|plan|approach|possibly|probably|seems"
+    r")",
     re.IGNORECASE,
 )
 
 _TRANSIENT_STATUS_RE = re.compile(
-    r"(?:正在|准备|打算|尝试中|还没完成|未完成|失败了|报错|找不到|"
-    r"running|trying|attempting|failed|error|not found|in progress)",
+    r"(?:"
+    r"正在|准备|打算|尝试中|还没完成|未完成|失败了|报错|找不到|没找到|"
+    r"卡住|超时|没有结果|仍在|继续搜索|"
+    r"running|trying|attempting|failed|error|not found|in progress|timeout"
+    r")",
+    re.IGNORECASE,
+)
+
+_DURABLE_USER_SIGNAL_RE = re.compile(
+    r"(?:记住|记下来|别忘|以后|默认|必须|不要|禁止|叫我|我的名字|我的全名|"
+    r"我喜欢|我不喜欢|我希望|我要求)",
+    re.IGNORECASE,
+)
+
+_LOW_VALUE_RE = re.compile(
+    r"(?:"
+    r"已查看|正在调用|开始执行|准备执行|调用模型|工具返回|日志|临时|一次性|"
+    r"downloaded|started|finished step|temporary|scratch"
+    r")",
     re.IGNORECASE,
 )
 
@@ -43,9 +62,17 @@ def assess_memory_write(
     md: dict[str, Any] = observation.metadata or {}
     source = (observation.source or "").strip()
     text = (digest.synthesized_text or observation.content or "").strip()
+    kind = str(digest.kind or "")
+    bucket = str(digest.bucket or "")
+
+    if not text:
+        return MemoryWritePolicyDecision(False, "empty_memory")
 
     if md.get("force_remember") is True or source in {"manual", "manual_ui"}:
         return MemoryWritePolicyDecision(True, "manual_or_forced")
+
+    if source == "user_msg" and _DURABLE_USER_SIGNAL_RE.search(text):
+        return MemoryWritePolicyDecision(True, "explicit_user_memory_signal")
 
     if md.get("task_completed") is False or str(md.get("task_status") or "").lower() in {
         "running",
@@ -55,17 +82,14 @@ def assess_memory_write(
     }:
         return MemoryWritePolicyDecision(False, "task_not_completed")
 
-    if not _has_terminal_evidence(md) and _TRANSIENT_STATUS_RE.search(text):
-        return MemoryWritePolicyDecision(False, "transient_or_failed_status")
-
     if source == "tool_result":
         if md.get("tool_success") is False:
             return MemoryWritePolicyDecision(False, "unverified_tool_failure")
         if not _has_terminal_evidence(md):
             return MemoryWritePolicyDecision(False, "tool_result_not_terminal")
 
-    if source in {"post_sampling", "cognition"} and not _has_terminal_evidence(md):
-        if digest.kind == "lesson" or digest.bucket in {
+    if source in {"post_sampling", "cognition", "assistant_response"} and not _has_terminal_evidence(md):
+        if kind in {"lesson", "procedure"} or bucket in {
             "workflow",
             "tool_quirks",
             "failure_modes",
@@ -73,13 +97,23 @@ def assess_memory_write(
         }:
             return MemoryWritePolicyDecision(False, "unverified_extracted_lesson")
 
+    if _LOW_VALUE_RE.search(text) and not _has_terminal_evidence(md):
+        return MemoryWritePolicyDecision(False, "low_value_runtime_status")
+
+    if not _has_terminal_evidence(md) and _TRANSIENT_STATUS_RE.search(text):
+        return MemoryWritePolicyDecision(False, "transient_or_failed_status")
+
     if (
-        digest.kind in {"lesson", "procedure"}
+        kind in {"lesson", "procedure"}
         and digest.confidence < 0.85
-        and _UNVERIFIED_LESSON_RE.search(text)
+        and _SPECULATIVE_RE.search(text)
         and not _has_terminal_evidence(md)
     ):
         return MemoryWritePolicyDecision(False, "speculative_lesson")
+
+    if bucket in {"failure_modes", "procedural", "workflow"} and not _has_terminal_evidence(md):
+        if digest.confidence < 0.9:
+            return MemoryWritePolicyDecision(False, "experience_requires_verification")
 
     return MemoryWritePolicyDecision(True, "allowed")
 
@@ -93,6 +127,7 @@ def _has_terminal_evidence(md: dict[str, Any]) -> bool:
             "task_completed",
             "user_confirmed",
             "session_completed",
+            "final_answer_sent",
         )
     )
 

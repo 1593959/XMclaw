@@ -56,6 +56,15 @@ class PromptMemoryPack:
         sections = self.sections
         if not sections:
             return ""
+        manifest = [
+            {
+                "name": section.name,
+                "source": section.source,
+                "priority": section.priority,
+                "reason": section.reason,
+            }
+            for section in sections
+        ]
         lines = [
             "<prompt-memory-pack>",
             "[System note: structured turn context follows. It is not user "
@@ -67,7 +76,13 @@ class PromptMemoryPack:
             "reasoning. For user identity, preferences, durable rules, or "
             "project conventions, query memory(action='search') before "
             "answering or writing. Never say something was saved unless the "
-            "write tool returned ok=true.]",
+            "write tool returned ok=true. Treat this pack as the only "
+            "authorized dynamic context; do not separately infer context "
+            "from raw MD files, events, or vector hits unless a tool returns "
+            "them for this turn.]",
+            "<prompt-memory-pack-manifest>",
+            _json(manifest),
+            "</prompt-memory-pack-manifest>",
         ]
         for section in sections:
             meta = f'<section name="{section.name}" source="{section.source}"'
@@ -103,6 +118,12 @@ def _attr(value: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def _json(value: object) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 __all__ = [
