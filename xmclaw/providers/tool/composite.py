@@ -23,13 +23,19 @@ from __future__ import annotations
 
 import time
 
+from typing import Any
+
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
 
 
 class CompositeToolProvider(ToolProvider):
-    def __init__(self, *children: ToolProvider) -> None:
+    def __init__(
+        self, *children: ToolProvider, automation_observe_required: bool = True,
+    ) -> None:
         self._children: list[ToolProvider] = list(children)
+        self._automation_observed_at: dict[tuple[str, str], float] = {}
+        self._automation_observe_required = bool(automation_observe_required)
         # Resolve tool name -> child index once at construction so
         # invoke() is O(1) per call instead of re-scanning every time.
         self._router: dict[str, ToolProvider] = {}
@@ -75,7 +81,98 @@ class CompositeToolProvider(ToolProvider):
                 error=f"unknown tool: {call.name!r}",
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
-        return await child.invoke(call)
+        pre_observation = await self._automation_preflight(child, call)
+        result = await child.invoke(call)
+        if pre_observation is not None:
+            return self._attach_pre_observation(result, pre_observation)
+        return result
+
+    async def _automation_preflight(
+        self, child: ToolProvider, call: ToolCall,
+    ) -> ToolResult | None:
+        surface_action = self._automation_surface_action(call)
+        if surface_action is None:
+            return None
+        if not self._automation_observe_required:
+            return None
+        surface, action = surface_action
+        if action in {"observe", "trace"}:
+            key = (call.session_id or "default", surface)
+            self._automation_observed_at[key] = time.time()
+            return None
+
+        key = (call.session_id or "default", surface)
+        observed_at = self._automation_observed_at.get(key, 0.0)
+        if time.time() - observed_at < 5.0:
+            return None
+        observe_name = "browser" if surface == "browser" else "computer_use"
+        observe_call = ToolCall(
+            name=observe_name,
+            args={"action": "observe", "include_action_log": False},
+            provenance=getattr(call, "provenance", "synthetic"),
+            session_id=getattr(call, "session_id", None),
+        )
+        observed = await child.invoke(observe_call)
+        self._automation_observed_at[key] = time.time()
+        return observed
+
+    def _automation_surface_action(self, call: ToolCall) -> tuple[str, str] | None:
+        args = call.args or {}
+        name = call.name
+        if name == "browser":
+            return "browser", str(args.get("action", "")).strip().lower()
+        if name.startswith("browser_"):
+            legacy_action = {
+                "browser_open": "navigate",
+                "browser_click": "click",
+                "browser_press": "press",
+                "browser_fill": "fill",
+                "browser_hover": "hover",
+                "browser_scroll": "scroll",
+                "browser_select_option": "select_option",
+                "browser_upload": "upload",
+                "browser_back": "back",
+                "browser_forward": "forward",
+                "browser_reload": "reload",
+                "browser_tab_switch": "tab_switch",
+                "browser_tab_close": "tab_close",
+                "browser_click_ref": "click_ref",
+                "browser_type_ref": "type_ref",
+                "browser_dialog": "dialog",
+            }.get(name, "")
+            if legacy_action:
+                return "browser", legacy_action
+        if name == "computer_use":
+            return "computer", str(args.get("action", "")).strip().lower()
+        return None
+
+    def _attach_pre_observation(
+        self, result: ToolResult, observation: ToolResult,
+    ) -> ToolResult:
+        content: Any = result.content
+        if isinstance(content, dict):
+            merged_content = dict(content)
+        elif isinstance(content, str):
+            merged_content = {"text": content}
+        else:
+            merged_content = {"value": content}
+        merged_content["pre_observation"] = {
+            "ok": bool(observation.ok),
+            "content": observation.content,
+            "error": observation.error,
+        }
+        metadata = dict(result.metadata or {})
+        metadata["pre_observation"] = merged_content["pre_observation"]
+        return ToolResult(
+            call_id=result.call_id,
+            ok=result.ok,
+            content=merged_content,
+            error=result.error,
+            latency_ms=result.latency_ms,
+            side_effects=result.side_effects,
+            schema_version=result.schema_version,
+            metadata=metadata,
+        )
 
     async def close_session(self, session_id: str) -> None:
         """Fan-out to children that implement session teardown."""

@@ -269,6 +269,20 @@ class _FakePage:
     async def evaluate(self, expr: str, *args: Any) -> Any:
         # Snapshot dispatches three different JS scripts; match the
         # most specific first.
+        if "document.querySelector(selector)" in expr:
+            selector = args[0] if args else None
+            if self.last_fill and self.last_fill[0] == selector:
+                return {"found": True, "value": self.last_fill[1]}
+            return {"found": False, "value": None}
+        if "document.activeElement" in expr:
+            return {
+                "tag": "INPUT", "id": "q", "name": "q",
+                "type": "text", "role": None,
+                "placeholder": "Search", "value": "",
+                "text": "",
+            }
+        if "querySelectorAll('*').length" in expr:
+            return {"elements": 4, "buttons": 1, "inputs": 1, "links": 1, "textLength": 15}
         if "input, textarea, select" in expr:
             return [
                 {
@@ -510,6 +524,11 @@ async def test_observe_returns_unified_browser_observation(
     assert obs.content["state"] in {"ready", "loading", "script_error", "network_failed"}
     assert obs.content["url"] == "https://example.com"
     assert "readyState" in obs.content
+    assert "active_element" in obs.content
+    assert "input_values" in obs.content
+    assert "dom_hash" in obs.content
+    assert "ref_hash" in obs.content
+    assert "trace_path" in obs.content
     assert obs.content["visible_inputs"]
     assert obs.content["visible_buttons"]
     assert obs.content["dialogs"] == obs.content["pending_dialogs"]
@@ -597,9 +616,51 @@ async def test_click_returns_rich_state_no_navigation(
     assert verification["before"]["url"] == "https://example.com"
     assert verification["after"]["url"] == "https://example.com"
     assert "screenshot_changed" in verification
+    assert "dom_changed" in verification
+    assert "refs_changed" in verification
+    assert "active_element_changed" in verification
+    assert "input_values_changed" in verification
     assert verification["after"]["screenshot_path"]
     # Fake page records the click target.
     assert patched_browser._pages["s1"].last_click == "#some-button"
+
+
+@pytest.mark.asyncio
+async def test_fill_strongly_verifies_input_value(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser_open", {"url": "https://example.com"},
+        session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser",
+        {"action": "fill", "selector": "input#q", "value": "hello"},
+        session_id="s1",
+    ))
+    assert r.ok is True
+    check = r.content["input_value_verification"]
+    assert check["found"] is True
+    assert check["value"] == "hello"
+    assert check["verified"] is True
+    assert r.content["verification"]["input_values_changed"] in {True, False}
+    assert r.content["trace_path"]
+
+
+@pytest.mark.asyncio
+async def test_browser_trace_replay_returns_events(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser", {"action": "observe"}, session_id="s1",
+    ))
+    r = await patched_browser.invoke(_call(
+        "browser", {"action": "trace", "tail": 5}, session_id="s1",
+    ))
+    assert r.ok is True
+    assert r.content["kind"] == "AutomationTraceReplay"
+    assert r.content["events"]
+    assert r.content["trace_path"]
 
 
 @pytest.mark.asyncio

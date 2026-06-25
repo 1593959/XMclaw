@@ -87,6 +87,7 @@ from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
+from xmclaw.providers.tool.automation_runtime import AutomationTraceRecorder
 
 
 # ── Defaults / caps ───────────────────────────────────────────────────
@@ -798,10 +799,16 @@ _LEGACY_TOOL_MAP: dict[str, tuple[str, dict]] = {
 }
 
 _READ_ONLY_ACTIONS = {
-    "observe", "capture", "screen_size", "cursor_position", "list_windows",
+    "observe", "trace", "capture", "screen_size", "cursor_position", "list_windows",
     "window_list", "ocr", "find_text", "find_on_screen", "region_capture",
     "screen_region_capture", "find_image", "find_image_on_screen",
     "ui_inspect",
+}
+
+_COORDINATE_ROUTE_ACTIONS = {
+    "move", "click", "double_click", "right_click", "drag", "scroll", "type", "key",
+    "mouse_move", "mouse_click", "mouse_drag", "mouse_scroll", "keyboard_type",
+    "keyboard_press",
 }
 
 _MUTATING_ACTIONS = {
@@ -952,6 +959,10 @@ class ComputerUseTools(ToolProvider):
         *,
         screenshot_dir: str | Path | None = None,
         base64_size_cap: int = 512 * 1024,
+        trace_enabled: bool = True,
+        hard_route_switch: bool = True,
+        no_change_threshold: int = 2,
+        capture_after_default: bool = True,
     ) -> None:
         if screenshot_dir is None:
             from xmclaw.utils.paths import data_dir
@@ -983,6 +994,11 @@ class ComputerUseTools(ToolProvider):
         self._last_observation: dict[str, Any] | None = None
         self._last_screen_hash: str | None = None
         self._no_change_streak: int = 0
+        self._trace_enabled = bool(trace_enabled)
+        self._hard_route_switch = bool(hard_route_switch)
+        self._no_change_threshold = max(1, int(no_change_threshold))
+        self._capture_after_default = bool(capture_after_default)
+        self._trace = AutomationTraceRecorder("computer")
 
     def list_tools(self) -> list[ToolSpec]:
         return [_COMPUTER_USE_SPEC]
@@ -1122,7 +1138,7 @@ class ComputerUseTools(ToolProvider):
         content["capture_after"] = True
         content["post_capture_path"] = path
         content["coordinate_space"] = self._coordinate_space()
-        if self._no_change_streak >= 2:
+        if self._no_change_streak >= self._no_change_threshold:
             content["strategy_switch_required"] = True
             content["recoveries"] = self._computer_recoveries("no_visual_change")
         metadata = dict(result.metadata or {})
@@ -1164,7 +1180,7 @@ class ComputerUseTools(ToolProvider):
             },
             "no_change_streak": self._no_change_streak,
             "recoveries": self._computer_recoveries(
-                "no_visual_change" if self._no_change_streak >= 2 else "observe"
+                "no_visual_change" if self._no_change_streak >= self._no_change_threshold else "observe"
             ),
             "recommended_next_actions": self._computer_next_actions(),
         }
@@ -1223,6 +1239,18 @@ class ComputerUseTools(ToolProvider):
         if include_action_log:
             observation["action_log"] = list(self._action_log[-30:])
 
+        session_id = call.session_id or "default"
+        observation["trace_path"] = self._computer_trace_append(
+            session_id,
+            "observe",
+            {
+                "no_change_streak": self._no_change_streak,
+                "active_window": observation.get("active_window"),
+                "screen_size": observation.get("screen_size"),
+                "has_ocr": "ocr" in observation,
+                "has_uia": "uia" in observation,
+            },
+        )
         self._last_observation = observation
         metadata: dict[str, Any] = {"computer_observation": observation}
         shot = observation.get("screenshot")
@@ -1244,10 +1272,33 @@ class ComputerUseTools(ToolProvider):
         if not result.ok:
             metadata.setdefault("recoveries", self._computer_recoveries(action))
         metadata.setdefault("coordinate_space", self._coordinate_space())
+        trace_path = self._computer_trace_append(
+            call.session_id or "default",
+            "action_finished",
+            {
+                "action": action,
+                "ok": bool(result.ok),
+                "error": result.error,
+                "no_change_streak": self._no_change_streak,
+                "recoveries": metadata.get("recoveries"),
+            },
+        )
+        metadata["trace_path"] = trace_path
+        content = result.content
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content) if content else {}
+            except Exception:  # noqa: BLE001
+                parsed = {"text": content}
+            if trace_path:
+                parsed.setdefault("trace_path", trace_path)
+            if not result.ok:
+                parsed.setdefault("recoveries", metadata.get("recoveries"))
+            content = json.dumps(parsed, ensure_ascii=False)
         return ToolResult(
             call_id=result.call_id,
             ok=result.ok,
-            content=result.content,
+            content=content,
             error=result.error,
             latency_ms=(time.perf_counter() - t0) * 1000.0,
             side_effects=result.side_effects,
@@ -1281,7 +1332,7 @@ class ComputerUseTools(ToolProvider):
         return info
 
     def _computer_next_actions(self) -> list[dict[str, str]]:
-        if self._no_change_streak >= 2:
+        if self._no_change_streak >= self._no_change_threshold:
             return [
                 {"action": "ui_inspect/ui_click", "reason": "连续动作无画面变化，优先换 UIA 控件路线。"},
                 {"action": "ocr/find_text", "reason": "UIA 不可用时改用 OCR 文本定位。"},
@@ -1312,6 +1363,13 @@ class ComputerUseTools(ToolProvider):
                 {"route": "observe", "reason": "输入后检查光标位置与文本变化。"},
             ]
         return [{"route": "observe", "reason": "重新汇总桌面状态后再选择路线。"}]
+
+    def _computer_trace_append(
+        self, session_id: str, event_type: str, payload: dict[str, Any],
+    ) -> str | None:
+        if not self._trace_enabled:
+            return None
+        return self._trace.append(session_id, event_type, payload)
 
     async def _update_sticky_window(self) -> None:
         """Record foreground window into sticky state (Windows only)."""
@@ -1532,7 +1590,26 @@ class ComputerUseTools(ToolProvider):
         if block_reason:
             return _fail(call, t0, f"BLOCKED: {block_reason}")
 
-        capture_after = args.get("capture_after", action in _MUTATING_ACTIONS)
+        if action == "trace":
+            return self._trace_result(call, t0, args)
+
+        if (
+            self._hard_route_switch
+            and self._no_change_streak >= self._no_change_threshold
+            and action in _COORDINATE_ROUTE_ACTIONS
+            and not bool(args.get("force_same_route"))
+        ):
+            return await self._finalize_runtime_result(
+                call,
+                t0,
+                action,
+                self._strategy_switch_block(call, t0, action),
+            )
+
+        capture_after = args.get(
+            "capture_after",
+            self._capture_after_default and action in _MUTATING_ACTIONS,
+        )
         if isinstance(capture_after, str):
             capture_after = capture_after.lower() in ("true", "1", "yes")
         capture_after = bool(capture_after)
@@ -1655,6 +1732,51 @@ class ComputerUseTools(ToolProvider):
         if result is not None:
             return await self._finalize_runtime_result(call, t0, action, result)
         return _fail(call, t0, f"unknown action: {action!r}")
+
+    def _trace_result(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        limit = int(args.get("tail", 80) or 80)
+        session_id = call.session_id or "default"
+        path = str(self._trace.path_for(session_id))
+        content = {
+            "kind": "AutomationTraceReplay",
+            "surface": "computer",
+            "session_id": session_id,
+            "trace_path": path,
+            "events": self._trace.read_tail(session_id, limit),
+            "replay_contract": "observe -> act -> verify -> recover",
+        }
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content=json.dumps(content, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"trace_path": path},
+        )
+
+    def _strategy_switch_block(
+        self, call: ToolCall, t0: float, action: str,
+    ) -> ToolResult:
+        content = {
+            "strategy_switch_required": True,
+            "blocked_action": action,
+            "blocked_reason": (
+                "screen did not visually change after repeated actions; "
+                "runtime requires switching route before retrying"
+            ),
+            "no_change_streak": self._no_change_streak,
+            "recoveries": self._computer_recoveries("no_visual_change"),
+            "required_next_actions": self._computer_next_actions(),
+            "force_override": "set force_same_route=true only after user confirmation",
+        }
+        return ToolResult(
+            call_id=call.id,
+            ok=False,
+            content=json.dumps(content, ensure_ascii=False),
+            error="automation strategy switch required after repeated no-change actions",
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
 
 
     # ── pyautogui import gate ──────────────────────────────────────

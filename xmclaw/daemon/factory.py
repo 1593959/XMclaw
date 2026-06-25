@@ -1500,10 +1500,17 @@ def build_tools_from_config(
         try:
             from xmclaw.providers.tool.browser import BrowserTools
             bcfg = tools_section.get("browser", {}) or {}
+            automation_cfg = cfg.get("automation", {}) or {}
+            automation_runtime = automation_cfg.get("runtime", {}) or {}
+            automation_browser = automation_cfg.get("browser", {}) or {}
             children.append(BrowserTools(
                 allowed_hosts=bcfg.get("allowed_hosts"),
-                headless=bool(bcfg.get("headless", True)),
+                headless=bool(bcfg.get("headless", False)),
                 timeout_ms=int(bcfg.get("timeout_ms", 15_000)),
+                trace_enabled=bool(automation_runtime.get("trace_enabled", True)),
+                verify_after_action=bool(automation_runtime.get("verify_after_action", True)),
+                dom_ref_diff=bool(automation_browser.get("dom_ref_diff", True)),
+                input_value_verify=bool(automation_browser.get("input_value_verify", True)),
             ))
         except ImportError:
             # playwright optional-dep not installed -- log-skippable,
@@ -1539,11 +1546,18 @@ def build_tools_from_config(
     if cu_enabled:
         try:
             from xmclaw.providers.tool.computer_use import ComputerUseTools
+            automation_cfg = cfg.get("automation", {}) or {}
+            automation_runtime = automation_cfg.get("runtime", {}) or {}
+            automation_computer = automation_cfg.get("computer", {}) or {}
             children.append(ComputerUseTools(
                 screenshot_dir=cu_cfg.get("screenshot_dir") or None,
                 base64_size_cap=int(
                     cu_cfg.get("base64_size_cap", 512 * 1024),
                 ),
+                trace_enabled=bool(automation_runtime.get("trace_enabled", True)),
+                hard_route_switch=bool(automation_computer.get("hard_route_switch", True)),
+                no_change_threshold=int(automation_computer.get("no_change_threshold", 2)),
+                capture_after_default=bool(automation_computer.get("capture_after_default", True)),
             ))
         except Exception as _exc:  # noqa: BLE001 — never block boot over an optional tool
             get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
@@ -1677,7 +1691,13 @@ def build_tools_from_config(
         provider = builtins  # no extras wired -- skip the composite wrapper
     else:
         from xmclaw.providers.tool.composite import CompositeToolProvider
-        provider = CompositeToolProvider(*children)
+        automation_runtime = (cfg.get("automation", {}) or {}).get("runtime", {}) or {}
+        provider = CompositeToolProvider(
+            *children,
+            automation_observe_required=bool(
+                automation_runtime.get("observe_required", True)
+            ),
+        )
 
     # 2026-05-12 Batch B.2: ErrorAwareRetryProvider — LLM-guided fixup
     # layer for SEMANTIC tool failures (wrong args, wrong tool).
@@ -1748,7 +1768,14 @@ def build_tools_from_config(
                 ),
                 enabled=True,
             )
-            provider = CompositeToolProvider(provider, subagent_provider)
+            automation_runtime = (cfg.get("automation", {}) or {}).get("runtime", {}) or {}
+            provider = CompositeToolProvider(
+                provider,
+                subagent_provider,
+                automation_observe_required=bool(
+                    automation_runtime.get("observe_required", True)
+                ),
+            )
         except Exception as _exc:  # noqa: BLE001
             get_aggregator().record(ErrorSeverity.WARNING, __name__, "_canvas_listener", _exc)
             pass
@@ -1762,7 +1789,14 @@ def build_tools_from_config(
         _media_tools = _build_media_tool_providers(cfg)
         if _media_tools:
             from xmclaw.providers.tool.composite import CompositeToolProvider
-            provider = CompositeToolProvider(provider, *_media_tools)
+            automation_runtime = (cfg.get("automation", {}) or {}).get("runtime", {}) or {}
+            provider = CompositeToolProvider(
+                provider,
+                *_media_tools,
+                automation_observe_required=bool(
+                    automation_runtime.get("observe_required", True)
+                ),
+            )
     except Exception as _exc:  # noqa: BLE001
         get_aggregator().record(ErrorSeverity.WARNING, __name__, "_media_tools", _exc)
         pass
@@ -2519,7 +2553,14 @@ def build_agent_from_config(
             from xmclaw.providers.tool.composite import CompositeToolProvider
             bridge = MemoryToolBridge(memory_arg)
             if bridge.list_tools():
-                tools = CompositeToolProvider(tools, bridge)
+                automation_runtime = (cfg.get("automation", {}) or {}).get("runtime", {}) or {}
+                tools = CompositeToolProvider(
+                    tools,
+                    bridge,
+                    automation_observe_required=bool(
+                        automation_runtime.get("observe_required", True)
+                    ),
+                )
             _build_status["memory_bridge"] = "ok"
         except Exception as _exc:  # noqa: BLE001 — bridge failure should not
             get_aggregator().record(ErrorSeverity.WARNING, __name__, "build_agent_from_config", _exc)

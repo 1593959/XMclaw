@@ -37,6 +37,26 @@ class _Stub(ToolProvider):
         self.shut_called = True
 
 
+class _AutomationStub(ToolProvider):
+    def __init__(self) -> None:
+        self.calls: list[ToolCall] = []
+
+    def list_tools(self) -> list[ToolSpec]:
+        return [ToolSpec(
+            name="browser", description="stub",
+            parameters_schema={"type": "object", "properties": {}},
+        )]
+
+    async def invoke(self, call: ToolCall) -> ToolResult:
+        self.calls.append(call)
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content={"action": call.args.get("action")},
+            side_effects=(),
+        )
+
+
 def test_list_tools_concatenates_in_order() -> None:
     a, b = _Stub("a"), _Stub("b")
     c = CompositeToolProvider(a, b)
@@ -57,6 +77,40 @@ async def test_invoke_routes_by_name() -> None:
     assert ra.ok is True and ra.content == "from-a"
     rb = await c.invoke(ToolCall(name="b", args={}, provenance="synthetic"))
     assert rb.ok is True and rb.content == "from-b"
+
+
+@pytest.mark.asyncio
+async def test_automation_action_auto_observes_before_acting() -> None:
+    child = _AutomationStub()
+    c = CompositeToolProvider(child)
+    r = await c.invoke(ToolCall(
+        name="browser",
+        args={"action": "click", "selector": "#go"},
+        provenance="synthetic",
+        session_id="s1",
+    ))
+    assert r.ok is True
+    assert [call.args.get("action") for call in child.calls] == ["observe", "click"]
+    assert r.content["pre_observation"]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_automation_recent_observe_is_reused() -> None:
+    child = _AutomationStub()
+    c = CompositeToolProvider(child)
+    await c.invoke(ToolCall(
+        name="browser",
+        args={"action": "observe"},
+        provenance="synthetic",
+        session_id="s1",
+    ))
+    await c.invoke(ToolCall(
+        name="browser",
+        args={"action": "click", "selector": "#go"},
+        provenance="synthetic",
+        session_id="s1",
+    ))
+    assert [call.args.get("action") for call in child.calls] == ["observe", "click"]
 
 
 @pytest.mark.asyncio

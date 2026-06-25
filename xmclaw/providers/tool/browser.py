@@ -56,6 +56,10 @@ from urllib.parse import urlparse
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
 from xmclaw.providers.tool.base import ToolProvider
+from xmclaw.providers.tool.automation_runtime import (
+    AutomationTraceRecorder,
+    stable_json_hash,
+)
 
 
 # Wave 24 stealth — pretend we're a normal headed Chrome. Sites pattern-
@@ -112,7 +116,7 @@ _BROWSER_ACTIONS = [
     "tabs", "tab_switch", "tab_close", "screenshot", "snapshot", "eval",
     "close", "click_ref", "type_ref", "dialog", "dialog_arm",
     "network_log", "download_next", "save_state", "list_states",
-    "import_cookies", "get_console", "use_my_browser",
+    "import_cookies", "get_console", "use_my_browser", "trace",
 ]
 
 _MUTATING_ACTIONS = {
@@ -1247,6 +1251,10 @@ class BrowserTools(ToolProvider):
         headless: bool = False,
         timeout_ms: int = 15_000,
         evaluate_enabled: bool = True,
+        trace_enabled: bool = True,
+        verify_after_action: bool = True,
+        dom_ref_diff: bool = True,
+        input_value_verify: bool = True,
     ) -> None:
         self._allowed = set(allowed_hosts) if allowed_hosts else None
         # 2026-05-28 P2.8: gate on arbitrary JS execution. When False,
@@ -1265,6 +1273,10 @@ class BrowserTools(ToolProvider):
         # tasks must opt into headless by passing visible=false.
         self._default_headless = headless
         self._timeout_ms = timeout_ms
+        self._trace_enabled = bool(trace_enabled)
+        self._verify_after_action = bool(verify_after_action)
+        self._dom_ref_diff = bool(dom_ref_diff)
+        self._input_value_verify = bool(input_value_verify)
         # Shared across sessions -- Playwright / browser are expensive
         # to start (~1s), cheap per-session context on top. Wave 23
         # split: maintain TWO long-lived browsers (one headless, one
@@ -1369,6 +1381,7 @@ class BrowserTools(ToolProvider):
         self._action_log: dict[str, list[dict[str, Any]]] = {}
         self._last_observation: dict[str, dict[str, Any]] = {}
         self._session_state: dict[str, str] = {}
+        self._trace = AutomationTraceRecorder("browser")
         # Guard the lazy init with a lock to avoid multiple concurrent
         # tool calls trying to spin up the browser at once.
         self._boot_lock = asyncio.Lock()
@@ -1443,10 +1456,13 @@ class BrowserTools(ToolProvider):
         if capture_after is None:
             capture_after = action in _MUTATING_ACTIONS
         verify_before: dict[str, Any] | None = None
-        if action in _MUTATING_ACTIONS:
+        if action in _MUTATING_ACTIONS and self._verify_after_action:
             verify_before = await self._browser_verify_snapshot(call, t0)
 
         # Dispatch to existing private methods (unchanged).
+        if action == "trace":
+            return self._trace_result(call, t0)
+
         if action == "observe":
             result = await self._observe(call, t0)
         elif action == "navigate":
@@ -1536,6 +1552,33 @@ class BrowserTools(ToolProvider):
         )
         return result
 
+    def _trace_result(self, call: ToolCall, t0: float) -> ToolResult:
+        sid = call.session_id or "default"
+        limit = int(call.args.get("tail", 80) or 80)
+        path = str(self._trace.path_for(sid))
+        content = {
+            "kind": "AutomationTraceReplay",
+            "surface": "browser",
+            "session_id": sid,
+            "trace_path": path,
+            "events": self._trace.read_tail(sid, limit),
+            "replay_contract": "observe -> act -> verify -> recover",
+        }
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content=content,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata={"trace_path": path},
+        )
+
+    def _browser_trace_append(
+        self, sid: str, event_type: str, payload: dict[str, Any],
+    ) -> str | None:
+        if not self._trace_enabled:
+            return None
+        return self._trace.append(sid, event_type, payload)
+
     async def _append_screenshot(
         self, call: ToolCall, t0: float, prior: ToolResult,
     ) -> ToolResult:
@@ -1593,6 +1636,11 @@ class BrowserTools(ToolProvider):
                     {"action": "navigate", "reason": "当前会话还没有打开页面。"},
                 ],
             }
+            obs["trace_path"] = self._browser_trace_append(
+                sid,
+                "observe",
+                {"state": "no_page", "has_page": False},
+            )
             self._last_observation[sid] = obs
             return ToolResult(
                 call_id=call.id,
@@ -1674,6 +1722,15 @@ class BrowserTools(ToolProvider):
             "recoveries": self._browser_recoveries(state),
             "recommended_next_actions": self._browser_next_actions(state, refs),
         }
+        if self._dom_ref_diff or self._input_value_verify:
+            page_state = await self._browser_page_state(page, sid)
+            obs.update({
+                "active_element": page_state.get("active_element"),
+                "input_values": page_state.get("input_values", []),
+                "dom_counts": page_state.get("dom_counts", {}),
+                "dom_hash": page_state.get("dom_hash"),
+                "ref_hash": page_state.get("ref_hash"),
+            })
         screenshot_result = await self._screenshot(
             ToolCall(
                 name="browser",
@@ -1689,6 +1746,19 @@ class BrowserTools(ToolProvider):
             obs["screenshot"] = screenshot_result.content
         if include_log:
             obs["action_log"] = list(self._action_log.get(sid, []))[-20:]
+        obs["trace_path"] = self._browser_trace_append(
+            sid,
+            "observe",
+            {
+                "state": state,
+                "url": url,
+                "title": title,
+                "readyState": ready_state,
+                "ref_count": len(refs),
+                "dom_hash": obs.get("dom_hash"),
+                "ref_hash": obs.get("ref_hash"),
+            },
+        )
         self._session_state[sid] = state
         self._last_observation[sid] = obs
         return ToolResult(
@@ -1709,16 +1779,26 @@ class BrowserTools(ToolProvider):
     ) -> ToolResult:
         sid = call.session_id or "default"
         self._record_browser_action(sid, action, result)
+        trace_payload: dict[str, Any] = {
+            "action": action,
+            "ok": bool(result.ok),
+            "error": result.error,
+        }
         if action == "observe":
             return result
         if action not in _MUTATING_ACTIONS:
             if result.ok:
                 return result
             return self._merge_browser_recoveries(result, self._browser_recoveries(action))
-        if action in _MUTATING_ACTIONS:
+        if action in _MUTATING_ACTIONS and self._verify_after_action:
             verify_after = await self._browser_verify_snapshot(call, t0)
             result = self._merge_browser_verification(
                 result, verify_before or {}, verify_after,
+            )
+            trace_payload["verification"] = (
+                result.content.get("verification")
+                if isinstance(result.content, dict)
+                else None
             )
         if result.ok:
             obs_result = await self._observe(
@@ -1736,8 +1816,21 @@ class BrowserTools(ToolProvider):
                 t0,
             )
             if obs_result.ok:
-                return self._merge_browser_observation(result, obs_result.content)
-        return self._merge_browser_recoveries(result, self._browser_recoveries(action))
+                result = self._merge_browser_observation(result, obs_result.content)
+                trace_payload["observation_state"] = (
+                    obs_result.content.get("state")
+                    if isinstance(obs_result.content, dict)
+                    else None
+                )
+                path = self._browser_trace_append(sid, "action_finished", trace_payload)
+                return self._merge_browser_trace_path(result, path)
+        result = self._merge_browser_recoveries(result, self._browser_recoveries(action))
+        path = self._browser_trace_append(
+            sid,
+            "action_finished",
+            {**trace_payload, "recoveries": self._browser_recoveries(action)},
+        )
+        return self._merge_browser_trace_path(result, path)
 
     async def _browser_verify_snapshot(
         self, call: ToolCall, t0: float,
@@ -1769,6 +1862,9 @@ class BrowserTools(ToolProvider):
             "readyState": ready_state,
             "ref_count": len(self._session_refs.get(sid, {}) or {}),
         }
+        if self._dom_ref_diff or self._input_value_verify:
+            page_state = await self._browser_page_state(page, sid)
+            out.update(page_state)
         try:
             shot = await self._screenshot(
                 ToolCall(
@@ -1788,6 +1884,76 @@ class BrowserTools(ToolProvider):
             out["screenshot_error"] = str(exc)
         return out
 
+    async def _browser_page_state(self, page: Any, sid: str) -> dict[str, Any]:
+        """Collect DOM/ref/input state used by action verification."""
+        state: dict[str, Any] = {}
+        try:
+            active = await page.evaluate(
+                """() => {
+                    const el = document.activeElement;
+                    if (!el) return null;
+                    const value = "value" in el ? String(el.value ?? "") : "";
+                    return {
+                        tag: el.tagName,
+                        id: el.id || null,
+                        name: el.getAttribute("name"),
+                        type: el.getAttribute("type"),
+                        role: el.getAttribute("role"),
+                        placeholder: el.getAttribute("placeholder"),
+                        value,
+                        text: (el.innerText || el.textContent || "").trim().slice(0, 120),
+                    };
+                }"""
+            )
+            state["active_element"] = active
+        except Exception as exc:  # noqa: BLE001
+            state["active_element_error"] = str(exc)
+
+        try:
+            inputs = await page.evaluate(
+                """() => Array.from(document.querySelectorAll('input, textarea, select'))
+                    .slice(0, 80)
+                    .map((el, index) => ({
+                        index,
+                        tag: el.tagName,
+                        id: el.id || null,
+                        name: el.getAttribute('name'),
+                        type: el.getAttribute('type'),
+                        placeholder: el.getAttribute('placeholder'),
+                        value: 'value' in el ? String(el.value ?? '') : '',
+                        checked: 'checked' in el ? Boolean(el.checked) : null,
+                    }))"""
+            )
+            state["input_values"] = inputs if isinstance(inputs, list) else []
+        except Exception as exc:  # noqa: BLE001
+            state["input_values_error"] = str(exc)
+            state["input_values"] = []
+
+        try:
+            dom_counts = await page.evaluate(
+                """() => ({
+                    elements: document.querySelectorAll('*').length,
+                    buttons: document.querySelectorAll('button,[role="button"],input[type="button"],input[type="submit"]').length,
+                    inputs: document.querySelectorAll('input,textarea,select').length,
+                    links: document.querySelectorAll('a[href]').length,
+                    textLength: (document.body && document.body.innerText || '').length,
+                })"""
+            )
+            state["dom_counts"] = dom_counts if isinstance(dom_counts, dict) else {}
+        except Exception as exc:  # noqa: BLE001
+            state["dom_counts_error"] = str(exc)
+            state["dom_counts"] = {}
+
+        refs = self._session_refs.get(sid, {}) or {}
+        state["dom_hash"] = stable_json_hash({
+            "url": str(getattr(page, "url", "") or ""),
+            "active": state.get("active_element"),
+            "inputs": state.get("input_values", []),
+            "counts": state.get("dom_counts", {}),
+        })
+        state["ref_hash"] = stable_json_hash(refs)
+        return state
+
     def _merge_browser_verification(
         self,
         result: ToolResult,
@@ -1806,6 +1972,10 @@ class BrowserTools(ToolProvider):
             "url_changed": before.get("url") != after.get("url"),
             "title_changed": before.get("title") != after.get("title"),
             "ref_count_changed": before.get("ref_count") != after.get("ref_count"),
+            "dom_changed": before.get("dom_hash") != after.get("dom_hash"),
+            "refs_changed": before.get("ref_hash") != after.get("ref_hash"),
+            "active_element_changed": before.get("active_element") != after.get("active_element"),
+            "input_values_changed": before.get("input_values") != after.get("input_values"),
             "screenshot_changed": screenshot_changed,
             "recoveries": [] if result.ok else self._browser_recoveries("verify_failed"),
         }
@@ -1817,6 +1987,28 @@ class BrowserTools(ToolProvider):
         content["verification"] = verification
         metadata = dict(result.metadata or {})
         metadata["browser_verification"] = verification
+        return ToolResult(
+            call_id=result.call_id,
+            ok=result.ok,
+            content=content,
+            error=result.error,
+            latency_ms=result.latency_ms,
+            side_effects=result.side_effects,
+            schema_version=result.schema_version,
+            metadata=metadata,
+        )
+
+    def _merge_browser_trace_path(self, result: ToolResult, path: str | None) -> ToolResult:
+        if not path:
+            return result
+        content = (
+            dict(result.content)
+            if isinstance(result.content, dict)
+            else {"text": result.content}
+        )
+        content["trace_path"] = path
+        metadata = dict(result.metadata or {})
+        metadata["trace_path"] = path
         return ToolResult(
             call_id=result.call_id,
             ok=result.ok,
@@ -3278,10 +3470,37 @@ class BrowserTools(ToolProvider):
             return _fail(call, t0, str(exc))
         except Exception as exc:  # noqa: BLE001
             return _fail(call, t0, f"fill failed: {type(exc).__name__}: {exc}")
+        value_check: dict[str, Any] = {
+            "selector": sel,
+            "expected_value": val,
+            "verified": False,
+        }
+        if not self._input_value_verify:
+            value_check["skipped"] = "input_value_verify disabled"
+        else:
+            try:
+                checked = await page.evaluate(
+                    """(selector) => {
+                        const el = document.querySelector(selector);
+                        if (!el) return {found: false, value: null};
+                        const value = "value" in el ? String(el.value ?? "") : String(el.textContent ?? "");
+                        return {found: true, value};
+                    }""",
+                    sel,
+                )
+                if isinstance(checked, dict):
+                    value_check.update(checked)
+                    value_check["verified"] = bool(checked.get("found")) and checked.get("value") == val
+            except Exception as exc:  # noqa: BLE001
+                value_check["error"] = str(exc)
         await self._bring_to_foreground(self._sid(call), page)
         return ToolResult(
             call_id=call.id, ok=True,
-            content=f"filled {sel!r} with {len(val)} chars",
+            content={
+                "text": f"filled {sel!r} with {len(val)} chars",
+                "selector": sel,
+                "input_value_verification": value_check,
+            },
             side_effects=(), latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 

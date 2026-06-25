@@ -4,7 +4,7 @@ import { apiGetFresh, apiPatch } from "../lib/api";
 import { useApp } from "../store/app";
 
 type FieldType = "boolean" | "integer" | "number" | "string" | "string_list" | "select";
-type GroupId = "security" | "voice" | "models" | "memory" | "skills" | "runtime";
+type GroupId = "security" | "voice" | "models" | "memory" | "skills" | "runtime" | "automation";
 type DraftValue = string | boolean;
 
 interface ControlField {
@@ -32,6 +32,7 @@ const GROUPS: { id: GroupId; label: string }[] = [
   { id: "models", label: "模型" },
   { id: "memory", label: "记忆" },
   { id: "skills", label: "技能" },
+  { id: "automation", label: "自动化" },
   { id: "runtime", label: "运行时" },
 ];
 
@@ -113,7 +114,7 @@ export default function ControlCenter() {
           <div>
             <h2 className="text-base font-semibold">控制中心</h2>
             <p className="text-xs text-mc-faint mt-0.5">
-              安全、语音、模型、记忆、技能和 Agent 运行时配置。
+              安全、语音、模型、记忆、技能、自动化和 Agent 运行时配置。
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -156,6 +157,7 @@ export default function ControlCenter() {
           <div className="text-sm text-mc-err">控制中心配置接口不可用。</div>
         ) : (
           <div className="max-w-5xl space-y-3">
+            {tab === "automation" && <AutomationContract />}
             <div className="text-[11px] text-mc-faint">
               配置文件：{snapshot.config_path || "当前 daemon 未暴露 config_path"}
             </div>
@@ -176,6 +178,27 @@ export default function ControlCenter() {
         )}
       </div>
     </div>
+  );
+}
+
+function AutomationContract() {
+  return (
+    <section className="border border-mc-border rounded-md bg-mc-panel/40">
+      <div className="px-4 py-3 border-b border-mc-border">
+        <div className="text-sm font-medium">自动化运行时契约</div>
+        <div className="text-xs text-mc-faint mt-0.5">
+          Browser 和 Computer Use 统一执行“观察、执行、验证、恢复”。
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-4 divide-y md:divide-y-0 md:divide-x divide-mc-border/70">
+        {["先观察", "执行动作", "强验证", "失败换路"].map((item) => (
+          <div key={item} className="px-4 py-3">
+            <div className="text-sm font-medium">{item}</div>
+            <div className="text-[11px] text-mc-muted mt-1">由运行时默认执行并写入 trace。</div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

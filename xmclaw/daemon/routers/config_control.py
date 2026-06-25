@@ -301,6 +301,38 @@ CONFIG_FIELDS: dict[str, dict[str, Any]] = {
         "runtime", "工具超时时间（秒）", "number",
         description="单个工具调用的默认超时时间。",
     ),
+    "automation.runtime.observe_required": _field(
+        "automation", "强制先观察", "boolean",
+        description="自动化动作执行前必须先生成 BrowserObservation 或 ScreenObservation。",
+    ),
+    "automation.runtime.verify_after_action": _field(
+        "automation", "动作后强验证", "boolean",
+        description="点击、输入、滚动、导航后默认采集 before/after 并返回变化证据。",
+    ),
+    "automation.runtime.trace_enabled": _field(
+        "automation", "启用 Trace / Replay", "boolean",
+        description="把 observe、action、verification 和 recovery 写入 JSONL trace，便于复盘。",
+    ),
+    "automation.browser.dom_ref_diff": _field(
+        "automation", "浏览器 DOM/ref diff", "boolean",
+        description="浏览器动作后比较 DOM、refs、activeElement 和输入值变化。",
+    ),
+    "automation.browser.input_value_verify": _field(
+        "automation", "浏览器输入值校验", "boolean",
+        description="fill/type 后读取真实 input value，防止只调用成功但页面未生效。",
+    ),
+    "automation.computer.hard_route_switch": _field(
+        "automation", "桌面硬换路", "boolean",
+        description="连续无视觉变化时阻断同一路线，要求切换 UIA、OCR、SOM 或询问用户。",
+    ),
+    "automation.computer.no_change_threshold": _field(
+        "automation", "无变化阈值", "integer",
+        description="桌面自动化连续多少次无视觉变化后必须换路。",
+    ),
+    "automation.computer.capture_after_default": _field(
+        "automation", "动作后默认截图", "boolean",
+        description="桌面点击、输入、滚动后默认截图并计算视觉变化。",
+    ),
     "cognition.continuous_loop.enabled": _field(
         "runtime", "连续运行循环", "boolean",
         description="启用后台认知循环和主动任务。",
@@ -483,8 +515,13 @@ def _coerce_value(path: str, value: Any, meta: dict[str, Any]) -> Any:
             raise ValueError(f"{path} must be list of strings")
         return value
     options = meta.get("options")
-    if options and value not in options:
-        raise ValueError(f"{path} must be one of {', '.join(options)}")
+    if options:
+        if value == "" or value is None:
+            # 对于未设置过的 select 字段，使用第一个选项作为默认值
+            # 这样老配置文件缺少新字段时不会报错
+            return options[0]
+        if value not in options:
+            raise ValueError(f"{path} must be one of {', '.join(options)}")
     return value
 
 

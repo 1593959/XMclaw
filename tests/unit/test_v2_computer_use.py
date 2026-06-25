@@ -205,13 +205,19 @@ async def test_screen_capture_invalid_monitor(tools, fake_mss):
 async def test_screen_size_returns_dims(tools, fake_pyautogui):
     r = await tools.invoke(_call("screen_size"))
     assert r.ok
-    assert _json(r) == {"width": 1920, "height": 1080}
+    payload = _json(r)
+    assert payload["width"] == 1920
+    assert payload["height"] == 1080
+    assert payload["trace_path"]
 
 
 async def test_cursor_position_returns_xy(tools, fake_pyautogui):
     r = await tools.invoke(_call("cursor_position"))
     assert r.ok
-    assert _json(r) == {"x": 123, "y": 456}
+    payload = _json(r)
+    assert payload["x"] == 123
+    assert payload["y"] == 456
+    assert payload["trace_path"]
 
 
 async def test_observe_returns_unified_screen_observation(
@@ -233,7 +239,54 @@ async def test_observe_returns_unified_screen_observation(
     assert payload["windows"]["count"] >= 1
     assert "coordinate_space" in payload
     assert "screenshot" in payload
+    assert "trace_path" in payload
     assert r.metadata.get("attach_image") == payload["screenshot"]["path"]
+
+
+async def test_trace_replay_returns_events(
+    tools, fake_mss, fake_pyautogui, fake_pygetwindow,
+):
+    await tools.invoke(_call(
+        "computer_use",
+        {
+            "action": "observe",
+            "include_ocr": False,
+            "include_uia": False,
+        },
+    ))
+    r = await tools.invoke(_call("computer_use", {"action": "trace", "tail": 5}))
+    assert r.ok, r.error
+    payload = _json(r)
+    assert payload["kind"] == "AutomationTraceReplay"
+    assert payload["events"]
+    assert payload["trace_path"]
+
+
+async def test_repeated_no_change_hard_blocks_same_route(
+    tools, fake_pyautogui,
+):
+    tools._no_change_streak = 2
+    r = await tools.invoke(_call(
+        "computer_use",
+        {"action": "click", "x": 10, "y": 20},
+    ))
+    assert not r.ok
+    payload = json.loads(r.content)
+    assert payload["strategy_switch_required"] is True
+    assert payload["recoveries"]
+    assert "strategy switch" in r.error
+
+
+async def test_repeated_no_change_allows_explicit_force(
+    tools, fake_pyautogui,
+):
+    tools._no_change_streak = 2
+    r = await tools.invoke(_call(
+        "computer_use",
+        {"action": "click", "x": 10, "y": 20, "force_same_route": True, "capture_after": False},
+    ))
+    assert r.ok
+    assert fake_pyautogui.calls[0][0] == "click"
 
 
 # ── Mouse ─────────────────────────────────────────────────────────
