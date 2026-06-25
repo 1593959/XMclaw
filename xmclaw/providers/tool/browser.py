@@ -47,9 +47,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import time
 from typing import Any
+from pathlib import Path
 from urllib.parse import urlparse
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
@@ -1440,6 +1442,9 @@ class BrowserTools(ToolProvider):
         capture_after = call.args.get("capture_after")
         if capture_after is None:
             capture_after = action in _MUTATING_ACTIONS
+        verify_before: dict[str, Any] | None = None
+        if action in _MUTATING_ACTIONS:
+            verify_before = await self._browser_verify_snapshot(call, t0)
 
         # Dispatch to existing private methods (unchanged).
         if action == "observe":
@@ -1526,7 +1531,9 @@ class BrowserTools(ToolProvider):
 
         if capture_after and result.ok and action != "screenshot":
             result = await self._append_screenshot(call, t0, result)
-        result = await self._finalize_runtime_result(call, t0, action, result)
+        result = await self._finalize_runtime_result(
+            call, t0, action, result, verify_before=verify_before,
+        )
         return result
 
     async def _append_screenshot(
@@ -1605,6 +1612,7 @@ class BrowserTools(ToolProvider):
             ready_state = str(await page.evaluate("document.readyState"))
         except Exception:  # noqa: BLE001
             ready_state = "unknown"
+        visible_controls = await self._visible_controls(page)
 
         pending_dialogs = list(self._session_dialogs_pending.get(sid, []))
         downloads = [
@@ -1651,17 +1659,34 @@ class BrowserTools(ToolProvider):
             "has_page": True,
             "url": url,
             "title": title,
+            "readyState": ready_state,
             "ready_state": ready_state,
             "tabs": tabs,
             "pending_dialogs": pending_dialogs,
+            "dialogs": pending_dialogs,
             "pending_downloads": downloads,
             "network_failures": network_failures,
             "console_errors": console_errors,
+            "visible_buttons": visible_controls.get("buttons", []),
+            "visible_inputs": visible_controls.get("inputs", []),
             "refs": refs,
             "ref_count": len(refs),
             "recoveries": self._browser_recoveries(state),
             "recommended_next_actions": self._browser_next_actions(state, refs),
         }
+        screenshot_result = await self._screenshot(
+            ToolCall(
+                name="browser",
+                args={"action": "screenshot", "annotate": True},
+                provenance=getattr(call, "provenance", "synthetic"),
+                id=getattr(call, "id", ""),
+                session_id=getattr(call, "session_id", None),
+            ),
+            t0,
+        )
+        if screenshot_result.ok and isinstance(screenshot_result.content, dict):
+            obs["screenshot_path"] = screenshot_result.content.get("path")
+            obs["screenshot"] = screenshot_result.content
         if include_log:
             obs["action_log"] = list(self._action_log.get(sid, []))[-20:]
         self._session_state[sid] = state
@@ -1674,12 +1699,27 @@ class BrowserTools(ToolProvider):
         )
 
     async def _finalize_runtime_result(
-        self, call: ToolCall, t0: float, action: str, result: ToolResult,
+        self,
+        call: ToolCall,
+        t0: float,
+        action: str,
+        result: ToolResult,
+        *,
+        verify_before: dict[str, Any] | None = None,
     ) -> ToolResult:
         sid = call.session_id or "default"
         self._record_browser_action(sid, action, result)
         if action == "observe":
             return result
+        if action not in _MUTATING_ACTIONS:
+            if result.ok:
+                return result
+            return self._merge_browser_recoveries(result, self._browser_recoveries(action))
+        if action in _MUTATING_ACTIONS:
+            verify_after = await self._browser_verify_snapshot(call, t0)
+            result = self._merge_browser_verification(
+                result, verify_before or {}, verify_after,
+            )
         if result.ok:
             obs_result = await self._observe(
                 ToolCall(
@@ -1698,6 +1738,95 @@ class BrowserTools(ToolProvider):
             if obs_result.ok:
                 return self._merge_browser_observation(result, obs_result.content)
         return self._merge_browser_recoveries(result, self._browser_recoveries(action))
+
+    async def _browser_verify_snapshot(
+        self, call: ToolCall, t0: float,
+    ) -> dict[str, Any]:
+        sid = call.session_id or "default"
+        page = self._pages.get(sid)
+        if page is None or (hasattr(page, "is_closed") and page.is_closed()):
+            return {
+                "has_page": False,
+                "url": None,
+                "title": None,
+                "readyState": "no_page",
+                "ref_count": len(self._session_refs.get(sid, {}) or {}),
+            }
+        title = ""
+        ready_state = "unknown"
+        try:
+            title = str(await page.title())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            ready_state = str(await page.evaluate("document.readyState"))
+        except Exception:  # noqa: BLE001
+            pass
+        out: dict[str, Any] = {
+            "has_page": True,
+            "url": str(getattr(page, "url", "") or ""),
+            "title": title,
+            "readyState": ready_state,
+            "ref_count": len(self._session_refs.get(sid, {}) or {}),
+        }
+        try:
+            shot = await self._screenshot(
+                ToolCall(
+                    name="browser",
+                    args={"action": "screenshot", "annotate": True},
+                    provenance=getattr(call, "provenance", "synthetic"),
+                    id=getattr(call, "id", ""),
+                    session_id=getattr(call, "session_id", None),
+                ),
+                t0,
+            )
+            if shot.ok and isinstance(shot.content, dict):
+                path = shot.content.get("path")
+                out["screenshot_path"] = path
+                out["screenshot_sha256"] = _sha256_file(path)
+        except Exception as exc:  # noqa: BLE001
+            out["screenshot_error"] = str(exc)
+        return out
+
+    def _merge_browser_verification(
+        self,
+        result: ToolResult,
+        before: dict[str, Any],
+        after: dict[str, Any],
+    ) -> ToolResult:
+        screenshot_changed = (
+            bool(before.get("screenshot_sha256"))
+            and bool(after.get("screenshot_sha256"))
+            and before.get("screenshot_sha256") != after.get("screenshot_sha256")
+        )
+        verification = {
+            "kind": "BrowserActionVerification",
+            "before": before,
+            "after": after,
+            "url_changed": before.get("url") != after.get("url"),
+            "title_changed": before.get("title") != after.get("title"),
+            "ref_count_changed": before.get("ref_count") != after.get("ref_count"),
+            "screenshot_changed": screenshot_changed,
+            "recoveries": [] if result.ok else self._browser_recoveries("verify_failed"),
+        }
+        content = (
+            dict(result.content)
+            if isinstance(result.content, dict)
+            else {"text": result.content}
+        )
+        content["verification"] = verification
+        metadata = dict(result.metadata or {})
+        metadata["browser_verification"] = verification
+        return ToolResult(
+            call_id=result.call_id,
+            ok=result.ok,
+            content=content,
+            error=result.error,
+            latency_ms=result.latency_ms,
+            side_effects=result.side_effects,
+            schema_version=result.schema_version,
+            metadata=metadata,
+        )
 
     def _record_browser_action(
         self, sid: str, action: str, result: ToolResult,
@@ -1740,18 +1869,94 @@ class BrowserTools(ToolProvider):
     def _merge_browser_recoveries(
         self, result: ToolResult, recoveries: list[dict[str, str]],
     ) -> ToolResult:
+        content = (
+            dict(result.content)
+            if isinstance(result.content, dict)
+            else {"text": result.content} if result.content is not None else {}
+        )
+        content.setdefault("recoveries", recoveries)
         metadata = dict(result.metadata or {})
         metadata.setdefault("recoveries", recoveries)
         return ToolResult(
             call_id=result.call_id,
             ok=result.ok,
-            content=result.content,
+            content=content,
             error=result.error,
             latency_ms=result.latency_ms,
             side_effects=result.side_effects,
             schema_version=result.schema_version,
             metadata=metadata,
         )
+
+    async def _visible_controls(self, page: Any, *, limit: int = 40) -> dict[str, list[dict[str, Any]]]:
+        """Collect visible buttons and inputs without making coordinates the primary route."""
+        try:
+            data = await page.evaluate(
+                """(limit) => {
+                    const cssEscape = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/[^\\w-]/g, ''));
+                    const visible = (el) => {
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) return false;
+                        const style = window.getComputedStyle(el);
+                        if (style.visibility === 'hidden' || style.display === 'none') return false;
+                        return true;
+                    };
+                    const selector = (el) => {
+                        if (el.id) return `#${cssEscape(el.id)}`;
+                        if (el.name) return `${el.tagName.toLowerCase()}[name="${el.name}"]`;
+                        const testid = el.getAttribute && el.getAttribute('data-testid');
+                        if (testid) return `[data-testid="${testid}"]`;
+                        return el.tagName.toLowerCase();
+                    };
+                    const labelFor = (el) => {
+                        if (el.labels && el.labels.length) return el.labels[0].innerText.trim();
+                        const aria = el.getAttribute && el.getAttribute('aria-label');
+                        if (aria) return aria.trim();
+                        return '';
+                    };
+                    const pack = (el, kind) => {
+                        const r = el.getBoundingClientRect();
+                        return {
+                            kind,
+                            selector: selector(el),
+                            name: el.name || null,
+                            type: el.type || null,
+                            label: labelFor(el).slice(0, 80),
+                            text: (el.innerText || el.value || '').trim().slice(0, 80),
+                            placeholder: el.placeholder || null,
+                            bbox: {
+                                x: Math.round(r.left), y: Math.round(r.top),
+                                w: Math.round(r.width), h: Math.round(r.height),
+                            },
+                        };
+                    };
+                    const inputs = [];
+                    for (const el of document.querySelectorAll('input, textarea, select')) {
+                        if (visible(el)) inputs.push(pack(el, 'input'));
+                        if (inputs.length >= limit) break;
+                    }
+                    const buttons = [];
+                    for (const el of document.querySelectorAll('button, [role=button], input[type=submit], input[type=button]')) {
+                        if (visible(el)) buttons.push(pack(el, 'button'));
+                        if (buttons.length >= limit) break;
+                    }
+                    return {inputs, buttons};
+                }""",
+                int(limit),
+            )
+            if isinstance(data, dict):
+                return {
+                    "inputs": list(data.get("inputs") or []),
+                    "buttons": list(data.get("buttons") or []),
+                }
+            if isinstance(data, list):
+                return {
+                    "inputs": [item for item in data if item.get("kind") == "input"],
+                    "buttons": [item for item in data if item.get("kind") == "button"],
+                }
+        except Exception:  # noqa: BLE001
+            pass
+        return {"inputs": [], "buttons": []}
 
     def _classify_browser_state(
         self,
@@ -1793,6 +1998,42 @@ class BrowserTools(ToolProvider):
         return [{"action": "snapshot", "reason": "先建立可交互元素 refs。"}]
 
     def _browser_recoveries(self, state_or_action: str) -> list[dict[str, str]]:
+        clean_table: dict[str, list[dict[str, str]]] = {
+            "no_page": [{"route": "navigate", "reason": "No page is open in this session."}],
+            "loading": [{"route": "wait_for", "reason": "Wait until the page reaches a stable readyState."}],
+            "dialog_waiting": [{"route": "dialog", "reason": "Resolve the blocking JavaScript dialog first."}],
+            "download_waiting": [{"route": "download_next", "reason": "Continue the armed download flow."}],
+            "network_failed": [{"route": "network_log", "reason": "Inspect failed requests before retrying or changing URL."}],
+            "script_error": [{"route": "get_console", "reason": "Inspect page errors; scripts may be blocking the interaction."}],
+            "click": [
+                {"route": "observe -> snapshot -> click_ref", "reason": "Use structured refs first; do not click web pages by screenshot coordinates."},
+                {"route": "wait_for -> click", "reason": "The element may not be actionable yet; wait for a stable DOM state."},
+                {"route": "network_log/get_console", "reason": "If the click had no visible effect, inspect page errors and failed requests."},
+            ],
+            "fill": [
+                {"route": "observe -> snapshot -> type_ref", "reason": "Use the input ref instead of guessing coordinates."},
+                {"route": "wait_for", "reason": "The input may not be rendered or editable yet."},
+            ],
+            "press": [
+                {"route": "observe", "reason": "Confirm focus, URL, title, and readyState before retrying keyboard input."},
+                {"route": "snapshot -> click_ref/type_ref", "reason": "Refresh refs and choose the focused control structurally."},
+            ],
+            "scroll": [
+                {"route": "observe", "reason": "Confirm whether the page actually moved and whether refs changed."},
+                {"route": "scroll(to_selector=...)", "reason": "When the target is known, scroll to a DOM selector instead of raw wheel retries."},
+            ],
+            "verify_failed": [
+                {"route": "observe", "reason": "Rebuild URL, readyState, refs, console, and network context."},
+                {"route": "snapshot -> click_ref/type_ref", "reason": "Refresh structured refs and switch to a stable control route."},
+                {"route": "wait_for", "reason": "The page may still be loading or the SPA may still be rendering."},
+            ],
+        }
+        if state_or_action in clean_table:
+            return clean_table[state_or_action]
+        return [
+            {"route": "observe", "reason": "Rebuild browser state before deciding the next action."},
+            {"route": "snapshot", "reason": "Refresh DOM/a11y refs instead of using screen coordinates."},
+        ]
         table: dict[str, list[dict[str, str]]] = {
             "no_page": [{"route": "navigate", "reason": "当前会话没有页面。"}],
             "loading": [{"route": "wait_for", "reason": "先等待页面进入稳定状态。"}],
@@ -4710,6 +4951,15 @@ def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:
         call_id=call.id, ok=False, content=None, error=err,
         latency_ms=(time.perf_counter() - t0) * 1000.0,
     )
+
+
+def _sha256_file(path: Any) -> str | None:
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # Epic #27 sweep #16 (2026-05-19): re-export from _helpers so the

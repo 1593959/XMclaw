@@ -509,6 +509,13 @@ async def test_observe_returns_unified_browser_observation(
     assert obs.content["kind"] == "BrowserObservation"
     assert obs.content["state"] in {"ready", "loading", "script_error", "network_failed"}
     assert obs.content["url"] == "https://example.com"
+    assert "readyState" in obs.content
+    assert obs.content["visible_inputs"]
+    assert obs.content["visible_buttons"]
+    assert obs.content["dialogs"] == obs.content["pending_dialogs"]
+    assert isinstance(obs.content["console_errors"], list)
+    assert isinstance(obs.content["network_failures"], list)
+    assert obs.content["screenshot_path"]
     assert "recoveries" in obs.content
     assert obs.content["ref_count"] >= 1
     assert isinstance(obs.content["action_log"], list)
@@ -562,6 +569,8 @@ async def test_click_refuses_when_no_page(patched_browser: BrowserTools) -> None
     ))
     assert r.ok is False
     assert "browser_open" in r.error
+    assert r.content["recoveries"]
+    assert r.metadata["recoveries"]
 
 
 # ── Wave 22: enhanced click + press + snapshot forms + screenshot spill ──
@@ -583,6 +592,12 @@ async def test_click_returns_rich_state_no_navigation(
     assert r.content["selector"] == "#some-button"
     assert r.content["url"] == "https://example.com"
     assert r.content["navigated"] is False
+    verification = r.content["verification"]
+    assert verification["kind"] == "BrowserActionVerification"
+    assert verification["before"]["url"] == "https://example.com"
+    assert verification["after"]["url"] == "https://example.com"
+    assert "screenshot_changed" in verification
+    assert verification["after"]["screenshot_path"]
     # Fake page records the click target.
     assert patched_browser._pages["s1"].last_click == "#some-button"
 
