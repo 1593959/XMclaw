@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { resolveMediaUrl } from "./api";
+import { isSafeMarkdownHref, isSafeMarkdownImageUrl } from "./artifactSecurity";
 
 // 代码块带复制按钮（agent 频繁输出代码，高频需求）。
 function CodeBlock({ children }: { children?: ReactNode }) {
@@ -39,18 +40,34 @@ export default function Markdown({ text }: { text: string }) {
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
         components={{
-          img: ({ src, alt }) => (
-            <img
-              src={resolveMediaUrl(typeof src === "string" ? src : "")}
-              alt={alt || ""}
-              className="max-w-md rounded border border-mc-border my-1"
-            />
-          ),
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noreferrer" className="text-mc-accent underline">
-              {children}
-            </a>
-          ),
+          img: ({ src, alt }) => {
+            const raw = typeof src === "string" ? src : "";
+            if (!isSafeMarkdownImageUrl(raw)) {
+              return (
+                <span className="inline-block rounded border border-dashed border-mc-border px-1.5 py-0.5 text-[11px] text-mc-faint">
+                  image blocked
+                </span>
+              );
+            }
+            return (
+              <img
+                src={resolveMediaUrl(raw)}
+                alt={alt || ""}
+                className="max-w-md rounded border border-mc-border my-1"
+              />
+            );
+          },
+          a: ({ href, children }) => {
+            const raw = typeof href === "string" ? href : "";
+            if (!isSafeMarkdownHref(raw)) {
+              return <span className="text-mc-faint">{children}</span>;
+            }
+            return (
+              <a href={raw} target="_blank" rel="noreferrer" className="text-mc-accent underline">
+                {children}
+              </a>
+            );
+          },
           pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
         }}
       >

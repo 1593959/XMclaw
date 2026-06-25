@@ -122,3 +122,8 @@ class RecallResult:
     kind: str
     similarity: float
     ts_first: float
+    why_recalled: str = ""
+    source: str = ""
+    confidence: float = 0.0
+    validity: str = "unknown"
+    recommended_action: str = ""

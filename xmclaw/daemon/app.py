@@ -294,8 +294,9 @@ def create_app(
         tests. Production callers should pass a shared bus.
     auth_check : callable | None
         Async ``(token: str | None) -> bool`` for anti-req #8 pairing.
-        The server extracts the token from either the ``token`` query
-        parameter or an ``Authorization: Bearer <token>`` header. When
+        The server extracts the token from the ``token`` query
+        parameter, ``X-XMC-Token`` header, or an
+        ``Authorization: Bearer <token>`` header. When
         ``auth_check`` is set, a missing or failed token closes the WS
         with code 4401. Default (``None``) accepts all connections —
         safe only on loopback.
@@ -552,6 +553,7 @@ def create_app(
         session_workspaces as _session_workspaces_router,  # F1 2026-05-30
     )
     from xmclaw.daemon.routers import tasks as _tasks_router  # Phase 10.M1.3
+    from xmclaw.daemon.routers import config_control as _config_control_router
     app.include_router(_files_router.router)
     app.include_router(_llm_discovery_router.router)
     app.include_router(_llm_profiles_router.router)
@@ -580,6 +582,7 @@ def create_app(
     app.include_router(_sync_router.router)  # Sprint 2 Wave 13
     app.include_router(_tasks_router.router)  # Phase 10.M1.3 — Mission Control 任务聚合
     app.include_router(_session_workspaces_router.router)  # F1 — per-session live workspace
+    app.include_router(_config_control_router.router)
 
     # Phase 3: ASGI middleware for X-Agent-Id → ContextVar plumbing
     # (the upstream agent multi-agent convention #1). Stays a no-op for the
@@ -737,11 +740,16 @@ def create_app(
                 "disclosure_mode", DISCLOSURE_MODE_AUTO,
             )
             _unified_threshold = _skills_cfg.get("unified_threshold", 500)
+            _security_cfg = _skills_cfg.get("security") or {}
+            _block_critical = _security_cfg.get(
+                "block_critical_installs", True,
+            )
             _skill_tools = SkillToolProvider(
                 orchestrator.registry,
                 watcher=_watcher_ref,
                 disclosure_mode=_disclosure_mode,
                 unified_threshold=_unified_threshold,
+                block_critical_installs=bool(_block_critical),
             )
             agent._tools = CompositeToolProvider(agent._tools, _skill_tools)
             # 2026-06-17: register the composite provider so it rebuilds its
@@ -1532,7 +1540,9 @@ def create_app(
 
     @app.get("/api/v2/setup")
     async def setup_status() -> JSONResponse:
-        from xmclaw.daemon.factory import _resolve_persona_profile_dir
+        import xmclaw.daemon.factory as _factory
+        from xmclaw.core.persona import templates as _persona_templates
+        from xmclaw.core.persona.loader import _identity_looks_unfilled
 
         cfg = config or {}
 
@@ -1559,12 +1569,21 @@ def create_app(
         # `xmclaw onboard` (or its hand-written equivalent) has run.
         persona_ready = False
         try:
-            pdir = _resolve_persona_profile_dir(cfg)
+            pdir = _factory._resolve_persona_profile_dir(cfg)
             if pdir.is_dir():
-                for canon in ("SOUL.md", "IDENTITY.md"):
-                    if (pdir / canon).is_file():
-                        persona_ready = True
-                        break
+                identity = pdir / "IDENTITY.md"
+                soul = pdir / "SOUL.md"
+                if identity.is_file() and not _identity_looks_unfilled(pdir):
+                    persona_ready = True
+                elif soul.is_file():
+                    soul_text = soul.read_text(
+                        encoding="utf-8",
+                        errors="replace",
+                    ).strip()
+                    persona_ready = bool(
+                        soul_text
+                        and soul_text != _persona_templates.SOUL_TEMPLATE.strip()
+                    )
         except Exception:  # noqa: BLE001
             pass
 

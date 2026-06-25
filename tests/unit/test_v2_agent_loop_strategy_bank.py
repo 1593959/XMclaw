@@ -92,6 +92,12 @@ def _last_user_msg(messages: list[Message]) -> str:
     return ""
 
 
+def _llm_context(messages: list[Message]) -> str:
+    return "\n\n".join(
+        m.content for m in messages if isinstance(m.content, str)
+    )
+
+
 # ── tests ─────────────────────────────────────────────────────────
 
 
@@ -137,13 +143,13 @@ async def test_b_strategy_bank_hit_injects_block() -> None:
     loop = AgentLoop(llm=llm, bus=bus, strategy_bank=bank)
     await loop.run_turn("sess-with-bank", "refactor this file")
 
-    user_text = _last_user_msg(llm.captured_messages[0])
-    assert "<curriculum-strategies>" in user_text
-    assert "</curriculum-strategies>" in user_text
-    assert "user asks for code refactoring" in user_text
-    assert "batch reads then plan" in user_text
-    assert "evidence: 4 traces" in user_text
-    assert "conf 0.55" in user_text
+    llm_context = _llm_context(llm.captured_messages[0])
+    assert "<curriculum-strategies>" in llm_context
+    assert "</curriculum-strategies>" in llm_context
+    assert "user asks for code refactoring" in llm_context
+    assert "batch reads then plan" in llm_context
+    assert "evidence: 4 traces" in llm_context
+    assert "conf 0.55" in llm_context
     # Bank.retrieve was called with the user message + strategy_top_k=3.
     assert bank.calls == [("refactor this file", 3)]
 

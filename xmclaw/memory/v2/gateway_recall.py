@@ -1,29 +1,17 @@
-"""Gateway recall — intelligent read path (Phase 3).
+"""Gateway recall: planning and targeted read path."""
 
-Three-layer intelligent recall:
-  1. GATE     — heuristic filter: skip greetings / confirmations / short msgs
-  2. CLASSIFY — semantic bucket classifier (embedding-based, with keyword fallback)
-  3. SEARCH   — targeted hybrid recall (vector + BM25 + RRF) restricted to relevant buckets
-
-When no buckets are matched, falls back to unrestricted hybrid search
-(catches facts that don't fit obvious keyword patterns).
-"""
 from __future__ import annotations
 
 import math
 from typing import Any, Sequence
 
-from xmclaw.memory.v2.gateway_models import RecallResult
+from xmclaw.memory.v2.gateway_models import RecallPlan, RecallResult
 from xmclaw.utils.log import get_logger
 
 _log = get_logger(__name__)
 
 
-def _inc_metric(
-    gateway: Any,
-    key: str,
-    sub_key: str | None = None,
-) -> None:
+def _inc_metric(gateway: Any, key: str, sub_key: str | None = None) -> None:
     """Best-effort increment of a Gateway metric counter."""
     try:
         metrics = getattr(gateway, "_metrics", None)
@@ -38,153 +26,125 @@ def _inc_metric(
         pass
 
 
-# ── Layer 1: GATE (heuristic) ────────────────────────────────────
+_MIN_RECALL_CHARS = 6
 
-
-_SHOULD_RECALL_MIN_CHARS: int = 6
-
-# Greetings / small-talk — never need memory.
-_SHOULD_RECALL_GREETINGS: frozenset[str] = frozenset({
+_GREETINGS = frozenset({
     "你好", "您好", "hi", "hello", "hey", "在吗", "在么",
     "早上好", "晚上好", "下午好", "哈喽", "hola",
 })
 
-# Simple confirmations / acknowledgements — never need memory.
-_SHOULD_RECALL_CONFIRMATIONS: frozenset[str] = frozenset({
-    "好的", "ok", "okay", "没问题", "可以", "行", "嗯", "哦",
-    "知道了", "明白了", "谢谢", "多谢", "辛苦了", "okok", "okk",
-    "是的", "对的", "没错", "好", "嗯嗯", "oo", "o",
+_CONFIRMATIONS = frozenset({
+    "好的", "好", "ok", "okay", "没问题", "可以", "行", "嗯", "哦",
+    "知道了", "明白了", "谢谢", "多谢", "辛苦了", "是的", "对的",
+    "没错", "嗯嗯", "oo", "o",
 })
 
-
-# Short phrases that signal a memory-worthy intent even when the
-# overall message is short.  Mirrors gateway._TIER1_KEYWORDS.
-_SHOULD_RECALL_SIGNALS: frozenset[str] = frozenset({
-    "名叫", "名字是", "称呼我", "叫我", "我是", "我的名字",
-    "代理端口", "代理地址", "代理设置", "网络代理",
-    "记住", "记下来", "别忘了", "记着",
-    "偏好使用", "习惯使用", "以后都用", "默认使用", "优先使用",
-    "不喜欢", "不想用", "不愿用",
+_RECALL_SIGNALS = frozenset({
+    "记住", "记下", "别忘", "记着", "以后", "默认", "一直", "永远",
+    "不要", "不能", "必须", "禁止", "上次", "之前", "继续", "类似",
+    "同样", "偏好", "喜欢", "规则", "规律", "经验", "教训",
 })
 
-
-def should_recall_heuristic(user_message: str) -> bool:
-    """Lightweight gate: should we even try to recall for this message?
-
-    Returns False for:
-      * extremely short messages (< 6 chars) UNLESS they contain a
-        memory signal (e.g. "记住" / "代理端口")
-      * greetings / small-talk
-      * simple confirmations
-      * single emoji / punctuation-only
-
-    This is deliberately conservative — better to miss a marginal
-    recall than to inject noise into every turn.
-    """
-    text = (user_message or "").strip()
-
-    # Wave-29: Tier-1 signals bypass the length gate.
-    has_signal = any(s in text for s in _SHOULD_RECALL_SIGNALS)
-
-    if len(text) < _SHOULD_RECALL_MIN_CHARS and not has_signal:
-        return False
-
-    # Strip common punctuation for classification.
-    stripped = text.strip("。！？.!?~… ")
-    lower = stripped.lower()
-
-    if lower in _SHOULD_RECALL_GREETINGS:
-        return False
-    if lower in _SHOULD_RECALL_CONFIRMATIONS:
-        return False
-
-    # Punctuation-only / emoji-only after stripping.
-    if not any("一" <= ch <= "龥" or ch.isalpha() or ch.isdigit() for ch in stripped):
-        return False
-
-    return True
-
-
-# ── Layer 2: CLASSIFY (keyword-driven bucket classifier) ─────────
-
-
-# Keywords → bucket mapping.  A message may match multiple buckets;
-# the targeted recall searches the union.
 _BUCKET_KEYWORDS: dict[str, frozenset[str]] = {
     "project_fact": frozenset({
-        "项目", "网站", "域名", "网址", "店铺", "网店", "后台",
-        "账号", "密码", "用户名", "api", "url", "链接", "地址",
-        "目标", "流水", "gmv", "营收", "订单", "客户", "用户",
-        "数据库", "服务器", "部署", "发布", "版本",
+        "项目", "仓库", "代码", "部署", "配置", "版本", "需求", "服务器",
+        "地址", "数据库", "接口", "端口", "路径", "桌面", "磁盘", "盘",
+        "安装", "下载", "文件", "目录",
     }),
     "workflow": frozenset({
-        "流程", "步骤", "怎么", "如何", "怎样", "做法", "方法",
-        "操作", "教程", "指南", "文档", "规范", "最佳实践",
+        "流程", "步骤", "规划", "计划", "执行", "任务", "检查", "怎么",
+        "如何", "怎样", "做法", "方法",
     }),
     "tool_quirks": frozenset({
-        "工具", "命令", "脚本", "配置", "参数", "选项",
-        "bug", "错误", "失败", "报错", "异常", "问题", "故障",
-        "崩溃", "卡住", "超时", "无法运行", "不能用",
+        "工具", "命令", "脚本", "参数", "选项", "bug", "错误", "失败",
+        "报错", "shell", "powershell", "python", "npm",
     }),
     "failure_modes": frozenset({
-        "失败", "报错", "异常", "崩溃", "卡住", "超时",
-        "无法", "不能", "不行", "没反应", "没结果", "报错信息",
+        "失败", "报错", "异常", "卡住", "超时", "无法", "不能", "不行",
+        "没反应", "没结果", "找不到", "没找到", "死磕", "重复",
     }),
     "user_preference": frozenset({
-        "喜欢", "偏好", "习惯", "想要", "希望", "需要",
-        "不要", "别", "永远", "总是", "从不", "禁止",
-        "用中文", "用英文", "简洁", "详细", "详细点",
+        "喜欢", "偏好", "习惯", "想要", "希望", "需要", "不要", "别",
+        "永远", "总是", "从不", "禁止", "中文", "英文", "简洁", "详细",
     }),
     "user_identity": frozenset({
-        "我是", "我叫", "我的名字", "我们做", "我公司", "我们团队",
+        "我是", "我叫", "我的名字", "称呼", "叫我", "公司", "团队",
         "行业", "业务", "职业", "工作", "职位", "角色",
     }),
     "rules": frozenset({
-        "规则", "约束", "限制", "必须", "务必", "一定",
-        "禁止", "不能", "不准", "不可", "别", "不要",
-        "永远别", "再也不", "绝对",
+        "规则", "约束", "限制", "必须", "务必", "一定", "禁止", "不能",
+        "不准", "不可", "别", "不要", "永远别", "绝对",
     }),
     "values": frozenset({
-        "价值观", "原则", "理念", "文化", "信条", "信念",
-        "追求", "使命", "愿景",
+        "价值观", "原则", "理念", "文化", "信条", "信念", "追求", "使命",
+        "愿景",
+    }),
+    "procedural": frozenset({
+        "规律", "经验", "教训", "下次", "以后遇到", "类似任务", "流程固化",
+        "抽象", "总结", "复用", "技能",
     }),
 }
 
-# Buckets that are already injected via the structural axis (.md files).
-# The similarity axis skips them to avoid double-injection.
-# Wave-28: user_identity / user_preference / values are DYNAMIC —
-# they may change mid-session, so they are kept in the recall path
-# (not structural). Only agent_identity (static) and misc (catch-all)
-# are skipped here.
-_STRUCTURAL_BUCKETS: frozenset[str] = frozenset({
-    "agent_identity", "misc",
-})
-
-
-# ── Layer 2b: SEMANTIC CLASSIFY (embedding-based) ──────────────
-
-# Bucket semantic descriptions (Chinese, for multilingual embedders).
-# These capture the *meaning* of each bucket, not just keywords.
 _BUCKET_DESCRIPTIONS: dict[str, str] = {
-    "project_fact": "关于项目、网站、域名、账号密码、技术栈、业务目标、数据库、服务器、部署发布、版本控制、店铺运营、流水营收等具体业务信息",
-    "workflow": "关于操作流程、步骤顺序、怎么做、方法教程、指南文档、规范标准、最佳实践、工作方式",
-    "tool_quirks": "关于工具使用、命令行、脚本、配置参数、选项设置、软件行为、工具特性、环境搭建",
-    "failure_modes": "关于失败、报错、异常、崩溃、卡住、超时、无法运行、错误排查、问题诊断、故障处理",
-    "user_preference": "关于用户喜欢什么、偏好、习惯、想要什么、风格选择、语言选择、不要什么、简洁或详细",
-    "user_identity": "关于用户是谁、名字、公司、团队、行业、职业、角色、业务领域、个人背景",
-    "rules": "关于规则、约束、限制、必须做什么、禁止做什么、规范要求、硬性规定、底线",
-    "values": "关于价值观、原则、理念、文化、信念、追求、使命、愿景、精神内核",
+    "project_fact": "关于项目、仓库、代码、配置、部署、版本、业务目标等具体事实",
+    "workflow": "关于操作流程、步骤顺序、最佳实践、工作方式和规范",
+    "tool_quirks": "关于工具、命令、脚本、参数、选项、报错和工具行为",
+    "failure_modes": "关于失败、异常、卡住、超时、错误排查和故障处理",
+    "user_preference": "关于用户偏好、习惯、语言风格、默认选择和禁忌",
+    "user_identity": "关于用户身份、名字、公司、团队、行业、职业、角色和业务领域",
+    "rules": "关于规则、约束、限制、必须做什么、禁止做什么和硬性要求",
+    "values": "关于价值观、原则、理念、文化、信念和长期追求",
+    "procedural": "关于可复用经验、规律、教训、抽象流程和技能候选",
 }
 
-
-# Module-level cache for bucket-description vectors.
-# Populated on first call to classify_buckets_semantic; keyed by
-# embedder identity so switching embedder models invalidates it.
 _bucket_desc_vec_cache: dict[str, dict[str, tuple[float, ...]]] = {}
 
 
+def should_recall_heuristic(user_message: str) -> bool:
+    """Return whether the current turn should query long-term memory."""
+    text = (user_message or "").strip()
+    if not text:
+        return False
+
+    normalized = text.lower().strip("。！？?!~\"'“”‘’ ")
+    if normalized in _GREETINGS or normalized in _CONFIRMATIONS:
+        return False
+
+    has_signal = any(signal in normalized for signal in _RECALL_SIGNALS)
+    if len(normalized) < _MIN_RECALL_CHARS and not has_signal:
+        return False
+
+    return any("\u4e00" <= ch <= "\u9fff" or ch.isalpha() or ch.isdigit() for ch in normalized)
+
+
+def classify_buckets_heuristic(user_message: str) -> list[str]:
+    """Keyword-driven bucket classifier used when semantic classify is absent."""
+    text = (user_message or "").lower()
+    matched: list[str] = []
+    for bucket, keywords in _BUCKET_KEYWORDS.items():
+        if any(keyword.lower() in text for keyword in keywords):
+            matched.append(bucket)
+    return matched
+
+
+def build_recall_plan(user_message: str) -> RecallPlan:
+    """Build a deterministic recall plan before executing retrieval."""
+    if not should_recall_heuristic(user_message):
+        return RecallPlan(need_recall=False)
+
+    buckets = classify_buckets_heuristic(user_message)
+    query = (user_message or "").strip()
+    if "procedural" in buckets or "workflow" in buckets:
+        query += " 可复用流程 经验 教训 下次怎么做"
+
+    return RecallPlan(
+        need_recall=True,
+        relevant_buckets=buckets,
+        query_expansion=query,
+    )
+
+
 def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-    """Compute cosine similarity between two vectors."""
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -199,14 +159,7 @@ async def classify_buckets_semantic(
     threshold: float = 0.50,
     top_k: int = 3,
 ) -> list[str]:
-    """Embedding-based semantic bucket classifier.
-
-    Compares the user's message against pre-defined semantic descriptions
-    of each bucket using cosine similarity. Returns top-k buckets whose
-    similarity exceeds the threshold.
-
-    Falls back to empty list if embedder is unavailable or fails.
-    """
+    """Embedding-based semantic bucket classifier."""
     if embedder is None:
         return []
 
@@ -215,54 +168,27 @@ async def classify_buckets_semantic(
         return []
 
     try:
-        # Embed the user message.
         qvec = tuple(await embedder.embed(text))
-
-        # Embed bucket descriptions once per embedder model.
-        global _bucket_desc_vec_cache
         cache_key = getattr(embedder, "model_name", "default")
         cached = _bucket_desc_vec_cache.get(cache_key)
         if cached is None:
             descs = list(_BUCKET_DESCRIPTIONS.items())
-            desc_texts = [d for _, d in descs]
-            desc_vectors = await embedder.embed_batch(desc_texts)
+            desc_vectors = await embedder.embed_batch([desc for _, desc in descs])
             cached = {
                 bucket: tuple(dvec)
                 for (bucket, _), dvec in zip(descs, desc_vectors)
             }
             _bucket_desc_vec_cache[cache_key] = cached
 
-        scores: list[tuple[str, float]] = []
-        for bucket, dvec in cached.items():
-            sim = _cosine_similarity(qvec, dvec)
-            scores.append((bucket, sim))
-
-        scores.sort(key=lambda x: x[1], reverse=True)
-        return [b for b, s in scores[:top_k] if s >= threshold]
+        scores = [
+            (bucket, _cosine_similarity(qvec, dvec))
+            for bucket, dvec in cached.items()
+        ]
+        scores.sort(key=lambda item: item[1], reverse=True)
+        return [bucket for bucket, score in scores[:top_k] if score >= threshold]
     except Exception as exc:  # noqa: BLE001
         _log.debug("classify.semantic_failed err=%s", exc)
         return []
-
-
-def classify_buckets_heuristic(user_message: str) -> list[str]:
-    """Keyword-driven bucket classifier (fallback when no embedder).
-
-    Returns a list of relevant bucket names.  Empty list means
-    "no strong signal — search everything" (fallback to unrestricted
-    hybrid recall).
-
-    The classifier is intentionally permissive: a message may match
-    multiple buckets, and the recall searches their union.
-    """
-    text = (user_message or "").lower()
-    matched: list[str] = []
-    for bucket, keywords in _BUCKET_KEYWORDS.items():
-        if any(kw in text for kw in keywords):
-            matched.append(bucket)
-    return matched
-
-
-# ── Layer 3: SEARCH (targeted hybrid recall) ─────────────────────
 
 
 async def recall_for_message_via_gateway(
@@ -274,18 +200,9 @@ async def recall_for_message_via_gateway(
     timeout_s: float = 3.0,
     exclude_buckets: Sequence[str] | None = None,
 ) -> list[RecallResult]:
-    """Intelligent recall pipeline: gate → classify → targeted hybrid search.
-
-    Phase 3: replaces the Phase-1 transparent passthrough with:
-      1. Heuristic gate (skip trivial turns)
-      2. Bucket classifier (restrict search to relevant domains)
-      3. Targeted hybrid recall via Gateway.targeted_recall()
-
-    Falls back to the legacy ``auto_recall`` path when the Gateway
-    doesn't expose ``targeted_recall``.
-    """
-    # Layer 1 — Gate.
-    if not should_recall_heuristic(user_message):
+    """Run recall gate, classify buckets, then execute targeted recall."""
+    plan = build_recall_plan(user_message)
+    if not plan.need_recall:
         _log.debug("gateway_recall.gate_dropped msg=%r", user_message[:40])
         if gateway is not None:
             _inc_metric(gateway, "recall_gate_skipped")
@@ -295,58 +212,43 @@ async def recall_for_message_via_gateway(
     if svc is None:
         return []
 
-    # Layer 2 — Classify.
-    # Try semantic (embedding) first; fallback to keyword heuristic.
-    _embedder = getattr(svc, "embedder", None) if svc else None
-    relevant_buckets = await classify_buckets_semantic(
-        user_message, _embedder,
-    )
-    if relevant_buckets:
-        _log.debug(
-            "gateway_recall.classified_semantic buckets=%s",
-            ",".join(relevant_buckets),
-        )
-    else:
-        relevant_buckets = classify_buckets_heuristic(user_message)
-        if relevant_buckets:
-            _log.debug(
-                "gateway_recall.classified_heuristic buckets=%s",
-                ",".join(relevant_buckets),
-            )
-    if relevant_buckets and gateway is not None:
-        for b in relevant_buckets:
-            _inc_metric(gateway, "recall_classify_buckets", b)
+    embedder = getattr(svc, "embedder", None)
+    relevant_buckets = await classify_buckets_semantic(user_message, embedder)
+    if not relevant_buckets:
+        relevant_buckets = list(plan.relevant_buckets)
 
-    # Layer 3 — Targeted search.
+    if relevant_buckets and gateway is not None:
+        for bucket in relevant_buckets:
+            _inc_metric(gateway, "recall_classify_buckets", bucket)
+
+    recall_query = plan.query_expansion or user_message
     if hasattr(gateway, "targeted_recall"):
         try:
             hits = await gateway.targeted_recall(
-                query=user_message,
+                query=recall_query,
                 buckets=relevant_buckets if relevant_buckets else None,
                 k=k,
                 min_similarity=min_similarity,
                 timeout_s=timeout_s,
             )
-            return hits
+            return _merge_recall_hits([], [
+                _explain_recall_hit(hit, query=recall_query)
+                for hit in hits
+            ], k=k)
         except Exception as exc:  # noqa: BLE001
             _log.warning(
-                "gateway_recall.targeted_failed err=%s — falling back to "
-                "legacy auto_recall", exc,
+                "gateway_recall.targeted_failed err=%s; falling back to legacy auto_recall",
+                exc,
             )
-            # Fall through to legacy path.
 
-    # Legacy fallback: direct auto_recall (Phase 1 path).
     try:
-        from xmclaw.daemon.auto_recall import (
-            RecalledFact,
-            recall_for_message,
-        )
+        from xmclaw.daemon.auto_recall import recall_for_message
     except Exception as exc:  # noqa: BLE001
         _log.warning("gateway_recall.import_failed err=%s", exc)
         return []
 
     try:
-        hits: list[RecalledFact] = await recall_for_message(
+        legacy_hits = await recall_for_message(
             memory_service=svc,
             user_message=user_message,
             k=k,
@@ -358,39 +260,98 @@ async def recall_for_message_via_gateway(
         _log.warning("gateway_recall.recall_failed err=%s", exc)
         return []
 
-    return [
+    converted = [
         RecallResult(
-            fid=h.fid,
-            text=h.text,
-            bucket=h.bucket,
-            kind=h.kind,
-            similarity=h.similarity,
-            ts_first=h.ts_first,
+            fid=hit.fid,
+            text=hit.text,
+            bucket=hit.bucket,
+            kind=hit.kind,
+            similarity=hit.similarity,
+            ts_first=hit.ts_first,
+            why_recalled=_why_recalled(hit.bucket, hit.kind, user_message),
+            source="legacy_auto_recall",
+            confidence=float(getattr(hit, "confidence", 0.0) or 0.0),
+            validity="active",
+            recommended_action=_recommended_action(hit.bucket, hit.kind),
         )
-        for h in hits
+        for hit in legacy_hits
     ]
+    return _merge_recall_hits([], converted, k=k)
 
 
 def render_recalled_block(hits: Sequence[RecallResult]) -> str:
-    """Format recall hits as a compact block for LLM context.
-
-    Wave-28: stripped XML tags and fid noise — they add token cost
-    without improving LLM comprehension.  Uses plain markdown bullets
-    so the block is readable even if newlines are collapsed by the UI.
-    """
+    """Format recall hits as a compact block for LLM context."""
     if not hits:
         return ""
     lines = ["【相关记忆】"]
-    for h in hits:
-        text = h.text.replace("\n", " ")
-        # Wave-28: drop fid suffix — LLM doesn't need it, and it looks
-        # like garbage when newlines are collapsed.
-        lines.append(f"• {text}")
+    for hit in hits:
+        text = hit.text.replace("\n", " ")
+        suffix = ""
+        if hit.recommended_action:
+            suffix = f"（建议：{hit.recommended_action}）"
+        lines.append(f"- {text}{suffix}")
     return "\n".join(lines)
 
 
+def _merge_recall_hits(
+    priority_hits: Sequence[RecallResult],
+    other_hits: Sequence[RecallResult],
+    *,
+    k: int,
+) -> list[RecallResult]:
+    merged: list[RecallResult] = []
+    seen: set[str] = set()
+    for hit in list(priority_hits) + list(other_hits):
+        key = hit.text.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(hit)
+        if len(merged) >= k:
+            break
+    return merged
+
+
+def _explain_recall_hit(hit: RecallResult, *, query: str) -> RecallResult:
+    if hit.why_recalled and hit.recommended_action:
+        return hit
+    return RecallResult(
+        fid=hit.fid,
+        text=hit.text,
+        bucket=hit.bucket,
+        kind=hit.kind,
+        similarity=hit.similarity,
+        ts_first=hit.ts_first,
+        why_recalled=hit.why_recalled or _why_recalled(hit.bucket, hit.kind, query),
+        source=hit.source or "gateway_targeted_recall",
+        confidence=hit.confidence or max(0.0, min(1.0, float(hit.similarity or 0.0))),
+        validity=hit.validity or "active",
+        recommended_action=(
+            hit.recommended_action or _recommended_action(hit.bucket, hit.kind)
+        ),
+    )
+
+
+def _why_recalled(bucket: str, kind: str, query: str) -> str:
+    label = bucket or kind or "memory"
+    return f"当前任务与 {label} 相关，查询为：{query[:80]}"
+
+
+def _recommended_action(bucket: str, kind: str) -> str:
+    key = bucket or kind
+    if key in {"rules", "user_preference", "user_identity"}:
+        return "把该记忆作为硬约束或默认偏好执行"
+    if key in {"failure_modes", "tool_quirks"}:
+        return "避免重复历史失败，优先更换工具或策略"
+    if key in {"workflow", "procedural"}:
+        return "复用该流程，并在结果验证后再沉淀新经验"
+    if key == "project_fact":
+        return "用作项目事实依据，必要时先验证是否仍然有效"
+    return "作为辅助上下文参考，不要覆盖用户本轮明确指令"
+
+
 def prepend_recalled_block(user_message: str, block: str) -> str:
-    """Convenience: prepend a rendered block to the user message."""
+    """Prepend a rendered recall block to the user message."""
     if not block:
         return user_message
     return f"{block}\n\n{user_message}"
@@ -399,6 +360,8 @@ def prepend_recalled_block(user_message: str, block: str) -> str:
 __all__ = [
     "should_recall_heuristic",
     "classify_buckets_heuristic",
+    "build_recall_plan",
+    "classify_buckets_semantic",
     "recall_for_message_via_gateway",
     "render_recalled_block",
     "prepend_recalled_block",

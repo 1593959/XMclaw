@@ -10,10 +10,11 @@ export class TokenNotReadyError extends Error {
   }
 }
 
-function withToken(url: string, token: string | null): string {
-  if (!token) return url;
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}token=${encodeURIComponent(token)}`;
+export function authHeaders(
+  token: string | null,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return token ? { ...extra, "X-XMC-Token": token } : { ...extra };
 }
 
 interface InflightEntry {
@@ -35,7 +36,7 @@ export async function apiGet<T = unknown>(path: string, token: string | null): P
   const entry = inflight.get(key);
   if (entry && entry.until > now) return entry.promise as Promise<T>;
   const promise = (async () => {
-    const res = await fetch(withToken(path, token));
+    const res = await fetch(path, { headers: authHeaders(token) });
     if (!res.ok) {
       let detail = "";
       let body: unknown = null;
@@ -63,6 +64,33 @@ export async function apiGet<T = unknown>(path: string, token: string | null): P
   return promise as Promise<T>;
 }
 
+export async function apiGetFresh<T = unknown>(
+  path: string,
+  token: string | null,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!token) throw new TokenNotReadyError();
+  const res = await fetch(path, { headers: authHeaders(token), signal });
+  if (!res.ok) {
+    let detail = "";
+    let body: unknown = null;
+    try {
+      body = await res.json();
+      const b = body as Record<string, string>;
+      detail = b.detail || b.error || "";
+    } catch {
+      /* ignore */
+    }
+    const err: ApiError = new Error(
+      `${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`,
+    );
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
+  return res.json();
+}
+
 export async function apiSend<T = unknown>(
   method: string,
   path: string,
@@ -70,9 +98,9 @@ export async function apiSend<T = unknown>(
   token: string | null,
 ): Promise<T> {
   if (!token) throw new TokenNotReadyError();
-  const res = await fetch(withToken(path, token), {
+  const res = await fetch(path, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
     body: body == null ? undefined : JSON.stringify(body),
   });
   let json: unknown = null;

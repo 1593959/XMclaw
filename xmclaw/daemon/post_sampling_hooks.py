@@ -296,6 +296,8 @@ async def _write_facts_to_memory(
                     "scope_hint": v2_scope,
                     "bucket_hint": v2_bucket,
                     "confidence_hint": 0.7,
+                    "task_completed": False,
+                    "verified": False,
                 },
             )
             for fact in facts
@@ -364,7 +366,10 @@ async def _write_facts_to_memory(
             try:
                 from xmclaw.core.persona.v2_renderer import render_affected_files
                 await render_affected_files(
-                    v2_svc, ctx.persona_dir, v2_written,
+                    v2_svc,
+                    ctx.persona_dir,
+                    v2_written,
+                    include_auto_sections=False,
                 )
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
@@ -547,10 +552,9 @@ class ExtractMemoriesHook(PostSamplingHook):
         if not facts:
             return
 
-        # B-198 Phase 3: when persona_store is wired, the legacy
-        # markdown append is redundant �?_write_facts_to_memory will
-        # upsert and re-render the disk cache from DB. Skip it.
-        if ctx.persona_store is None:
+        # When Gateway is wired, automatic extraction must become
+        # candidates first; do not bypass governance by writing MD.
+        if ctx.persona_store is None and ctx.memory_gateway is None:
             # Legacy markdown-only path (tests / installs without store).
             try:
                 from xmclaw.providers.tool.builtin import (
@@ -631,12 +635,11 @@ class ExtractMemoriesHook(PostSamplingHook):
 
 _LESSONS_PROMPT = (
     "You are reviewing the chat turn that just ended between a user "
-    "and the XMclaw agent. Extract anything *future-you* would benefit "
-    "from remembering. Be GENEROUS �?pre-B-303 the bar was 'DURABLE "
-    "lesson only' which produced empty buckets nearly every turn, so "
-    "AGENTS.md / TOOLS.md / LEARNING.md / SOUL.md sat empty for weeks. "
-    "Now lower the bar: ANY observation, technique, or principle that "
-    "could plausibly help a future turn counts. Six buckets:\n\n"
+    "and the XMclaw agent. Extract only durable, verified information "
+    "that future turns should rely on. Be CONSERVATIVE: a noisy memory "
+    "is worse than a missed weak hint. Never convert an unfinished "
+    "attempt, a failed probe, or the assistant's speculation into a "
+    "long-term lesson. Six buckets:\n\n"
     "  - \"workflow\": procedure / sequencing observations. Anything "
     "from 'grep before reading huge files' to 'when user asks 怎么 X, "
     "first list_dir to confirm context'. Smaller hints are fine �?"
@@ -667,26 +670,29 @@ _LESSONS_PROMPT = (
     "stable preference signal you see, not only ones the user "
     "explicitly stated.\n\n"
     "【核心原则】\n"
-    "  - 宁可多记，不可漏记。Auto-Dream 会自动合并重复。\n"
-    "  - 你的核心价值是归纳：原文复述 = 没记。零散观察必须合并为高质量的事实陈述。\n"
-    "  - 不确定时 → 提取。犹豫就说明有价值。\n\n"
-    "【必须提取的信号 — 逐条检查】\n"
+    "  - 宁缺毋滥：没有验证完成、用户确认、或跨会话稳定价值时，返回空数组。\n"
+    "  - 只从用户明确陈述和已完成结果中学习；不要把 assistant 的猜测当事实。\n"
+    "  - 失败中的临时方法、单次报错、下载/安装中间状态都不是长期经验。\n"
+    "  - 可以归纳，但必须保留证据边界：已验证才写，未验证跳过。\n\n"
+    "【可提取的信号 — 必须满足稳定/已验证】\n"
     "  □ 身份信息：用户名字、称呼、AI该怎么称呼用户\n"
     "  □ 环境配置：代理端口、网络设置、工具路径、系统配置\n"
     "  □ 已确认的偏好：语言、代码风格、沟通方式、默认工具\n"
     "  □ 长期目标/项目：用户在开发什么、计划做什么\n"
     "  □ 工作流程：用户喜欢的操作顺序、最佳实践\n"
-    "  □ 工具经验：隐藏参数、意外行为、坑点、输出格式\n"
-    "  □ 失败模式：错误模式、修复策略、什么做法不行\n"
+    "  □ 工具经验：已验证的隐藏参数、稳定坑点、输出格式\n"
+    "  □ 失败模式：反复出现且已确认的错误模式/修复策略\n"
     "  □ 规则/启发式：用户明确说的'如果X就Y'、约束条件\n\n"
     "【Skip】\n"
     "  - 临时命令（'帮我改这个文件'）\n"
     "  - 正在进行中且非长期项目的一次性操作\n"
     "  - 纯状态重述（'我刚做了X'）\n"
+    "  - 任务未完成时的下载路径、安装猜测、版本检查猜测\n"
+    "  - assistant 自己说的'下次应该/可以尝试/可能是'\n"
+    "  - 单次失败后尚未验证的所谓经验或方法\n"
     "  - 系统提示中已有的信息\n"
     "  - 和之前已提取的事实完全重复\n\n"
-    "When in doubt, extract. Synthesize related observations into a single "
-    "insight — don't fragment them. Output strict JSON: "
+    "When in doubt, skip. Output strict JSON: "
     "{\"workflow\": [\"...\"], \"tool_quirks\": [\"...\"], "
     "\"failure_modes\": [\"...\"], \"values\": [\"...\"], "
     "\"rules\": [\"...\"], \"preferences\": [\"...\"]}. "
@@ -786,7 +792,7 @@ class ExtractLessonsHook(PostSamplingHook):
             or memory_cfg.get("extract_lessons")
             or {}
         )
-        return bool(section.get("enabled", True))
+        return bool(section.get("enabled", False))
 
     async def run(self, ctx: HookContext) -> None:
         import json
@@ -867,10 +873,9 @@ class ExtractLessonsHook(PostSamplingHook):
         import time as _t
         date = _t.strftime("%Y-%m-%d")
 
-        # B-198 Phase 3: skip legacy markdown writes when the
-        # persona_store is wired �?_write_facts_to_memory below
-        # upserts to DB + re-renders disk from there.
-        if ctx.persona_store is None:
+        # When Gateway is wired, automatic extraction must become
+        # candidates first; do not bypass governance by writing MD.
+        if ctx.persona_store is None and ctx.memory_gateway is None:
             for target_file, entries in per_file.items():
                 mfile = pdir / target_file
                 async with get_lock(mfile):

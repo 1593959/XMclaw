@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { sanitizeArtifactMarkup } from "../lib/artifactSecurity";
 
 // 把 canvas 的 ``mermaid`` 产物真正渲染成图（之前 WorkspacePanel 直接把 graph TD
 // 源码塞进 iframe，只显示裸文本 = "丑/排版乱"）。mermaid 体积较大，用动态
@@ -27,7 +28,7 @@ export default function MermaidView({ content }: { content: string }) {
         }
         const { svg } = await mermaid.render(idRef.current, content.trim());
         if (!cancelled) {
-          setSvg(svg);
+          setSvg(sanitizeArtifactMarkup(svg));
           setErr("");
         }
       } catch (e) {

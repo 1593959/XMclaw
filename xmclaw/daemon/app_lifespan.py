@@ -116,6 +116,59 @@ def make_lifespan(
             log.warning("workspace_manager.init_failed err=%s", exc)
             _app.state.workspace_manager = None
 
+        # 2026-06-25: task artifact ledger. Records concrete files,
+        # downloads, generated media, and document attachments produced
+        # by tools so later steps can find their own outputs without
+        # re-searching the machine or relying on chat text.
+        try:
+            from xmclaw.cognition.artifact_ledger import ArtifactLedger
+            if bus is not None:
+                _artifact_ledger = ArtifactLedger(bus=bus)
+                _artifact_ledger.start()
+                _app.state.artifact_ledger = _artifact_ledger
+                _app.state.artifact_ledger_store = _artifact_ledger.store
+                _agent = getattr(_app.state, "agent", None)
+                if _agent is not None:
+                    setattr(
+                        _agent,
+                        "_artifact_ledger_store",
+                        _artifact_ledger.store,
+                    )
+                    try:
+                        from xmclaw.providers.tool.builtin import BuiltinTools
+
+                        def _walk_for_builtin(node):
+                            if isinstance(node, BuiltinTools):
+                                yield node
+                            children = getattr(node, "_children", None)
+                            if isinstance(children, list | tuple):
+                                for child in children:
+                                    yield from _walk_for_builtin(child)
+                            inner = getattr(node, "_inner", None)
+                            if inner is not None:
+                                yield from _walk_for_builtin(inner)
+                            providers = getattr(node, "_providers", None)
+                            if isinstance(providers, list | tuple):
+                                for child in providers:
+                                    yield from _walk_for_builtin(child)
+
+                        tools_provider = getattr(_agent, "_tools", None)
+                        if tools_provider is not None:
+                            for bt in _walk_for_builtin(tools_provider):
+                                bt.set_artifact_ledger_store(_artifact_ledger.store)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "artifact_ledger.builtin_tools_wire_failed err=%s",
+                            exc,
+                        )
+            else:
+                _app.state.artifact_ledger = None
+                _app.state.artifact_ledger_store = None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("artifact_ledger.init_failed err=%s", exc)
+            _app.state.artifact_ledger = None
+            _app.state.artifact_ledger_store = None
+
         # Cron tick: only start once the primary agent is live; without
         # it run_turn would have nowhere to land. Wraps a per-tick
         # session_id ('cron:<job_id>:<ts>') so cron output is searchable
@@ -2202,6 +2255,66 @@ def make_lifespan(
                         "cognition.goal_generator_init_failed err=%s", exc,
                     )
 
+                _self_critique_engine = None
+                _self_critique_critic_call = None
+                _self_critique_memory_resolver = None
+                try:
+                    _sc_cfg = (
+                        (config.get("cognition") or {}).get(
+                            "self_critique", {},
+                        )
+                        if isinstance(config, dict) else {}
+                    )
+                    if not isinstance(_sc_cfg, dict):
+                        _sc_cfg = {}
+                    if _sc_cfg.get("enabled", True):
+                        from xmclaw.cognition.self_critique import (
+                            SelfCritiqueEngine,
+                        )
+                        from xmclaw.daemon.aux_llm import resolve_aux_llm
+                        from xmclaw.daemon.self_critique_runtime import (
+                            build_self_critique_critic_call,
+                            make_self_critique_memory_resolver,
+                        )
+
+                        _sc_llm = resolve_aux_llm(
+                            getattr(agent, "_llm_registry", None)
+                            if agent is not None else None,
+                            getattr(agent, "_llm", None)
+                            if agent is not None else None,
+                        )
+                        _self_critique_engine = SelfCritiqueEngine()
+                        _self_critique_critic_call = (
+                            build_self_critique_critic_call(_sc_llm)
+                        )
+                        _self_critique_memory_resolver = (
+                            make_self_critique_memory_resolver(
+                                agent,
+                                _app.state,
+                            )
+                        )
+                        if agent is not None:
+                            setattr(
+                                agent,
+                                "_self_critique_engine",
+                                _self_critique_engine,
+                            )
+                            setattr(
+                                agent,
+                                "_self_critique_critic_call",
+                                _self_critique_critic_call,
+                            )
+                            setattr(
+                                agent,
+                                "_self_critique_memory_resolver",
+                                _self_critique_memory_resolver,
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "cognition.self_critique_init_failed err=%s",
+                        exc,
+                    )
+
                 _cognitive_daemon = CognitiveDaemon(
                     config=_cd_cfg,
                     bus=_percept_bus,
@@ -2237,6 +2350,9 @@ def make_lifespan(
                         plan_store=getattr(
                             _app.state, "plan_store", None,
                         ),
+                        self_critique_engine=_self_critique_engine,
+                        self_critique_critic_call=_self_critique_critic_call,
+                        memory_service_resolver=_self_critique_memory_resolver,
                     ),
                     reflection_cycle=_reflection_cycle,
                     skill_proposer=_skill_proposer,
@@ -2523,10 +2639,25 @@ def make_lifespan(
                             if isinstance(memory_v2_cfg, dict) else {}
                         )
                         _gateway_llm = getattr(agent, "_llm", None)
+                        _candidate_store = None
+                        try:
+                            from xmclaw.memory.v2.candidates import (
+                                MemoryCandidateStore,
+                            )
+                            _candidate_store = MemoryCandidateStore()
+                            _app.state.memory_candidate_store = (
+                                _candidate_store
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "memory_candidate_store.start_failed err=%s",
+                                exc,
+                            )
                         agent._memory_gateway = CognitiveMemoryGateway(
                             memory_service=memory_v2_service,
                             llm=_gateway_llm,
                             cfg=_gateway_cfg,
+                            candidate_store=_candidate_store,
                         )
                         log.info(
                             "memory_gateway.wired enabled=%s think=%s "
@@ -2722,7 +2853,9 @@ def make_lifespan(
                         pdir = _resolve_persona_profile_dir(config or {})
                         if pdir is not None:
                             render_report = await render_all_persona_files(
-                                memory_v2_service, pdir,
+                                memory_v2_service,
+                                pdir,
+                                include_auto_sections=False,
                             )
                             log.info(
                                 "memory_v2.persona_render_boot pdir=%s "
@@ -3427,9 +3560,17 @@ def make_lifespan(
                             timeout_s=60.0,
                         )
                         plan_engine = PlanEngine(planner=planner)
+                        swarm_cfg = (
+                            (config or {}).get("swarm")
+                            if isinstance(config, dict)
+                            else {}
+                        ) or {}
                         worker_swarm = WorkerSwarm(
                             agent_loop=agent,
-                            max_workers=4,
+                            max_workers=int(swarm_cfg.get("max_subagents", 4)),
+                            task_timeout_s=float(
+                                swarm_cfg.get("task_timeout_s", 300.0),
+                            ),
                         )
                         jarvis_orch = JarvisOrchestrator(
                             agent_loop=agent,
@@ -3634,6 +3775,36 @@ def make_lifespan(
                         sig = _persona_sig()
                         if sig and sig != last:
                             last = sig
+                            _mem_svc = getattr(
+                                _app.state, "memory_v2_service", None,
+                            )
+                            if _mem_svc is not None:
+                                try:
+                                    from xmclaw.core.persona.md_sync import (
+                                        parse_md_sync_policy,
+                                        sync_manual_md_to_memory,
+                                    )
+                                    _report = await sync_manual_md_to_memory(
+                                        _mem_svc,
+                                        Path(_persona_profile_dir),
+                                        policy=parse_md_sync_policy(
+                                            getattr(_app.state, "config", None),
+                                        ),
+                                    )
+                                    log.info(
+                                        "persona.md_sync scanned=%d "
+                                        "written=%d rendered=%s",
+                                        _report.scanned,
+                                        _report.written,
+                                        list(_report.rendered),
+                                    )
+                                    sig = _persona_sig()
+                                    last = sig or last
+                                except Exception as exc:  # noqa: BLE001
+                                    log.warning(
+                                        "persona.md_sync_failed err=%s",
+                                        exc,
+                                    )
                             _persona_reload("SOUL.md")
                             log.info(
                                 "persona.hot_reloaded — external persona edit "

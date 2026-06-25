@@ -413,6 +413,31 @@ class EventType(str, Enum):
     PLAN_COMPLETED = "plan_completed"
     PLAN_FAILED = "plan_failed"
 
+    # Agent-kernel observability (2026-06-24): additive runtime signals
+    # for the LangGraph-style GraphState / reducer path and Reflexion
+    # failure critique path. Payloads are JSON-ish and intentionally
+    # compact so events.db does not become a second checkpoint store.
+    #
+    # GRAPH_STATE_UPDATED:
+    #   {"plan_id": str, "goal_id": str, "step_id": str | None,
+    #    "step_index": int | None, "final": str | None,
+    #    "subtasks": int, "tool_results": int, "errors": int}
+    # SELF_CRITIQUE_REQUESTED:
+    #   {"plan_id": str, "goal_id": str, "trigger": str,
+    #    "failure_summary": str, "trajectory_events": int}
+    # SUMMARIZER_EVICTION_PLANNED:
+    #   {"session_id": str, "messages_before": int,
+    #    "summarize_start": int, "summarize_end": int,
+    #    "evict_ratio": float, "ranges": list[dict]}
+    # TOOL_SANDBOX_POLICY_DECIDED:
+    #   {"tool_name": str, "policy": str, "decision": "allow" | "deny",
+    #    "reason": str, "sandbox_runtime": "host" | "docker" | "none",
+    #    "image": str}
+    GRAPH_STATE_UPDATED = "graph_state_updated"
+    SELF_CRITIQUE_REQUESTED = "self_critique_requested"
+    SUMMARIZER_EVICTION_PLANNED = "summarizer_eviction_planned"
+    TOOL_SANDBOX_POLICY_DECIDED = "tool_sandbox_policy_decided"
+
     # Epic #27 sweep follow-up (2026-05-19): emitted by SkillsWatcher
     # when it SUCCESSFULLY hot-reloads a Python ``skill.py`` after an
     # mtime change. Pre-this-event Python skills always needed a

@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { useApp } from "../store/app";
-import { apiGet, type ApiError } from "../lib/api";
+import { apiGetFresh, type ApiError } from "../lib/api";
 
 interface Goal {
   id: string;
@@ -33,6 +33,27 @@ interface AutoTask {
   error?: string | null;
   created_at?: number;
 }
+interface GraphNode {
+  id?: string;
+  task_id?: string;
+  status?: string;
+  dependencies?: string[];
+  prompt?: string;
+  description?: string;
+}
+interface GraphError {
+  kind?: string;
+  task_id?: string;
+  node_id?: string;
+  message?: string;
+  error?: string;
+}
+interface GraphStateSnapshot {
+  final?: string;
+  confidence?: number;
+  subtasks?: GraphNode[];
+  errors?: GraphError[];
+}
 interface NotWired {
   reason?: string;
   hint?: string;
@@ -52,25 +73,38 @@ export default function CognitionView() {
   const token = useApp((s) => s.token);
   const [state, setState] = useState<CogState | null>(null);
   const [tasks, setTasks] = useState<AutoTask[]>([]);
+  const [graphState, setGraphState] = useState<GraphStateSnapshot | null>(null);
   const [disabled, setDisabled] = useState<NotWired | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!token) return;
+    const ctl = new AbortController();
     setLoading(true);
-    apiGet<CogState>("/api/v2/cognition/state", token)
+    apiGetFresh<CogState>("/api/v2/cognition/state", token, ctl.signal)
       .then((d) => {
         setState(d);
         setDisabled(null);
       })
       .catch((e: ApiError) => {
+        if (ctl.signal.aborted) return;
         if (e.status === 503) setDisabled((e.body as NotWired) || { reason: "disabled" });
         else setState(null);
       })
-      .finally(() => setLoading(false));
-    apiGet<{ tasks?: AutoTask[] }>("/api/v2/cognition/tasks", token)
+      .finally(() => {
+        if (!ctl.signal.aborted) setLoading(false);
+      });
+    apiGetFresh<{ tasks?: AutoTask[] }>("/api/v2/cognition/tasks", token, ctl.signal)
       .then((d) => setTasks(d?.tasks || []))
-      .catch(() => setTasks([]));
+      .catch(() => {
+        if (!ctl.signal.aborted) setTasks([]);
+      });
+    apiGetFresh<GraphStateSnapshot>("/api/v2/cognition/tasks/graph-state", token, ctl.signal)
+      .then((d) => setGraphState(d || null))
+      .catch(() => {
+        if (!ctl.signal.aborted) setGraphState(null);
+      });
+    return () => ctl.abort();
   }, [token]);
 
   if (loading) return <div className="p-5 text-xs text-mc-faint">加载中…</div>;
@@ -95,6 +129,8 @@ export default function CognitionView() {
   const goals = state?.goals || [];
   const focus = state?.attention_focus || [];
   const fatigue = Object.entries(state?.fatigue || {});
+  const graphNodes = graphState?.subtasks || [];
+  const graphErrors = graphState?.errors || [];
 
   return (
     <div className="p-5 space-y-5">
@@ -107,6 +143,8 @@ export default function CognitionView() {
         <Metric label="当前目标" value={goals.length} />
         <Metric label="注意力焦点" value={focus.length} />
         <Metric label="自主任务" value={tasks.length} />
+        <Metric label="GraphState" value={graphState?.final || "n/a"} />
+        <Metric label="Graph errors" value={graphErrors.length} />
         <Metric
           label="显著性阈值"
           value={state?.salience_threshold != null ? state.salience_threshold.toFixed(2) : "—"}
@@ -156,6 +194,45 @@ export default function CognitionView() {
               {t.error && <div className="text-[11px] text-mc-err mt-0.5">{t.error}</div>}
             </div>
           ))}
+        </Section>
+      )}
+
+      {graphNodes.length > 0 && (
+        <Section title="GraphState">
+          <div className="rounded-md border border-mc-border bg-mc-panel2/35 px-3 py-2">
+            <div className="flex flex-wrap gap-3 text-[11px] text-mc-faint">
+              <span>final {graphState?.final || "unknown"}</span>
+              <span>
+                confidence {graphState?.confidence != null ? graphState.confidence.toFixed(2) : "n/a"}
+              </span>
+              <span>nodes {graphNodes.length}</span>
+              <span>errors {graphErrors.length}</span>
+            </div>
+            <div className="mt-2 space-y-1">
+              {graphNodes.slice(0, 6).map((n, index) => {
+                const status = (n.status || "pending").toLowerCase();
+                const label = n.prompt || n.description || n.id || n.task_id || `node-${index}`;
+                return (
+                  <div key={(n.id || n.task_id || String(index)) + index} className="min-w-0 border-t border-mc-border/70 pt-1.5 first:border-t-0 first:pt-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={"text-[11px] shrink-0 " + (STATUS_CLS[status] || "text-mc-faint")}>{status}</span>
+                      <span className="truncate text-[12.5px]">{label}</span>
+                    </div>
+                    {Array.isArray(n.dependencies) && n.dependencies.length > 0 && (
+                      <div className="mt-0.5 text-[10.5px] text-mc-faint truncate">
+                        deps {n.dependencies.join(", ")}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {graphErrors.length > 0 && (
+              <div className="mt-2 text-[11px] text-mc-err break-words">
+                {(graphErrors[0].message || graphErrors[0].error || graphErrors[0].kind || "graph error").slice(0, 220)}
+              </div>
+            )}
+          </div>
         </Section>
       )}
 

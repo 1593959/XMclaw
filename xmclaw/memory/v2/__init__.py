@@ -28,6 +28,11 @@ from xmclaw.memory.v2.backend_inmemory import (
     InMemoryGraphBackend,
     InMemoryVectorBackend,
 )
+from xmclaw.memory.v2.candidates import (
+    MemoryCandidate,
+    MemoryCandidateStore,
+    default_candidate_db_path,
+)
 from xmclaw.memory.v2.embedding import (
     EmbeddingFailure,
     EmbeddingService,
@@ -99,6 +104,8 @@ __all__ = [
     "InMemoryGraphBackend",
     "InMemoryVectorBackend",
     "LONG_TERM_PROMOTE_THRESHOLD",
+    "MemoryCandidate",
+    "MemoryCandidateStore",
     "MemoryService",
     "MemoryServiceWriteError",
     "RecallHit",
@@ -109,6 +116,7 @@ __all__ = [
     "StubEmbedder",
     "VectorBackend",
     "build_embedding_service",
+    "default_candidate_db_path",
     "extract_and_remember",
     "extract_keys",
     "legacy_node_type_to_kind",

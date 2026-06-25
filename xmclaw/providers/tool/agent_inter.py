@@ -337,12 +337,14 @@ class AgentInterTools(ToolProvider):
         primary_id: str = "main",
         task_scheduler: Any | None = None,
         swarm_orchestrator: Any | None = None,
+        bus: Any | None = None,
     ) -> None:
         self._manager = manager
         self._primary_loop = primary_loop
         self._primary_id = primary_id
         self._task_scheduler = task_scheduler
         self._swarm = swarm_orchestrator
+        self._bus = bus
         self._tasks: dict[str, _TaskRecord] = {}
         # B-68: hold strong references to fire-and-forget background
         # tasks. asyncio docs explicitly warn that ``create_task``

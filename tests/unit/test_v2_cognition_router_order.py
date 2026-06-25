@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from xmclaw.cognition.graph_runtime import GraphState
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.app import create_app
 from xmclaw.daemon.routers.cognition import router
@@ -58,6 +59,15 @@ def test_cognition_router_tasks_graph_before_task_id() -> None:
         f"FastAPI matches in registration order — concrete routes "
         f"must precede parameterized siblings.\n"
         f"Full /tasks order: {paths}"
+    )
+
+
+def test_cognition_router_tasks_graph_state_before_task_id() -> None:
+    paths = _route_order("/api/v2/cognition/tasks")
+    assert "/api/v2/cognition/tasks/graph-state" in paths
+    assert "/api/v2/cognition/tasks/{task_id}" in paths
+    assert paths.index("/api/v2/cognition/tasks/graph-state") < paths.index(
+        "/api/v2/cognition/tasks/{task_id}"
     )
 
 
@@ -105,6 +115,9 @@ def client_with_scheduler() -> TestClient:
     fake_scheduler = MagicMock()
     fake_scheduler.list_tasks = AsyncMock(return_value=[])
     fake_scheduler.get_task = AsyncMock(return_value=None)
+    fake_scheduler.snapshot_graph_state = AsyncMock(
+        return_value=GraphState(thread_id="test", run_id="test")
+    )
     app.state.task_scheduler = fake_scheduler
 
     # CognitiveState too — `/state` route checks app.state.cognitive_state
@@ -144,6 +157,17 @@ def test_cognition_tasks_graph_reaches_dag_handler_not_404(
     assert isinstance(body["edges"], list)
 
 
+def test_cognition_tasks_graph_state_reaches_graph_state_handler(
+    client_with_scheduler: TestClient,
+) -> None:
+    r = client_with_scheduler.get("/api/v2/cognition/tasks/graph-state")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["thread_id"] == "test"
+    assert body["run_id"] == "test"
+    assert "subtasks" in body
+
+
 def test_cognition_tasks_concrete_task_id_still_works(
     client_with_scheduler: TestClient,
 ) -> None:
@@ -171,6 +195,7 @@ def test_cognition_state_endpoint_reachable_from_ui_url(
         "/api/v2/cognition/proposals",
         "/api/v2/cognition/graph/stats",
         "/api/v2/cognition/tasks/graph",
+        "/api/v2/cognition/tasks/graph-state",
         "/api/v2/cognition/daemon",
         "/api/v2/cognition/daemon/history",
         "/api/v2/cognition/daemon/health",

@@ -326,6 +326,7 @@ async def upsert_active_profile_file(
         # PersonaStore.set_manual's behavior so a round-trip
         # (render → edit → save) doesn't accidentally promote
         # auto bullets into the manual row.
+        from xmclaw.core.persona.md_sync import _manual_is_substantial
         from xmclaw.core.persona.store import (
             AUTO_SECTIONS, split_manual_and_auto,
         )
@@ -338,9 +339,17 @@ async def upsert_active_profile_file(
             manual_only.rstrip() + "\n" if manual_only.strip() else ""
         )
         try:
-            await mem_v2.upsert_persona_manual(canonical, manual_only)
+            if _manual_is_substantial(manual_only):
+                await mem_v2.upsert_persona_manual(canonical, manual_only)
+            else:
+                await mem_v2.delete_persona_manual(canonical)
             from xmclaw.core.persona.v2_renderer import render_persona_file
-            await render_persona_file(mem_v2, pdir, canonical)
+            await render_persona_file(
+                mem_v2,
+                pdir,
+                canonical,
+                include_auto_sections=False,
+            )
         except Exception as exc:  # noqa: BLE001
             return JSONResponse(
                 {"ok": False, "error": f"v2 write failed: {exc}"},

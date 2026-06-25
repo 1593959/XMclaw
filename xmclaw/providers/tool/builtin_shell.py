@@ -15,9 +15,16 @@ from urllib.parse import urlparse
 from xmclaw.core.ir import ToolCall, ToolResult
 from xmclaw.providers.tool._helpers import (
     _fail as _fail,
+    _fail_with_hint as _fail_with_hint,
     _parse_baidu_html as _parse_baidu_html,
     _parse_bing_html as _parse_bing_html,
     _parse_ddg_html as _parse_ddg_html,
+)
+from xmclaw.providers.tool.docker_shell import DockerShellUnavailable
+from xmclaw.providers.tool.error_templates import (
+    shell_check_error_template,
+    tool_sandbox_error_template,
+    tool_timeout_error_template,
 )
 
 # 2026-06-23: 默认 30s 对本地 agent 干真活太激进 —— 写完脚本直接执行
@@ -97,6 +104,43 @@ class _SearchBackendError(Exception):
     instead of a full traceback."""
 
 
+def _shell_result_from_exit(
+    call: ToolCall,
+    t0: float,
+    code: int,
+    merged: bytes,
+) -> ToolResult:
+    text = merged.decode("utf-8", errors="replace")
+    if len(text) > _BASH_MAX_OUTPUT:
+        text = text[:_BASH_MAX_OUTPUT] + f"\n...[truncated, {len(merged)} bytes total]"
+    content = f"[exit {code}]\n{text}"
+    if code == 0:
+        err = None
+    else:
+        cmd_str = str(call.args.get("command", ""))
+        cmd_hash = hashlib.sha1(
+            cmd_str.encode("utf-8"),
+        ).hexdigest()[:8] if cmd_str else "nohash"
+        tail_line = ""
+        for raw_line in reversed(text.splitlines()):
+            stripped = raw_line.strip()
+            if stripped:
+                tail_line = stripped[:60]
+                break
+        err = shell_check_error_template(
+            f"command exited non-zero ({code})",
+            detail=f"[cmd:{cmd_hash}] {tail_line}",
+        )
+    return ToolResult(
+        call_id=call.id,
+        ok=(code == 0),
+        content=content,
+        error=err,
+        side_effects=(),
+        latency_ms=(time.perf_counter() - t0) * 1000.0,
+    )
+
+
 class BuiltinToolsShellMixin:
     """Shell and web tools: bash, web_fetch, web_search."""
 
@@ -106,6 +150,7 @@ class BuiltinToolsShellMixin:
     # up its API key without this layer reaching down into the config
     # singleton. None → default to DDG.
     _search_config_getter: Any | None = None
+    _shell_execution_policy: Any | None = None
 
     async def _bash(self, call: ToolCall, t0: float) -> ToolResult:
         return await self._run_shell(call, t0, default_timeout=_BASH_DEFAULT_TIMEOUT)
@@ -120,14 +165,24 @@ class BuiltinToolsShellMixin:
         command = call.args.get("command")
         if not isinstance(command, str) or not command.strip():
             return _fail(call, t0, "missing or empty 'command' argument")
+        policy = getattr(self, "_shell_execution_policy", None)
+        if policy is not None:
+            refusal = policy.refusal_reason()
+            if refusal:
+                return _fail(call, t0, refusal)
         # 2026-05-26 (audit F3 Layer 1): pre-flight the command against
         # the guardrail patterns BEFORE spawning a subprocess.
         # ``deny`` short-circuits with a refusal; ``confirm`` is also
         # treated as a refusal at this layer with a guidance message
         # pointing the LLM at ``ask_user_question`` — wiring it
         # through to an actual user confirmation is the follow-up.
+        #
+        # Wave-27 fix-LAT17: respect the configured guardrails mode so a
+        # trusted local dev environment can set ``permissive`` or
+        # ``disabled`` without editing code.
         from xmclaw.providers.tool.bash_guardrails import classify_command
-        _verdict = classify_command(command)
+        guardrails_mode = getattr(self, "_bash_guardrails_mode", "strict")
+        _verdict = classify_command(command, mode=guardrails_mode)
         if _verdict.decision == "deny":
             return _fail(
                 call, t0,
@@ -162,6 +217,31 @@ class BuiltinToolsShellMixin:
             timeout = float(timeout)
         except (TypeError, ValueError):
             timeout = default_timeout
+
+        if getattr(policy, "name", "") == "docker":
+            sandbox = getattr(self, "_shell_sandbox", None)
+            if sandbox is None:
+                return _fail(
+                    call,
+                    t0,
+                    tool_sandbox_error_template("docker shell sandbox is not configured"),
+                )
+            try:
+                code, merged = await asyncio.to_thread(
+                    sandbox.run,
+                    command,
+                    cwd=cwd,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return _fail(call, t0, tool_timeout_error_template("bash", timeout))
+            except DockerShellUnavailable as exc:
+                return _fail(
+                    call,
+                    t0,
+                    tool_sandbox_error_template("docker shell sandbox is unavailable", detail=str(exc)),
+                )
+            return _shell_result_from_exit(call, t0, code, merged)
 
         # Shell selection. On Windows, cmd.exe doesn't understand
         # POSIX commands like ``ls``, ``cat``, ``grep``. LLMs typically
@@ -246,7 +326,7 @@ class BuiltinToolsShellMixin:
             else:
                 code, merged = await asyncio.to_thread(_run)
         except subprocess.TimeoutExpired:
-            return _fail(call, t0, f"timed out after {timeout}s")
+            return _fail(call, t0, tool_timeout_error_template("bash", timeout))
         text = merged.decode("utf-8", errors="replace")
         if len(text) > _BASH_MAX_OUTPUT:
             text = text[:_BASH_MAX_OUTPUT] + f"\n...[truncated, {len(merged)} bytes total]"
@@ -277,9 +357,9 @@ class BuiltinToolsShellMixin:
                 if stripped:
                     tail_line = stripped[:60]
                     break
-            err = (
-                f"command exited non-zero ({code}) "
-                f"[cmd:{cmd_hash}] {tail_line}"
+            err = shell_check_error_template(
+                f"command exited non-zero ({code})",
+                detail=f"[cmd:{cmd_hash}] {tail_line}",
             )
         return ToolResult(
             call_id=call.id,

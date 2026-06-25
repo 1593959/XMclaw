@@ -558,6 +558,17 @@ def test_build_agent_reads_max_hops_from_agent_block() -> None:
     assert agent._max_hops == 80
 
 
+def test_build_agent_reads_max_react_loop_from_agent_block() -> None:
+    """``cfg.agent.max_react_loop`` is the explicit ReAct-loop alias."""
+    bus = InProcessEventBus()
+    agent = build_agent_from_config({
+        "llm": {"anthropic": {"api_key": "k"}},
+        "agent": {"max_hops": 80, "max_react_loop": 12},
+    }, bus)
+    assert agent is not None
+    assert agent._max_hops == 12
+
+
 def test_build_agent_max_hops_kwarg_wins_over_config() -> None:
     """Explicit kwarg (used by tests) bypasses the config lookup."""
     bus = InProcessEventBus()
@@ -667,6 +678,78 @@ def test_build_tools_honors_kill_switches() -> None:
     assert "web_search" not in names
     # Filesystem tools still present.
     assert {"file_read", "file_write", "list_dir"} <= names
+
+
+@pytest.mark.asyncio
+async def test_build_tools_honors_shell_execution_policy() -> None:
+    tools = build_tools_from_config({
+        "tools": {"shell": {"execution_policy": "disabled"}},
+    })
+    assert tools is not None
+
+    from xmclaw.core.ir import ToolCall
+    result = await tools.invoke(ToolCall(
+        name="bash",
+        args={"command": "echo hi"},
+        provenance="synthetic",
+    ))
+
+    assert result.ok is False
+    assert "execution_policy=disabled" in result.error
+
+
+def test_build_tools_passes_shell_sandbox_image() -> None:
+    tools = build_tools_from_config({
+        "tools": {
+            "shell": {
+                "execution_policy": "docker",
+                "sandbox_image": "alpine:3.20",
+                "sandbox_memory": "1g",
+                "sandbox_cpus": "0.75",
+                "sandbox_pids_limit": 64,
+                "sandbox_network": "bridge",
+            },
+            "enable_web": False,
+        },
+    })
+    tools = _unwrap_builtin(tools)
+
+    assert isinstance(tools, BuiltinTools)
+    assert tools._shell_execution_policy.name == "docker"
+    assert tools._shell_sandbox is not None
+    assert tools._shell_sandbox.image == "alpine:3.20"
+    assert tools._shell_sandbox.memory == "1g"
+    assert tools._shell_sandbox.cpus == "0.75"
+    assert tools._shell_sandbox.pids_limit == 64
+    assert tools._shell_sandbox.network == "bridge"
+
+
+def test_build_tools_passes_bash_guardrails_mode() -> None:
+    tools = build_tools_from_config({
+        "tools": {"shell": {"bash_guardrails_mode": "permissive"}},
+    })
+    tools = _unwrap_builtin(tools)
+    assert isinstance(tools, BuiltinTools)
+    assert tools._bash_guardrails_mode == "permissive"
+
+
+@pytest.mark.asyncio
+async def test_tools_bash_guardrails_mode_permissive_allows_sudo() -> None:
+    tools = build_tools_from_config({
+        "tools": {"shell": {"bash_guardrails_mode": "permissive"}},
+    })
+    assert tools is not None
+
+    from xmclaw.core.ir import ToolCall
+    # permissive mode should allow sudo; actual execution may still fail
+    # if sudo is not present, but the guardrail itself must not block.
+    result = await tools.invoke(ToolCall(
+        name="bash",
+        args={"command": "sudo --version"},
+        provenance="synthetic",
+    ))
+    assert "sudo" not in (result.error or "")
+    assert "guardrail" not in (result.error or "").lower()
 
 
 @pytest.mark.asyncio

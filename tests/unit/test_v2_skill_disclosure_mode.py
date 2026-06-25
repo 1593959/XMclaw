@@ -28,6 +28,7 @@ from xmclaw.skills.tool_bridge import (
     DISCLOSURE_MODE_UNIFIED,
     META_BROWSE_TOOL_NAME,
     META_COMPOSE_TOOL_NAME,
+    META_DECISION_TOOL_NAME,
     META_DIFF_TOOL_NAME,
     META_INSTALL_TOOL_NAME,
     META_PROPOSE_TOOL_NAME,
@@ -54,6 +55,7 @@ _META_NAMES = frozenset({
     META_PROPOSE_TOOL_NAME,
     # skill_compose — sequential-workflow dispatcher (always-on meta-tool).
     META_COMPOSE_TOOL_NAME,
+    META_DECISION_TOOL_NAME,
 })
 
 

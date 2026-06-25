@@ -53,6 +53,7 @@ from xmclaw.providers.tool.builtin_user import (
 from xmclaw.providers.tool._specs import (  # noqa: F401
     _AGENT_STATUS_SPEC as _AGENT_STATUS_SPEC,
     _APPLY_PATCH_SPEC as _APPLY_PATCH_SPEC,
+    _ARTIFACT_LEDGER_SPEC as _ARTIFACT_LEDGER_SPEC,
     _ASK_USER_QUESTION_SPEC as _ASK_USER_QUESTION_SPEC,
     _BASH_SPEC as _BASH_SPEC,
 
@@ -77,6 +78,7 @@ from xmclaw.providers.tool._specs import (  # noqa: F401
     _MEMORY_GET_SPEC as _MEMORY_GET_SPEC,
     _MEMORY_GRAPH_NEIGHBORS_SPEC as _MEMORY_GRAPH_NEIGHBORS_SPEC,
     _MEMORY_INSPECT_SPEC as _MEMORY_INSPECT_SPEC,
+    _MEMORY_DECISION_SPEC as _MEMORY_DECISION_SPEC,
     _MEMORY_SPEC as _MEMORY_SPEC,
     _MEMORY_PIN_SPEC as _MEMORY_PIN_SPEC,
     _MEMORY_SEARCH_SPEC as _MEMORY_SEARCH_SPEC,
@@ -115,6 +117,7 @@ from xmclaw.providers.tool._helpers import (  # noqa: F401
     enforce_char_cap as enforce_char_cap,
 )
 
+from xmclaw.providers.tool.builtin_artifacts import BuiltinToolsArtifactMixin
 from xmclaw.providers.tool.builtin_db import BuiltinToolsDbMixin
 from xmclaw.providers.tool.builtin_fs import BuiltinToolsFsMixin
 from xmclaw.providers.tool.builtin_memory import BuiltinToolsMemoryMixin
@@ -130,6 +133,8 @@ from xmclaw.providers.tool.builtin_canvas import (
     _CANVAS_UPDATE_SPEC,
 )
 from xmclaw.providers.tool.builtin_shell import BuiltinToolsShellMixin
+from xmclaw.providers.tool.docker_shell import DockerShellSandbox
+from xmclaw.providers.tool.sandbox_policy import resolve_shell_execution_policy
 from xmclaw.providers.tool.builtin_user import BuiltinToolsUserMixin
 from xmclaw.providers.tool.builtin_voice import BuiltinToolsVoiceMixin
 from xmclaw.providers.tool.builtin_worktree import BuiltinToolsWorktreeMixin
@@ -242,6 +247,7 @@ def cancel_pending_fanout_reviews(session_id: str | None = None) -> int:
 
 
 class BuiltinTools(
+    BuiltinToolsArtifactMixin,
     BuiltinToolsCanvasMixin,
     BuiltinToolsDbMixin,
     BuiltinToolsFsMixin,
@@ -262,8 +268,16 @@ class BuiltinTools(
         Optional sandbox. If provided, all filesystem tools refuse paths
         outside these directories. None (default) means no sandbox --
         the tools have whatever access the running process has.
-    enable_bash : bool
+        enable_bash : bool
         If False, ``bash`` returns a structured refusal. Default True.
+    shell_execution_policy : str
+        Explicit bash execution policy. ``host_guarded`` keeps legacy
+        guarded host execution, ``disabled`` refuses, and ``docker`` runs
+        through the Docker shell sandbox.
+    bash_guardrails_mode : str
+        ``strict`` (default) treats risky-but-legitimate patterns as
+        ``confirm`` (currently fail-closed). ``permissive`` allows those
+        patterns through. ``disabled`` turns the guardrails off entirely.
     enable_web : bool
         If False, ``web_fetch`` and ``web_search`` refuse. Default True.
     """
@@ -273,6 +287,14 @@ class BuiltinTools(
         allowed_dirs: list[Path | str] | None = None,
         *,
         enable_bash: bool = True,
+        shell_execution_policy: str = "host_guarded",
+        bash_guardrails_mode: str = "strict",
+        shell_sandbox_image: str = "python:3.12-alpine",
+        shell_sandbox_memory: str = "512m",
+        shell_sandbox_cpus: str = "1.0",
+        shell_sandbox_pids_limit: int = 256,
+        shell_sandbox_network: str = "none",
+        shell_sandbox_runner: "object | None" = None,
         enable_web: bool = True,
         todo_listener: "object | None" = None,
         workspace_root_provider: "object | None" = None,
@@ -310,6 +332,23 @@ class BuiltinTools(
             [Path(d).resolve() for d in allowed_dirs] if allowed_dirs else None
         )
         self._enable_bash = enable_bash
+        self._shell_execution_policy = resolve_shell_execution_policy(
+            "disabled" if not enable_bash else shell_execution_policy
+        )
+        self._bash_guardrails_mode = (
+            "disabled" if not enable_bash else bash_guardrails_mode
+        )
+        self._shell_sandbox = (
+            DockerShellSandbox(
+                image=str(shell_sandbox_image or "python:3.12-alpine"),
+                memory=str(shell_sandbox_memory or "512m"),
+                cpus=str(shell_sandbox_cpus or "1.0"),
+                pids_limit=int(shell_sandbox_pids_limit),
+                network=str(shell_sandbox_network or "none"),
+                runner=shell_sandbox_runner,  # type: ignore[arg-type]
+            )
+            if self._shell_execution_policy.name == "docker" else None
+        )
         self._enable_web = enable_web
         self._undo_cabinet = undo_cabinet
         self._search_config_getter = search_config_getter
@@ -384,6 +423,7 @@ class BuiltinTools(
         # ``set_memory_v2_service``.
         self._memory_v2_service: "object | None" = None
         self._memory_gateway: "object | None" = None
+        self._artifact_ledger_store: "object | None" = None
         # B-388: voice provider handles. Each is advertised on
         # list_tools when wired, so a daemon without faster-whisper /
         # edge-tts installed simply doesn't expose those tools.
@@ -446,6 +486,15 @@ class BuiltinTools(
         """
         self._memory_gateway = gateway
 
+    def set_artifact_ledger_store(self, store: "object | None") -> None:
+        """Wire (or clear) the task artifact ledger post-construction.
+
+        The ledger is execution state: it helps the agent locate files,
+        downloads, generated media, and documents from the current task
+        without misusing long-term memory as a scratchpad.
+        """
+        self._artifact_ledger_store = store
+
     def list_tools(self) -> list[ToolSpec]:
         specs = [
             _FILE_READ_SPEC, _FILE_WRITE_SPEC, _APPLY_PATCH_SPEC,
@@ -466,6 +515,8 @@ class BuiltinTools(
                 _OPEN_IN_USER_BROWSER_SPEC,
             ])
         specs.extend([_TODO_WRITE_SPEC, _TODO_READ_SPEC, _UPDATE_FOCUS_SPEC])
+        if self._artifact_ledger_store is not None:
+            specs.append(_ARTIFACT_LEDGER_SPEC)
         # Self-modifying memory tools are gated by the persona_dir
         # provider — without it we have nowhere to write, so we don't
         # advertise the tools. Tests construct BuiltinTools without
@@ -530,6 +581,7 @@ class BuiltinTools(
         # tools (memory_search, memory_compact, …) which are still wired
         # but hidden from list_tools.
         specs.append(_MEMORY_SPEC)
+        specs.append(_MEMORY_DECISION_SPEC)
         # B-ContextLoss: chronological history browser.
         # Only advertised when a session_store is wired.
         if self._session_store is not None:
@@ -609,6 +661,8 @@ class BuiltinTools(
                 return await self._todo_read(call, t0)
             if call.name == "update_focus":
                 return await self._update_focus(call, t0)
+            if call.name == "artifact_ledger":
+                return await self._artifact_ledger(call, t0)
             if call.name == "remember":
                 if self._persona_dir_provider is None:
                     return _fail(call, t0, "remember tool not configured (no persona dir)")
@@ -660,6 +714,8 @@ class BuiltinTools(
             # preferred surface is ``memory(action=...)``.
             if call.name == "memory":
                 return await self._memory(call, t0)
+            if call.name == "memory_decision":
+                return await self._memory_decision(call, t0)
             # Backward compat: old memory tool names → memory(action=...)
             if call.name in _LEGACY_MEMORY_TOOL_MAP:
                 import warnings as _warnings
@@ -801,7 +857,8 @@ class BuiltinTools(
             call, t0,
             f"unknown memory action: {action!r}. "
             f"Valid: search, compact, forget, correct, dedup, inspect, "
-            f"add, replace, get, graph_neighbors, pin, multi_action",
+            f"add, replace, get, graph_neighbors, pin, "
+            f"multi_action",
         )
 
     async def _set_output_style(self, call: ToolCall, t0: float) -> ToolResult:

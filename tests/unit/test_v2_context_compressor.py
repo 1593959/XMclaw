@@ -168,6 +168,27 @@ def test_compress_inserts_summary_message() -> None:
     assert found, "SUMMARY_PREFIX not found in compressed messages"
 
 
+def test_compress_records_summarizer_eviction_plan() -> None:
+    cc = ContextCompressor(
+        model="t", summarize_call=_stub_summarize,
+        protect_first_n=2, protect_last_n=4,
+        context_length=20_000, threshold_percent=0.5,
+        quiet_mode=True,
+    )
+    msgs = _build_long_history(n_user_turns=8, content_chars=600)
+    out = asyncio.run(cc.compress(msgs, session_id="s-plan"))
+
+    plan = cc.last_eviction_plan
+    assert plan is not None
+    assert plan.session_id == "s-plan"
+    assert plan.messages_before <= len(msgs)
+    assert plan.should_summarize is True
+    assert all(msgs[i].role != "user" for i in plan.summarize_indices)
+    assert plan.ranges
+    assert plan.provenance["reason"] == "middle_context_over_budget"
+    assert len(out) < len(msgs)
+
+
 def test_compress_preserves_first_user_message() -> None:
     """Head protection: protect_first_n messages NEVER get summarised."""
     cc = ContextCompressor(

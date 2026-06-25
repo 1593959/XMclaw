@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import time
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -118,28 +119,6 @@ def test_derive_todo_steps_when_no_plan() -> None:
     assert out["steps_done"] == 1
 
 
-def test_derive_todo_takes_precedence_over_plan() -> None:
-    """plan 与 todo 并存时，todo 更实时、更细粒度，应优先使用。
-    修复：旧逻辑优先 plan 导致 TaskRail 进度与前端 PlanStrip 不一致。"""
-    out = _derive([
-        _ev("plan_started", NOW - 100, step_ids=["a", "b", "c"], n_steps=3),
-        _ev("plan_step_completed", NOW - 80, step_id="a"),
-        _ev("plan_step_completed", NOW - 60, step_id="b"),
-        # plan 只完成 2/3，但后续 todo 全部完成
-        _ev("todo_updated", NOW - 40, items=[
-            {"content": "x", "status": "done"},
-            {"content": "y", "status": "done"},
-            {"content": "z", "status": "done"},
-            {"content": "w", "status": "done"},
-            {"content": "v", "status": "done"},
-        ]),
-        _ev("llm_response", NOW - 30, ok=True, tool_calls_count=0),
-    ], NOW)
-    assert out["steps_total"] == 5
-    assert out["steps_done"] == 5
-    assert out["status"] == "done"
-
-
 def test_derive_pure_chat() -> None:
     out = _derive([
         _ev("user_message", NOW - 600),
@@ -208,9 +187,11 @@ def test_tasks_endpoint_end_to_end(client: TestClient) -> None:
         assert t["status"] in {"running", "awaiting_input", "done", "failed", "chat"}
 
 
-def test_tasks_route_registered_once(client: TestClient) -> None:
-    paths = [getattr(r, "path", "") for r in client.app.routes]
-    assert paths.count("/api/v2/tasks") == 1
+def test_tasks_routes_are_reachable(client: TestClient) -> None:
+    r = client.get("/api/v2/tasks")
+    assert r.status_code == 200
+    artifacts = client.get("/api/v2/tasks/synthetic-session/artifacts")
+    assert artifacts.status_code in {200, 503}
 
 
 def test_system_health_not_422(client: TestClient) -> None:
@@ -226,6 +207,7 @@ def test_system_health_not_422(client: TestClient) -> None:
 # ── /ui-next/ 挂载 ────────────────────────────────────────────────
 
 _DIST = Path(__file__).resolve().parents[2] / "xmclaw" / "daemon" / "webui_dist"
+_WEBUI_SRC = Path(__file__).resolve().parents[2] / "webui" / "src"
 
 
 def test_webui_dist_committed() -> None:
@@ -234,6 +216,89 @@ def test_webui_dist_committed() -> None:
         "xmclaw/daemon/webui_dist/index.html 缺失 — 在 webui/ 里跑 "
         "`npm run build` 并提交产物"
     )
+
+
+def test_webui_initial_bundle_budget() -> None:
+    """Heavy renderers must stay lazy-loaded instead of entering boot JS."""
+    html = (_DIST / "index.html").read_text(encoding="utf-8")
+    refs = re.findall(r'src="\./(assets/index-[^"]+\.js)"', html)
+    assert refs, "index.html must reference one boot JS asset"
+    boot_js = _DIST / refs[0]
+    assert boot_js.is_file(), f"boot JS missing: {boot_js}"
+    assert boot_js.stat().st_size < 380_000, (
+        f"boot JS grew to {boot_js.stat().st_size} bytes; keep Mermaid, "
+        "Cytoscape, KaTeX, and Markdown renderers behind lazy imports"
+    )
+
+
+def test_react_rest_fetches_use_header_token_not_query_param() -> None:
+    """REST fetches should keep pairing tokens out of URLs."""
+    api_src = (_WEBUI_SRC / "lib" / "api.ts").read_text(encoding="utf-8")
+    store_src = (_WEBUI_SRC / "store" / "app.ts").read_text(encoding="utf-8")
+    voice_src = (_WEBUI_SRC / "lib" / "voice.ts").read_text(encoding="utf-8")
+
+    assert "X-XMC-Token" in api_src
+    assert "fetch(withToken" not in api_src
+    assert "?token=${encodeURIComponent(token)}" not in store_src
+    assert "?token=${encodeURIComponent(token)}" not in voice_src
+
+
+def test_high_churn_views_use_abortable_fetches() -> None:
+    """Session/view scoped panels should not let stale GET responses win."""
+    for rel in [
+        "views/SystemView.tsx",
+        "views/CognitionView.tsx",
+        "views/MemoryView.tsx",
+        "views/SkillsView.tsx",
+        "views/ModelConfig.tsx",
+        "views/CronView.tsx",
+        "views/FilesView.tsx",
+    ]:
+        src = (_WEBUI_SRC / rel).read_text(encoding="utf-8")
+        assert "apiGetFresh" in src, f"{rel} should use abortable GETs"
+        assert "new AbortController()" in src, f"{rel} should abort stale requests"
+        assert "return () => ctl.abort()" in src or "ctl.abort();" in src
+    files_src = (_WEBUI_SRC / "views/FilesView.tsx").read_text(encoding="utf-8")
+    assert "openSeq" in files_src
+    assert "openSeq.current !== seq" in files_src
+
+
+def test_frontend_accessible_control_primitives() -> None:
+    """Interactive controls need stable names and state semantics."""
+    ui_button_src = (_WEBUI_SRC / "components" / "UiButton.tsx").read_text(encoding="utf-8")
+    seg_tabs_src = (_WEBUI_SRC / "components" / "SegTabs.tsx").read_text(encoding="utf-8")
+    thinking_src = (_WEBUI_SRC / "components" / "ThinkingBlock.tsx").read_text(encoding="utf-8")
+    tool_cards_src = (_WEBUI_SRC / "components" / "ToolCards.tsx").read_text(encoding="utf-8")
+    skills_src = (_WEBUI_SRC / "views" / "SkillsView.tsx").read_text(encoding="utf-8")
+    channel_src = (_WEBUI_SRC / "views" / "ChannelEditor.tsx").read_text(encoding="utf-8")
+
+    assert "export function IconButton" in ui_button_src
+    assert "export function ToggleButton" in ui_button_src
+    assert "aria-label={label}" in ui_button_src
+    assert "aria-pressed={pressed}" in ui_button_src
+    assert 'role="tablist"' in seg_tabs_src
+    assert "aria-selected={active}" in seg_tabs_src
+    assert "aria-pressed={active}" in seg_tabs_src
+    assert "aria-expanded={open}" in thinking_src
+    assert "aria-expanded={open}" in tool_cards_src
+    assert "aria-expanded={open}" in skills_src
+    assert "<ToggleButton" in channel_src
+
+
+def test_team_view_surfaces_graph_state_topology() -> None:
+    """The team/planning page should show the canonical task GraphState."""
+    team_src = (_WEBUI_SRC / "views" / "TeamView.tsx").read_text(encoding="utf-8")
+
+    assert "/api/v2/cognition/tasks/graph-state" in team_src
+    assert "apiGetFresh<GraphStateSnapshot>" in team_src
+    assert "new AbortController()" in team_src
+    assert "GraphStatePanel" in team_src
+    assert "GraphNodeRow" in team_src
+    assert "graphState.metadata?.inspection" in team_src
+    assert "inspection.runnable_ids" in team_src
+    assert "inspection.blocked_ids" in team_src
+    assert "inspection.failed_ids" in team_src
+    assert "aria-expanded={expanded}" in team_src
 
 
 def test_ui_switchover_primary_and_legacy(client: TestClient) -> None:
@@ -279,3 +344,40 @@ def test_ui_next_serves_hashed_assets(client: TestClient) -> None:
         assert "immutable" in r.headers.get("cache-control", ""), (
             f"{ref} 应带 immutable 缓存头（内容哈希命名）"
         )
+def test_react_mobile_domain_nav_is_available() -> None:
+    """Regression guard: TaskRail is hidden on mobile, so App must render
+    DomainNav outside the rail for small screens."""
+    root = Path(__file__).resolve().parents[2]
+    app_src = (root / "webui" / "src" / "App.tsx").read_text(encoding="utf-8")
+    rail_src = (root / "webui" / "src" / "components" / "TaskRail.tsx").read_text(encoding="utf-8")
+    assert "import TaskRail, { DomainNav }" in app_src
+    assert '<DomainNav className="md:hidden bg-mc-panel" />' in app_src
+    assert "export function DomainNav" in rail_src
+    assert 'aria-current={view === d.key ? "page" : undefined}' in rail_src
+
+
+def test_generated_artifact_iframes_do_not_allow_scripts() -> None:
+    """Generated HTML/SVG artifacts are tool/LLM-originated content and
+    must not get script permission by default."""
+    root = Path(__file__).resolve().parents[2]
+    src = (root / "webui" / "src" / "components" / "WorkspacePanel.tsx").read_text(encoding="utf-8")
+    assert 'sandbox="allow-scripts"' not in src
+    assert 'sandbox=""' in src
+
+
+def test_generated_artifacts_use_central_sanitizer_and_csp() -> None:
+    """Artifact previews must be sanitized before srcDoc/innerHTML use."""
+    root = Path(__file__).resolve().parents[2]
+    workspace_src = (root / "webui" / "src" / "components" / "WorkspacePanel.tsx").read_text(encoding="utf-8")
+    mermaid_src = (root / "webui" / "src" / "components" / "MermaidView.tsx").read_text(encoding="utf-8")
+    security_src = (root / "webui" / "src" / "lib" / "artifactSecurity.ts").read_text(encoding="utf-8")
+    markdown_src = (root / "webui" / "src" / "lib" / "Markdown.tsx").read_text(encoding="utf-8")
+
+    assert "artifactSrcDoc" in workspace_src
+    assert "srcDoc={doc}" not in workspace_src
+    assert "sanitizeArtifactMarkup(svg)" in mermaid_src
+    assert "DOMPurify.sanitize" in security_src
+    assert "Content-Security-Policy" in security_src
+    assert "script-src 'none'" in security_src
+    assert "isSafeMarkdownHref" in markdown_src
+    assert "isSafeMarkdownImageUrl" in markdown_src

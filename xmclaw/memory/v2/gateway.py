@@ -1,31 +1,7 @@
-"""Cognitive Memory Gateway — unified write/read entrypoint (Phase 1).
+"""Cognitive Memory Gateway: unified write/read entrypoint.
 
-Phase 1 (skeleton):
-  * All memory writes route through here (single point of control).
-  * THINK and DECIDE are stubbed — observations passthrough to
-    ``MemoryService.remember()`` (or ``remember_with_decision`` when
-    enabled).  This keeps behaviour identical to pre-Gateway while
-    establishing the architecture.
-
-Phase 2 (cognitive layer):
-  * THINK enabled — LLM-driven cross-turn summarisation + contradiction
-    detection.
-  * DECIDE enabled — Mem0-style ADD/UPDATE/DELETE/NOOP against neighbours.
-
-Phase 3 (intelligent recall):
-  * Recall gate + bucket classifier + true hybrid fusion.
-
-Phase 4 (background consolidator):
-  * Cognition's hourly consolidate_memory routes through here.
-
-Usage (production):
-    gateway = CognitiveMemoryGateway(
-        memory_service=memory_v2_service,
-        llm=llm_fast_tier,
-        cfg=cfg.get("memory", {}).get("gateway", {}),
-    )
-    await gateway.ingest(Observation(...))
-    recalled = await gateway.recall_for_turn("用户消息")
+All memory writes route through this gateway so THINK, write policy,
+candidate creation, and storage decisions have one control point.
 """
 from __future__ import annotations
 
@@ -33,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from xmclaw.memory.v2.candidates import MemoryCandidate
 from xmclaw.memory.v2.gateway_models import (
     CognitiveDigest,
     Observation,
@@ -40,12 +17,13 @@ from xmclaw.memory.v2.gateway_models import (
     RecallResult,
 )
 from xmclaw.memory.v2.models import Fact, FactKind, FactScope
+from xmclaw.memory.v2.write_policy import assess_memory_write
 from xmclaw.utils.log import get_logger
 
 _log = get_logger(__name__)
 
 
-# ── Config defaults ──────────────────────────────────────────────
+# Config defaults
 
 
 _DEFAULT_CFG: dict[str, Any] = {
@@ -69,10 +47,15 @@ _DEFAULT_CFG: dict[str, Any] = {
         "k": 4,
         "min_similarity": 0.72,
     },
+    "candidates": {
+        "min_quality_score": 0.55,
+        "auto_reject_below": 0.35,
+        "reject_duplicates": True,
+    },
 }
 
 
-# ── Gateway ──────────────────────────────────────────────────────
+# Gateway
 
 
 class CognitiveMemoryGateway:
@@ -84,7 +67,7 @@ class CognitiveMemoryGateway:
         llm: optional async LLM for THINK / DECIDE / recall-gate.
             When None, all LLM-dependent steps gracefully degrade to
             passthrough behaviour.
-        cfg: nested dict under ``config.json → memory.gateway``.
+        cfg: nested dict under ``config.json -> memory.gateway``.
     """
 
     def __init__(
@@ -93,9 +76,11 @@ class CognitiveMemoryGateway:
         memory_service: Any,
         llm: Any | None = None,
         cfg: dict[str, Any] | None = None,
+        candidate_store: Any | None = None,
     ) -> None:
         self._svc = memory_service
         self._llm = llm
+        self._candidate_store = candidate_store
         self._cfg = _merge_cfg(_DEFAULT_CFG, cfg or {})
         self._enabled = bool(self._cfg.get("enabled", True))
 
@@ -125,6 +110,9 @@ class CognitiveMemoryGateway:
             "ingest_total": 0,
             "ingest_dropped": 0,
             "ingest_fallback": 0,
+            "write_policy_blocked": 0,
+            "write_policy_blocked_reasons": {},
+            "candidate_created_total": 0,
             "ingest_actions": {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NOOP": 0},
             "think_cache_hits": 0,
             "think_cache_misses": 0,
@@ -141,7 +129,7 @@ class CognitiveMemoryGateway:
             "started_at": time.time(),
         }
 
-    # ── Public write API ─────────────────────────────────────────
+    # Public write API
 
     async def ingest(
         self,
@@ -166,7 +154,7 @@ class CognitiveMemoryGateway:
         self._metrics["ingest_total"] += 1
 
         try:
-            # ── THINK (stubbed in Phase 1) ───────────────────────
+            # THINK (stubbed in Phase 1)
             digest = await self._think(observation, context=context)
             if not digest.worth_remembering:
                 self._metrics["ingest_dropped"] += 1
@@ -176,9 +164,9 @@ class CognitiveMemoryGateway:
                 )
                 return None
 
-            # ── DECIDE + EXECUTE ─────────────────────────────────
+            # DECIDE + EXECUTE
             return await self._execute(digest, observation)
-        except Exception as exc:  # noqa: BLE001 — never crash caller
+        except Exception as exc:  # noqa: BLE001 : never crash caller
             self._metrics["ingest_fallback"] += 1
             _log.warning(
                 "gateway.ingest.failed source=%s err=%s",
@@ -206,7 +194,7 @@ class CognitiveMemoryGateway:
                 results.append(None)
         return results
 
-    # ── Public read API ──────────────────────────────────────────
+    # Public read API
 
     async def recall_for_turn(
         self,
@@ -218,9 +206,9 @@ class CognitiveMemoryGateway:
         message (or empty string when nothing relevant).
 
         Phase 3: intelligent recall pipeline:
-          1. Gate — skip trivial turns (greetings, confirmations)
-          2. Classify — keyword-driven bucket classifier
-          3. Targeted hybrid recall — vector + BM25 + RRF, restricted
+          1. Gate :skip trivial turns (greetings, confirmations)
+          2. Classify :keyword-driven bucket classifier
+          3. Targeted hybrid recall :vector + BM25 + RRF, restricted
              to relevant buckets.
         """
         if not self._enabled or self._svc is None:
@@ -309,7 +297,7 @@ class CognitiveMemoryGateway:
             bucket = (getattr(f, "bucket", "") or "").strip()
             # Skip structural-axis buckets that are static (already in
             # system prompt).  Wave-28: keep user_preference/user_identity
-            # in recall — they are dynamic (user tells us new prefs / names
+            # in recall :they are dynamic (user tells us new prefs / names
             # mid-session) and the persona file may lag behind.
             if bucket in {"agent_identity", "misc"}:
                 continue
@@ -330,19 +318,13 @@ class CognitiveMemoryGateway:
         )
         return results
 
-    # ── Internal: THINK (Phase 2) ────────────────────────────────
+    # Internal: THINK (Phase 2)
 
-    # ── Tier-1 signal detection (Wave-28 fix: deterministic fast-path) ─
+    # Tier-1 signal detection (Wave-28 fix: deterministic fast-path)
     _TIER1_KEYWORDS: tuple[str, ...] = (
-        # Identity — high-certainty, hard to mis-trigger
         "名叫", "名字是", "称呼我", "叫我", "我是", "我的名字",
-        # Environment / network config — must be SPECIFIC phrases
-        # Single "代理" or "端口" catches too much; require compound forms.
-        "代理端口", "代理地址", "代理设置", "网络代理",
         "http_proxy", "https_proxy", "all_proxy",
-        # Explicit "remember this" — unambiguous
         "记住", "记下来", "别忘了", "记着",
-        # Explicit preference confirmations — multi-word for precision
         "偏好使用", "习惯使用", "以后都用", "默认使用", "优先使用",
         "不喜欢", "不想用", "不愿用",
     )
@@ -376,7 +358,7 @@ class CognitiveMemoryGateway:
         Wave-28 fix: Tier-1 signals bypass LLM deliberation for
         deterministic, consistent retention of critical facts.
         """
-        # ── Wave-28: Tier-1 fast-path ───────────────────────────────
+        # Wave-28: Tier-1 fast-path
         if self._is_tier1_signal(observation):
             _log.info(
                 "gateway.think.tier1_fast_path source=%s text=%r",
@@ -388,7 +370,7 @@ class CognitiveMemoryGateway:
         if not self._think_enabled or self._llm is None:
             return self._passthrough_digest(observation)
 
-        # Check cache: same content within TTL → reuse prior digest.
+        # Check cache: same content within TTL -> reuse prior digest.
         cache_key = _cache_key(observation)
         cached = self._think_cache.get(cache_key)
         if cached is not None:
@@ -447,11 +429,11 @@ class CognitiveMemoryGateway:
             return self._passthrough_digest(observation)
 
     def _tier1_digest(self, observation: Observation) -> CognitiveDigest:
-        """Wave-28: Tier-1 fast-path digest — always remember, high confidence.
+        """Wave-28: Tier-1 fast-path digest: always remember, high confidence.
 
         Tier-1 bypasses the LLM for speed, but we still do basic
         synthesis so we don't store verbatim user messages.  Strip
-        leading fluff ("用户说", "网址:", "注意") and collapse
+        leading fluff ("用户:", "网址:", "注意:") and collapse
         redundant whitespace.  The result should be a compact
         statement, not a copy-paste.
         """
@@ -462,7 +444,7 @@ class CognitiveMemoryGateway:
 
         # 1. Strip common leading fluff that makes the fact look like a
         #    raw transcript rather than a synthesized statement.
-        #    The colon is REQUIRED so we don't strip "用户做电商" → "做电商".
+        #    The colon is REQUIRED so we don't strip "用户做电商" into "做电商".
         fluff_patterns = [
             r"^用户[:：]\s*",
             r"^网址[:：]\s*",
@@ -531,7 +513,7 @@ class CognitiveMemoryGateway:
             _log.debug("gateway.think.neighbour_fetch_failed err=%s", exc)
             return []
 
-    # ── Internal: DECIDE + EXECUTE ───────────────────────────────
+    # Internal: DECIDE + EXECUTE
 
     async def _execute(
         self,
@@ -547,8 +529,21 @@ class CognitiveMemoryGateway:
         text = digest.synthesized_text or observation.content
         kind = digest.kind
         scope = digest.scope
-        bucket = digest.bucket
+        bucket = digest.bucket or "misc"
         confidence = digest.confidence
+
+        policy = assess_memory_write(observation, digest)
+        if not policy.allow:
+            self._metrics["write_policy_blocked"] += 1
+            reasons = self._metrics["write_policy_blocked_reasons"]
+            reasons[policy.reason] = reasons.get(policy.reason, 0) + 1
+            self._create_candidate(observation, digest, policy.reason)
+            _log.info(
+                "gateway.write_policy.blocked reason=%s source=%s "
+                "bucket=%s kind=%s text=%r",
+                policy.reason, observation.source, bucket, kind, text[:120],
+            )
+            return None
 
         # Determine provenance based on how we got here.
         provenance = (
@@ -559,7 +554,7 @@ class CognitiveMemoryGateway:
         # Phase 1: when decide is disabled, route through
         # remember_with_decision if the service has it AND the user
         # configured it.  This wires up the existing Mem0 decision
-        # layer that was previously悬空.
+        # layer that was previously unused.
         if (
             self._use_rwd
             and hasattr(self._svc, "remember_with_decision")
@@ -571,6 +566,8 @@ class CognitiveMemoryGateway:
                     scope=scope,
                     confidence=confidence,
                     source_event_id=observation.turn_id,
+                    bucket=bucket,
+                    provenance=provenance,
                 )
                 fact = result.get("fact")
                 action = result.get("action", "ADD")
@@ -585,7 +582,7 @@ class CognitiveMemoryGateway:
                 return fact
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
-                    "gateway.execute.rwd_failed err=%s — falling back to "
+                    "gateway.execute.rwd_failed err=%s : falling back to "
                     "plain remember()", exc,
                 )
                 # Fall through to plain remember.
@@ -604,21 +601,106 @@ class CognitiveMemoryGateway:
 
     async def _fallback_remember(self, observation: Observation) -> Fact | None:
         """Emergency fallback when the main pipeline throws."""
-        return await self._svc.remember(
-            _clean_original_text(observation.content),
+        digest = CognitiveDigest(
+            worth_remembering=True,
+            action="ADD",
+            synthesized_text=_clean_original_text(observation.content),
             kind=observation.metadata.get("kind_hint", "lesson"),
             scope=observation.metadata.get("scope_hint", "project"),
+            bucket=observation.metadata.get("bucket_hint", ""),
+            confidence=0.7,
+            reason="gateway_fallback",
+        )
+        policy = assess_memory_write(observation, digest)
+        if not policy.allow:
+            self._metrics["write_policy_blocked"] += 1
+            reasons = self._metrics["write_policy_blocked_reasons"]
+            reasons[policy.reason] = reasons.get(policy.reason, 0) + 1
+            self._create_candidate(observation, digest, policy.reason)
+            _log.info(
+                "gateway.fallback.write_policy.blocked reason=%s source=%s",
+                policy.reason, observation.source,
+            )
+            return None
+        return await self._svc.remember(
+            digest.synthesized_text,
+            kind=digest.kind,
+            scope=digest.scope,
             confidence=0.7,
             source_event_id=observation.turn_id,
-            bucket=observation.metadata.get("bucket_hint", ""),
+            bucket=digest.bucket,
             provenance="gateway_fallback",
         )
 
-    # ── Properties (read-only) ───────────────────────────────────
+    # Properties (read-only)
 
     @property
     def memory_service(self) -> Any:
         return self._svc
+
+    @property
+    def candidate_store(self) -> Any | None:
+        return self._candidate_store
+
+    def _create_candidate(
+        self,
+        observation: Observation,
+        digest: CognitiveDigest,
+        reason: str,
+    ) -> Any | None:
+        store = self._candidate_store
+        if store is None or not hasattr(store, "create"):
+            return None
+        try:
+            candidate = MemoryCandidate.create(
+                text=(digest.synthesized_text or observation.content or "").strip(),
+                kind=digest.kind,
+                scope=digest.scope,
+                bucket=digest.bucket,
+                source=observation.source,
+                source_event_id=observation.turn_id,
+                confidence=digest.confidence,
+                reason=reason,
+                evidence=[{
+                    "source": observation.source,
+                    "content": observation.content[:1000],
+                    "metadata": dict(observation.metadata or {}),
+                    "timestamp": observation.timestamp,
+                }],
+                neighbor_ids=[],
+                metadata={
+                    "digest_reason": digest.reason,
+                    "action": digest.action,
+                    "target_fact_id": digest.target_fact_id,
+                },
+            )
+            stored = store.create(candidate)
+            self._metrics["candidate_created_total"] += 1
+            self._govern_candidates()
+            return stored
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("gateway.candidate_create_failed err=%s", exc)
+            return None
+
+    def _govern_candidates(self) -> None:
+        store = self._candidate_store
+        if store is None or not hasattr(store, "govern_pending"):
+            return
+        cfg = self._cfg.get("candidates", {})
+        try:
+            report = store.govern_pending(
+                min_quality_score=float(cfg.get("min_quality_score", 0.55)),
+                auto_reject_below=float(cfg.get("auto_reject_below", 0.35)),
+                reject_duplicates=bool(cfg.get("reject_duplicates", True)),
+            )
+            rejected = report.get("rejected") or []
+            if rejected:
+                self._metrics["candidate_auto_rejected_total"] = (
+                    self._metrics.get("candidate_auto_rejected_total", 0)
+                    + len(rejected)
+                )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("gateway.candidate_governance_failed err=%s", exc)
 
     @property
     def enabled(self) -> bool:
@@ -631,75 +713,38 @@ class CognitiveMemoryGateway:
         return m
 
 
-# ── THINK prompt / parse helpers ───────────────────────────────
+# THINK prompt / parse helpers
 
 
 _THINK_PROMPT_TEMPLATE = """\
-你是记忆系统的「认知层」。你的任务是从用户对话中提取有价值的长期记忆。
+你是记忆系统的认知层。你的任务是从用户对话或工具事件中提取可复用的长期记忆。
 
-【核心原则 — 按优先级执行】
-1. **宁可多记，不可漏记**。系统有自动去重（Auto-Dream），重复的记忆会被合并，但漏掉的记忆永远找不回来。
-2. **你的核心价值是归纳，不是记录**。原文复述 = 没记。你必须把观察提炼成简洁、规范、跨会话可引用的陈述句。多条相关信息 → 合并为一条高质量事实。
-3. **宁可多记 ≠ 每条都记**。同一话题的多条零散信息必须合并归纳，禁止拆成多条碎片事实。例子：用户连续说了代理端口、网店域名、代码工具偏好 → 分别归纳为三条干净的事实，而不是混杂在一起，也不是每条碎话都单独记。
-4. **不确定时 → 记住**。如果你犹豫"这条信息有没有价值"，答案永远是"有"。
+核心原则：
+1. 只记长期有用的信息，不记一次性执行状态。
+2. 归纳事实，不照抄原话；多条相关信息要合并成清晰、可复用的陈述。
+3. 用户明确要求“记住、以后、默认、不要、必须”时优先保留。
+4. 失败轨迹只有在已经验证出最终解决办法时，才可以沉淀为经验。
 
-【信号检查表 — 逐条核对】
-看到以下信号时，**必须记住**（worth_remembering = true）：
-□ 身份信息：用户的名字、称呼、AI该怎么称呼用户
-□ 环境配置：代理端口、网络设置、工具路径、系统配置、API位置
-□ 已确认的偏好：语言、代码风格、沟通方式、输出格式、默认工具选择
-□ 长期目标/项目：用户在开发什么、搭建什么、计划做什么
-□ 工作流程：用户喜欢的操作顺序、最佳实践、established patterns
-□ 工具经验：工具的隐藏参数、意外行为、输出格式、坑点
-□ 失败模式：错误模式、修复策略、retry策略、什么做法不行
-□ 规则/启发式：用户明确说的"如果X就Y"、应该遵守的约束
+应该记住：
+- 用户身份、称呼、长期偏好和明确规则。
+- 项目固定事实、工具稳定行为、可复用流程、已验证的失败修复方法。
 
-**绝不记住**（worth_remembering = false）：
-□ 临时命令（"帮我改这个文件"、"运行一下Y"）
-□ 正在进行中的一次性操作步骤，且不是长期项目的一部分（"正在安装X"、"在调试Z"）
-□ 纯状态重述（"我刚做了X"、"打开文件Y"）
-□ 已经在系统提示中的信息
-□ 一次性查询结果（今天的天气、当前时间）
-□ 和已有记忆完全重复的信息
+不要记住：
+- 临时命令、正在进行中的步骤、未验证猜测、单次查询结果、重复信息。
 
-【归纳示例 — 必须遵循的格式】
-GOOD（提炼成干净的事实陈述，禁止引用原话）:
-- 用户说「我那个网店是 pw310 的」→ 「用户运营的网店域名为 pw310」
-- 用户说「以后都用中文跟我聊」→ 「用户偏好使用中文进行交流」
-- 用户说「代理端口 7897」→ 「用户网络代理端口为 7897，用于访问外网」
-- 用户说「我喜欢用 ruff 不用 black」→ 「用户偏好使用 ruff 而非 black 进行代码格式化」
-
-GOOD（多条信息 → 分别归纳为干净的事实，每条一个主题）:
-- 用户在一轮对话中透露了多个信息 →
-  「用户运营的网店域名为 pw310」
-  「用户网络代理端口为 7897」
-  「用户偏好使用 ruff 而非 black 进行代码格式化」
-
-GOOD（同主题多条 → 深度合并）:
-- 用户说「deploy.sh 总是在第三步报 permission denied」+「我之前也遇到过，chmod 一下就好」→
-  「deploy.sh 第三步因权限不足稳定失败，执行 chmod +x 可修复」
-
-BAD（机械复述/碎片化/空泛）:
-- 「用户说他的网店是 pw310 的」（禁止直接引用用户原话）
-- 「用户提到代理端口和网店域名以及代码格式偏好等多个信息」（禁止罗列，必须拆成单条事实）
-- 「用户提到一些配置信息」（无具体内容的空泛陈述）
-- 「用户讨论了一些技术话题」（无信息量）
-- 从同一段话中提取了 5 条每条 10 字的碎片（应该合并为 2-3 条有实质内容的事实）
-
-【当前观察】
+当前观察：
 来源: {source}
 内容: {content}
 
-【已有相关记忆】{neighbours_block}
+已有相关记忆:{neighbours_block}
 
-【输出格式】只返回纯 JSON，不要 markdown 代码块，不要任何解释文字：
+只返回 JSON，不要 markdown，不要解释文字：
 {{
-  "worth_remembering": true/false,
-  "synthesized_text": "归纳后的规范陈述句（一句话，中文）",
+  "worth_remembering": true,
+  "synthesized_text": "归纳后的规范陈述句",
   "reason": "简要说明判断理由"
 }}
 """
-
 
 def _build_think_prompt(
     observation: Observation,
@@ -714,7 +759,7 @@ def _build_think_prompt(
             lines.append(f"  {i}. [{kind}] {text}")
         neighbours_block = "\n" + "\n".join(lines)
     else:
-        neighbours_block = "\n  （无相关记忆）"
+        neighbours_block = "\n  (no relevant memories)"
 
     return _THINK_PROMPT_TEMPLATE.format(
         source=observation.source,
@@ -730,7 +775,7 @@ def _parse_think_response(
 ) -> CognitiveDigest:
     """Parse the LLM's THINK response into a CognitiveDigest.
 
-    Defensive: any parse failure → passthrough digest so we never
+    Defensive: any parse failure -> passthrough digest so we never
     silently drop a fact due to JSON malformation.
 
     Quality gate (Wave-29): after parsing, run a quality check on the
@@ -771,25 +816,25 @@ def _parse_think_response(
     worth = bool(data.get("worth_remembering", True))
     synthesized = str(data.get("synthesized_text") or "").strip()
 
-    # ── Wave-29: quality gate ─────────────────────────────────────
+    # Wave-29: quality gate
     original = (observation.content or "").strip()
     cleaned = _clean_original_text(original)
     quality = _synthesis_quality(synthesized, original)
 
     if not synthesized:
-        # Empty extraction → use cleaned original
+        # Empty extraction -> use cleaned original.
         synthesized = cleaned
         reason_suffix = " (empty_fallback)"
     elif quality["is_verbatim_copy"]:
-        # LLM mechanically copied the input → use cleaned original
+        # LLM mechanically copied the input -> use cleaned original.
         synthesized = cleaned
         reason_suffix = " (verbatim_fallback)"
     elif quality["too_short"]:
-        # Too short to be informative → use cleaned original
+        # Too short to be informative -> use cleaned original.
         synthesized = cleaned
         reason_suffix = " (too_short_fallback)"
     elif quality["too_long"]:
-        # Too long, probably just restated → truncate or use cleaned
+        # Too long, probably just restated -> truncate or use cleaned
         synthesized = cleaned
         reason_suffix = " (too_long_fallback)"
     else:
@@ -904,7 +949,7 @@ def _synthesis_quality(
     #    original in a "用户说..." or "原文是..." jacket, it's not a
     #    real synthesis.  We look for prefixes that are CLEARLY
     #    meta-descriptive wrappers, not legitimate subject nouns
-    #    (e.g. "用户偏好中文" is fine; "用户说：..." is not).
+    #    (e.g. "用户偏好中文" is fine; "用户说: ..." is not).
     _MECHANICAL_PREFIXES = (
         "用户说", "用户提到", "用户表示", "用户认为",
         "他说", "她说", "原文", "这句话", "这段话",
@@ -913,7 +958,7 @@ def _synthesis_quality(
     if any(s.startswith(p) for p in _MECHANICAL_PREFIXES):
         result["is_verbatim_copy"] = True
 
-    # 4. Too long: more than 3× the length of the cleaned original,
+    # 4. Too long: more than 3x the length of the cleaned original,
     #    or over 200 chars (indicates the LLM just restated / added noise).
     o_clean = _clean_original_text(o)
     if len(s) > 200:
@@ -941,7 +986,7 @@ def _cache_key(observation: Observation) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
-# ── Helpers ──────────────────────────────────────────────────────
+# Helpers
 
 
 def _merge_cfg(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

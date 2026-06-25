@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect } from "react";
 import { useApp } from "./store/app";
 import Hud from "./components/Hud";
-import TaskRail from "./components/TaskRail";
+import TaskRail, { DomainNav } from "./components/TaskRail";
 import PlanStrip from "./components/PlanStrip";
 import Timeline from "./components/Timeline";
 import Composer from "./components/Composer";
@@ -16,6 +16,7 @@ const SkillsView = lazy(() => import("./views/SkillsView"));
 const SystemView = lazy(() => import("./views/SystemView"));
 const FilesView = lazy(() => import("./views/FilesView"));
 const TeamView = lazy(() => import("./views/TeamView"));
+const ControlCenter = lazy(() => import("./views/ControlCenter"));
 
 function DomainFallback() {
   return <div className="flex-1 flex items-center justify-center text-mc-faint text-sm">加载中…</div>;
@@ -64,10 +65,12 @@ export default function App() {
               {view === "system" && <SystemView />}
               {view === "files" && <FilesView />}
               {view === "team" && <TeamView />}
+              {view === "control" && <ControlCenter />}
             </Suspense>
           </main>
         )}
       </div>
+      <DomainNav className="md:hidden bg-mc-panel" />
       <Lightbox />
       <Toast />
     </div>

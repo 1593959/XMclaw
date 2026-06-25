@@ -35,13 +35,12 @@ class HistoryCompressionMixin:
         notice rather than failing the user turn.
         """
         try:
-            msgs = [Message(role="user", content=prompt)]
-            resp = await asyncio.wait_for(
-                self._llm.complete(msgs, tools=None),
-                timeout=60.0,
-            )
-            content = (resp.content or "").strip()
-            return content or None
+            summarizer = getattr(self, "_summarizer_agent", None)
+            if summarizer is None:
+                from xmclaw.context.summarizer_agent import SummarizerAgent
+                summarizer = SummarizerAgent(self._llm, timeout_s=60.0)
+                self._summarizer_agent = summarizer
+            return await summarizer.summarize(prompt, max_tokens)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — never fail a turn over summary
@@ -234,6 +233,11 @@ class HistoryCompressionMixin:
                     force=force,
                     on_drop=_on_drop,
                 )
+                await self._publish_summarizer_eviction_plan(
+                    session_id=session_id,
+                    plan=getattr(cc, "last_eviction_plan", None),
+                    trigger=trigger_label,
+                )
                 return new_msgs, len(new_msgs) != len(messages)
         except Exception as exc:  # noqa: BLE001
             try:
@@ -245,6 +249,48 @@ class HistoryCompressionMixin:
             except Exception:  # noqa: BLE001
                 pass
         return messages, False
+
+    async def _publish_summarizer_eviction_plan(
+        self,
+        *,
+        session_id: str,
+        plan: Any,
+        trigger: str,
+    ) -> None:
+        """Emit the compressor's eviction contract as compact telemetry."""
+        if plan is None:
+            return
+        bus = getattr(self, "_bus", None)
+        if bus is None:
+            return
+        try:
+            from xmclaw.core.bus.events import EventType, make_event
+
+            plan_dict = plan.to_dict() if hasattr(plan, "to_dict") else {}
+            payload = {
+                "session_id": session_id,
+                "messages_before": int(plan_dict.get("messages_before", 0)),
+                "summarize_start": int(plan_dict.get("summarize_start", 0)),
+                "summarize_end": int(plan_dict.get("summarize_end", 0)),
+                "evict_ratio": float(plan_dict.get("evict_ratio", 0.0)),
+                "ranges": list(plan_dict.get("ranges") or []),
+                "summary_kind": str(
+                    plan_dict.get("summary_kind") or "conversation_middle",
+                ),
+                "summary_provenance": dict(
+                    plan_dict.get("summary_provenance") or {},
+                ),
+                "trigger": trigger,
+            }
+            event = make_event(
+                session_id=session_id,
+                agent_id=getattr(self, "_agent_id", "main"),
+                type=EventType.SUMMARIZER_EVICTION_PLANNED,
+                payload=payload,
+            )
+            await bus.publish(event)
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _publish_compression_pending(
         self,

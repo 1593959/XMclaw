@@ -1,0 +1,271 @@
+{
+  "version": 1,
+  "skills": {
+    "test-case-generator": {
+      "name": "Test Case Generator",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=test-case-generator",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-22T22:37:56Z"
+    },
+    "content-hunter": {
+      "name": "内容捕手 Content Hunter",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=content-hunter",
+      "source": "community",
+      "version": "1.1.0",
+      "installedAt": "2026-06-24T19:11:27Z"
+    },
+    "social-media-operator": {
+      "name": "自媒体运营全能助手",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=social-media-operator",
+      "source": "community",
+      "version": "1.0.1",
+      "installedAt": "2026-06-24T19:11:29Z"
+    },
+    "content-writer": {
+      "name": "Content Writer 自媒体内容生成器",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=content-writer",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:11:31Z"
+    },
+    "social-media-optimizer": {
+      "name": "Social Media Optimizer",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=social-media-optimizer",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:11:34Z"
+    },
+    "newmedia-operations": {
+      "name": "运营工具skill",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=newmedia-operations",
+      "source": "community",
+      "version": "1.0.2",
+      "installedAt": "2026-06-24T19:11:38Z"
+    },
+    "ai-text-humanizer-zh": {
+      "name": "AI 文本净化器（中文版）",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=ai-text-humanizer-zh",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:11:40Z"
+    },
+    "humanizer": {
+      "name": "Humanizer",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=humanizer",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:11:42Z"
+    },
+    "humanize-zh": {
+      "name": "中文去AI味",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=humanize-zh",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:11:47Z"
+    },
+    "unclecheng-reduce-ai-perception-v2": {
+      "name": "文章去AI味工具",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=unclecheng-reduce-ai-perception-v2",
+      "source": "community",
+      "version": "1.0.4",
+      "installedAt": "2026-06-24T19:11:49Z"
+    },
+    "writing-polish": {
+      "name": "Writing Polish",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=writing-polish",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:11:52Z"
+    },
+    "legalkb": {
+      "name": "legalkb",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=legalkb",
+      "source": "community",
+      "version": "1.0.1",
+      "installedAt": "2026-06-24T19:11:54Z"
+    },
+    "case-research": {
+      "name": "Case Research",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=case-research",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:11:57Z"
+    },
+    "legal-hybrid-skill": {
+      "name": "智能法律助手",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=legal-hybrid-skill",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:11:59Z"
+    },
+    "legal-system-mapper-mctmilk": {
+      "name": "法条体系定位",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=legal-system-mapper-mctmilk",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:01Z"
+    },
+    "legal-case-validator-mctmilk": {
+      "name": "类案检索验证",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=legal-case-validator-mctmilk",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:05Z"
+    },
+    "legal-concept-deep-dive-mctmilk": {
+      "name": "不确定法律概念深挖",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=legal-concept-deep-dive-mctmilk",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:07Z"
+    },
+    "powerpoint-pptx": {
+      "name": "Powerpoint / PPTX",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=powerpoint-pptx",
+      "source": "community",
+      "version": "1.0.1",
+      "installedAt": "2026-06-24T19:12:12Z"
+    },
+    "mck-ppt-design": {
+      "name": "Mck Ppt Design Skill",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=mck-ppt-design",
+      "source": "community",
+      "version": "2.0.0",
+      "installedAt": "2026-06-24T19:12:14Z"
+    },
+    "ppt-from-template": {
+      "name": "PPT from Template",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=ppt-from-template",
+      "source": "community",
+      "version": "2.0.0",
+      "installedAt": "2026-06-24T19:12:17Z"
+    },
+    "ppt": {
+      "name": "ppt",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=ppt",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:19Z"
+    },
+    "dragon-ppt-maker": {
+      "name": "PPT制作",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=dragon-ppt-maker",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:21Z"
+    },
+    "test-patterns": {
+      "name": "Test Patterns",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=test-patterns",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:25Z"
+    },
+    "e2e-test-orchestrator": {
+      "name": "E2e Test Orchestrator",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=e2e-test-orchestrator",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:27Z"
+    },
+    "api-test-automation": {
+      "name": "Api Test Automation",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=api-test-automation",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:30Z"
+    },
+    "afrexai-qa-test-plan": {
+      "name": "QA Test Plan Generator",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=afrexai-qa-test-plan",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:32Z"
+    },
+    "pr-reviewer": {
+      "name": "pr-reviewer",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=pr-reviewer",
+      "source": "community",
+      "version": "1.0.1",
+      "installedAt": "2026-06-24T19:12:34Z"
+    },
+    "critical-code-reviewer": {
+      "name": "Critical Code Reviewer",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=critical-code-reviewer",
+      "source": "community",
+      "version": "0.1.0",
+      "installedAt": "2026-06-24T19:12:37Z"
+    },
+    "project-code-standard": {
+      "name": "Project Code Standard",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=project-code-standard",
+      "source": "community",
+      "version": "0.1.0",
+      "installedAt": "2026-06-24T19:12:39Z"
+    },
+    "security-audit": {
+      "name": "Security Audit",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=security-audit",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:41Z"
+    },
+    "clean-code-review": {
+      "name": "Clean Code",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=clean-code-review",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:43Z"
+    },
+    "cody": {
+      "name": "code-review-assistant",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=cody",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:46Z"
+    },
+    "log-analyzer": {
+      "name": "Log Analyzer",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=log-analyzer",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:51Z"
+    },
+    "debug-pro": {
+      "name": "Debug Pro",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=debug-pro",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:53Z"
+    },
+    "runtime-debugging-skill": {
+      "name": "Runtime Debugging Skill",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=runtime-debugging-skill",
+      "source": "community",
+      "version": "0.1.0",
+      "installedAt": "2026-06-24T19:12:55Z"
+    },
+    "superpowers-systematic-debugging": {
+      "name": "Superpowers Systematic Debugging",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=superpowers-systematic-debugging",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-06-24T19:12:57Z"
+    },
+    "bug-fixing": {
+      "name": "bug-fixing",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=bug-fixing",
+      "source": "community",
+      "version": "1.0.3",
+      "installedAt": "2026-06-24T19:13:00Z"
+    },
+    "nexus-error-explain": {
+      "name": "NEXUS Error Explain",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=nexus-error-explain",
+      "source": "community",
+      "version": "2.1.0",
+      "installedAt": "2026-06-24T19:13:02Z"
+    }
+  }
+}

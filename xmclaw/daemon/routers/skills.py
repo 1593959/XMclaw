@@ -19,12 +19,58 @@ B-114 added manual control endpoints:
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 
 router = APIRouter(prefix="/api/v2/skills", tags=["skills"])
+
+
+def _skill_roots_payload() -> list[dict[str, Any]]:
+    """Return the skill roots the daemon scans, plus their top-level dirs."""
+    try:
+        from xmclaw.skills.user_loader import resolve_skill_roots
+
+        canonical, extras = resolve_skill_roots()
+    except Exception as exc:  # noqa: BLE001
+        return [{
+            "kind": "error",
+            "path": "",
+            "exists": False,
+            "skill_dirs": [],
+            "skill_dir_count": 0,
+            "error": str(exc),
+        }]
+
+    rows: list[dict[str, Any]] = []
+    for kind, root in [("canonical", canonical), *[("extra", p) for p in extras]]:
+        path = Path(root).expanduser()
+        entries: list[dict[str, Any]] = []
+        if path.exists() and path.is_dir():
+            try:
+                children = sorted(path.iterdir(), key=lambda p: p.name.lower())
+            except Exception:  # noqa: BLE001
+                children = []
+            for child in children:
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                entries.append({
+                    "id": child.name,
+                    "path": str(child),
+                    "has_skill_md": (child / "SKILL.md").is_file(),
+                    "has_manifest_json": (child / "manifest.json").is_file(),
+                    "has_skill_py": (child / "skill.py").is_file(),
+                })
+        rows.append({
+            "kind": kind,
+            "path": str(path),
+            "exists": path.exists(),
+            "skill_dirs": entries,
+            "skill_dir_count": len(entries),
+        })
+    return rows
 
 
 def _classify_source(skill: Any, manifest: Any = None) -> str:
@@ -116,6 +162,7 @@ async def list_skills(request: Request) -> JSONResponse:
             "evolution_enabled": False,
             "pending_restarts": pending_restarts,
             "load_failures": load_failures,
+            "roots": _skill_roots_payload(),
         })
 
     registry = orch.registry
@@ -156,6 +203,7 @@ async def list_skills(request: Request) -> JSONResponse:
         "evolution_enabled": True,
         "pending_restarts": pending_restarts,
         "load_failures": load_failures,
+        "roots": _skill_roots_payload(),
     })
 
 

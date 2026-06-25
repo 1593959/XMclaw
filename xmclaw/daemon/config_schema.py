@@ -34,6 +34,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from xmclaw.daemon.factory import ConfigError
+from xmclaw.daemon.typed_config import typed_config_errors
 
 
 # ── model whitelist ──────────────────────────────────────────────
@@ -249,7 +250,7 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
         # auto_recall block (v3 phase 2)
         ar = cog.get("auto_recall")
         if isinstance(ar, dict):
-            for fld in ("enabled", "use_hybrid"):
+            for fld in ("enabled", "use_hybrid", "environment_enabled"):
                 v = ar.get(fld)
                 if v is not None and not isinstance(v, bool):
                     errors.append(
@@ -488,6 +489,8 @@ def lint_config(cfg: dict[str, Any]) -> list[ConfigError]:
     # 1. Existing schema validations
     for err in validate_config(cfg):
         errors.append(ConfigError(err))
+    for err in typed_config_errors(cfg):
+        errors.append(ConfigError(err))
 
     # 2. URL format validation
     llm = cfg.get("llm")
@@ -521,6 +524,16 @@ def lint_config(cfg: dict[str, Any]) -> list[ConfigError]:
                 errors.append(ConfigError(
                     f"cognition.memory_v2.lancedb_uri: 无效路径或URI / invalid path or URI: {lancedb_uri!r}"
                 ))
+    cognition = cfg.get("cognition")
+    if isinstance(cognition, dict):
+        self_critique = cognition.get("self_critique")
+        if isinstance(self_critique, dict):
+            enabled = self_critique.get("enabled")
+            if enabled is not None and not isinstance(enabled, bool):
+                errors.append(ConfigError(
+                    "cognition.self_critique.enabled: expected bool"
+                ))
+
     # Also accept top-level memory.v2 if present
     memory = cfg.get("memory")
     if isinstance(memory, dict):
@@ -632,6 +645,16 @@ def lint_config(cfg: dict[str, Any]) -> list[ConfigError]:
                 errors.append(ConfigError(
                     f"agent.max_hops: 必须在[1, 100]范围内 / must be in [1, 100], got {max_hops}"
                 ))
+        max_react_loop = agent.get("max_react_loop")
+        if max_react_loop is not None:
+            if isinstance(max_react_loop, bool) or not isinstance(max_react_loop, int):
+                errors.append(ConfigError(
+                    f"agent.max_react_loop: expected int, got {type(max_react_loop).__name__}"
+                ))
+            elif not (1 <= max_react_loop <= 100):
+                errors.append(ConfigError(
+                    f"agent.max_react_loop: must be in [1, 100], got {max_react_loop}"
+                ))
         llm_timeout = agent.get("llm_timeout_s")
         if llm_timeout is not None:
             if isinstance(llm_timeout, bool) or not isinstance(llm_timeout, (int, float)):
@@ -668,6 +691,48 @@ def lint_config(cfg: dict[str, Any]) -> list[ConfigError]:
             elif not (1 <= float(invoke_timeout) <= 600):
                 errors.append(ConfigError(
                     f"tools.invoke_timeout_s: 必须在[1, 600]范围内 / must be in [1, 600], got {invoke_timeout}"
+                ))
+
+        shell_cfg = tools.get("shell")
+        shell_execution_policy = tools.get("shell_execution_policy")
+        if isinstance(shell_cfg, dict):
+            if shell_cfg.get("execution_policy") is not None:
+                shell_execution_policy = shell_cfg.get("execution_policy")
+            shell_image = shell_cfg.get("sandbox_image", shell_cfg.get("image"))
+            if shell_image is not None and not isinstance(shell_image, str):
+                errors.append(ConfigError(
+                    "tools.shell.sandbox_image: expected string"
+                ))
+            for field_name in ("sandbox_memory", "memory", "sandbox_cpus", "cpus"):
+                value = shell_cfg.get(field_name)
+                if value is not None and not isinstance(value, str):
+                    errors.append(ConfigError(
+                        f"tools.shell.{field_name}: expected string"
+                    ))
+            pids_limit = shell_cfg.get(
+                "sandbox_pids_limit",
+                shell_cfg.get("pids_limit"),
+            )
+            if pids_limit is not None:
+                if isinstance(pids_limit, bool) or not isinstance(pids_limit, int):
+                    errors.append(ConfigError(
+                        "tools.shell.sandbox_pids_limit: expected int"
+                    ))
+                elif not (16 <= pids_limit <= 4096):
+                    errors.append(ConfigError(
+                        "tools.shell.sandbox_pids_limit: must be in [16, 4096]"
+                    ))
+            network = shell_cfg.get("sandbox_network", shell_cfg.get("network"))
+            if network is not None and network not in {"none", "bridge"}:
+                errors.append(ConfigError(
+                    "tools.shell.sandbox_network: must be one of none, bridge"
+                ))
+        if shell_execution_policy is not None:
+            policy = str(shell_execution_policy).strip().lower().replace("-", "_")
+            if policy not in {"host_guarded", "docker", "disabled"}:
+                errors.append(ConfigError(
+                    "tools.shell.execution_policy: must be one of "
+                    "host_guarded, docker, disabled"
                 ))
 
     # memory.v2.max_entries

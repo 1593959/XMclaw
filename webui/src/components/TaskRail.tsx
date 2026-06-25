@@ -194,6 +194,18 @@ export default function TaskRail({ width }: { width?: number }) {
               {t.status === "running" && activity && (
                 <div className="text-[10.5px] text-mc-faint mt-0.5 truncate">{activity}…</div>
               )}
+              {!!t.artifacts?.length && (
+                <div className="text-[10.5px] text-mc-faint mt-1 truncate">
+                  <span className="text-mc-muted">产物 ×{t.artifacts.length}</span>
+                  <span className="mx-1">·</span>
+                  <span>{artifactLabel(t.artifacts[0])}</span>
+                </div>
+              )}
+              {!!t.strategy_signals?.length && (
+                <div className="text-[10.5px] text-mc-warn mt-1 truncate">
+                  {strategySignalLabel(t.strategy_signals[0])}
+                </div>
+              )}
               {t.steps_total > 0 && (
                 <div className="h-0.5 rounded-full bg-mc-border mt-1.5">
                   <div
@@ -219,6 +231,32 @@ export default function TaskRail({ width }: { width?: number }) {
   );
 }
 
+function artifactLabel(a: NonNullable<TaskSnapshot["artifacts"]>[number]): string {
+  const name = a.name || a.path?.split(/[\\/]/).pop() || a.url?.split("/").pop() || "未命名产物";
+  const drive = a.target_drive ? `${a.target_drive} ` : "";
+  const kind = artifactKindLabel(a.artifact_type || "file");
+  return `${drive}${kind} ${name}`;
+}
+
+function artifactKindLabel(kind: string): string {
+  const labels: Record<string, string> = {
+    image: "图片",
+    video: "视频",
+    audio: "音频",
+    document: "文档",
+    installer: "安装包",
+    archive: "压缩包",
+    file: "文件",
+  };
+  return labels[kind] || kind;
+}
+
+function strategySignalLabel(s: NonNullable<TaskSnapshot["strategy_signals"]>[number]): string {
+  const decision = s.strategy_decision === "ask_user" ? "需要询问" : "已要求换策略";
+  const kind = s.kind === "no_progress" ? "无进展" : s.kind === "stuck_loop" ? "卡住循环" : s.kind || "失败";
+  return `${decision} · ${kind}`;
+}
+
 // 五域导航（10.M3 + 2026-06-17 文件域）：任务是主视图，其余为驾驶舱仪表。
 const DOMAINS = [
   { key: "tasks", label: "任务", icon: "◧" },
@@ -226,19 +264,23 @@ const DOMAINS = [
   { key: "skills", label: "能力", icon: "⚡" },
   { key: "files", label: "文件", icon: "🗂" },
   { key: "team", label: "专家团", icon: "👥" },
+  { key: "control", label: "控制", icon: "C" },
   { key: "system", label: "系统", icon: "⚙" },
 ] as const;
 
-function DomainNav() {
+export function DomainNav({ className = "" }: { className?: string }) {
   const view = useApp((s) => s.view);
   const setView = useApp((s) => s.setView);
   return (
-    <div className="shrink-0 border-t border-mc-border grid grid-cols-6">
+    <div className={"shrink-0 border-t border-mc-border grid grid-cols-7 " + className}>
       {DOMAINS.map((d) => (
         <button
           key={d.key}
           onClick={() => setView(d.key)}
+          data-domain={d.key}
           title={d.label}
+          aria-label={d.label}
+          aria-current={view === d.key ? "page" : undefined}
           className={
             "py-2 text-center cursor-pointer " +
             (view === d.key ? "text-mc-accent bg-mc-accent/10" : "text-mc-faint hover:text-mc-muted")

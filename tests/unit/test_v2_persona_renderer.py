@@ -430,6 +430,31 @@ async def test_upsert_persona_manual_rejects_empty_basename():
         await svc.upsert_persona_manual("", "anything")
 
 
+@pytest.mark.asyncio
+async def test_delete_persona_manual_removes_row(tmp_path: Path):
+    svc = _make_service()
+    await svc.upsert_persona_manual("IDENTITY.md", "manual content")
+    assert await svc.get_persona_manual("IDENTITY.md") is not None
+
+    deleted = await svc.delete_persona_manual("IDENTITY.md")
+    assert deleted is True
+    assert await svc.get_persona_manual("IDENTITY.md") is None
+
+
+@pytest.mark.asyncio
+async def test_delete_persona_manual_idempotent_when_missing():
+    svc = _make_service()
+    deleted = await svc.delete_persona_manual("IDENTITY.md")
+    assert deleted is False
+
+
+@pytest.mark.asyncio
+async def test_delete_persona_manual_rejects_empty_basename():
+    svc = _make_service()
+    deleted = await svc.delete_persona_manual("")
+    assert deleted is False
+
+
 # ── 2026-05-26 (audit A2): user edits inside auto section preserved ──
 
 

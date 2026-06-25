@@ -571,6 +571,61 @@ _TODO_READ_SPEC = ToolSpec(
 # own most-recent intent at the top of every refresh — survives
 # across compression / context shuffling because the anchor is
 # regenerated each hop.
+_ARTIFACT_LEDGER_SPEC = ToolSpec(
+    name="artifact_ledger",
+    read_only=True,
+    description=(
+        "Query the current task/session artifact ledger. Use this before "
+        "guessing where a downloaded/generated/saved file went, before "
+        "re-running a broad filesystem search, or when the user asks about "
+        "an artifact produced earlier in the task. This is execution state, "
+        "not long-term memory: use memory(action='search') for preferences, "
+        "rules, lessons, and cross-session experience."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Optional keyword such as filename, product name, tool "
+                    "name, extension, or URL fragment."
+                ),
+            },
+            "session_id": {
+                "type": "string",
+                "description": (
+                    "Optional session id. Defaults to the current session "
+                    "when called inside a turn."
+                ),
+            },
+            "artifact_type": {
+                "type": "string",
+                "enum": [
+                    "file", "document", "image", "video", "audio",
+                    "archive", "installer",
+                ],
+                "description": "Optional artifact type filter.",
+            },
+            "target_drive": {
+                "type": "string",
+                "description": "Optional Windows drive filter, e.g. E:.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum rows to return. Default 10, max 50.",
+            },
+            "include_global": {
+                "type": "boolean",
+                "description": (
+                    "When true and a session-scoped query has no hits, "
+                    "fall back to recent artifacts from all sessions."
+                ),
+            },
+        },
+    },
+)
+
 _UPDATE_FOCUS_SPEC = ToolSpec(
     name="update_focus",
     description=(
@@ -818,6 +873,8 @@ def _build_memory_spec_description() -> str:
         "  • ``pin``   — record a fact that must never be auto-deleted.\n"
         "  • ``get``   — read a persona MD file verbatim.\n"
         "  • ``graph_neighbors`` — walk the memory graph from a fact_id.\n"
+        "  • ``environment`` — query local environment facts such as app "
+        "locations, desktop/shortcut paths, failed search scopes.\n"
         "  • ``multi_action`` — v3 multi-action alias; use ``sub_action`` "
         "to pick add/replace/forget/pin.\n\n"
         "★ Bucket selection (required for add / pin / replace):\n"
@@ -925,8 +982,8 @@ _MEMORY_SPEC = ToolSpec(
             "query": {
                 "type": "string",
                 "description": (
-                    "For search / forget: natural-language query or "
-                    "semantic search phrase."
+                    "For search / forget / environment: natural-language "
+                    "query or semantic search phrase."
                 ),
             },
             "max_matches": {
@@ -945,7 +1002,8 @@ _MEMORY_SPEC = ToolSpec(
             "k": {
                 "type": "integer",
                 "description": (
-                    "For search: top-k hits per provider (default 5, max 20)."
+                    "For search/environment: top-k hits per provider "
+                    "(default 5, max 20)."
                 ),
             },
             "layer": {
@@ -1037,6 +1095,71 @@ _MEMORY_SPEC = ToolSpec(
             },
         },
         "required": ["action"],
+    },
+)
+
+_MEMORY_DECISION_SPEC = ToolSpec(
+    name="memory_decision",
+    read_only=False,
+    description=(
+        "Record a structured memory-use decision for the current turn. "
+        "Use after deciding whether to search memory, use recalled facts, "
+        "skip memory, or write a memory candidate. This gives the runtime "
+        "observable reasons instead of relying on prompt-only behavior."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["search", "use", "skip", "write_candidate", "write_fact"],
+                "description": "What memory action was chosen.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Search query or task signal considered.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Short reason for this decision.",
+            },
+            "used_fact_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Fact ids that influenced the next action.",
+            },
+            "skipped_reason": {
+                "type": "string",
+                "description": "Required when action='skip'.",
+            },
+            "candidate_text": {
+                "type": "string",
+                "description": "Candidate memory text when action='write_candidate'.",
+            },
+            "bucket": {
+                "type": "string",
+                "enum": _bucket_enum(),
+                "description": "Candidate/fact bucket when writing.",
+            },
+            "kind": {
+                "type": "string",
+                "description": "Candidate/fact kind when writing.",
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["session", "user", "project", "global"],
+                "description": "Candidate/fact scope when writing.",
+            },
+            "confidence": {
+                "type": "number",
+                "description": "0.0-1.0 confidence for the decision.",
+            },
+            "recommended_action": {
+                "type": "string",
+                "description": "How the recalled/written memory should affect execution.",
+            },
+        },
+        "required": ["action", "reason"],
     },
 )
 

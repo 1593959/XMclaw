@@ -180,6 +180,18 @@ BUCKETS: dict[str, BucketDef] = {
             "图像，会返回 [Unsupported Image]\"）。"
         ),
     ),
+    "environment": BucketDef(
+        tag="environment",
+        target_file="MEMORY.md",
+        section="## Environment facts",
+        cap_chars=2500, cap_items=20,
+        default_kind="fact",
+        description=(
+            "Local environment facts: known folders, shortcut targets, "
+            "application locations, drives, failed search scopes and "
+            "user-corrected paths."
+        ),
+    ),
     # ── Project / domain facts ─────────────────────────────────────
     "project_fact": BucketDef(
         tag="project_fact",

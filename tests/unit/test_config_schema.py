@@ -32,6 +32,7 @@ def test_well_shaped_config_is_valid():
             "auto_recall": {
                 "enabled": False,
                 "use_hybrid": False,
+                "environment_enabled": True,
                 "timeout_s": 1.0,
                 "min_similarity": 0.65,
             },
@@ -125,6 +126,16 @@ def test_auto_recall_enabled_wrong_type():
     })
     assert any(
         "auto_recall.enabled" in e and "expected bool" in e for e in errs
+    )
+
+
+def test_auto_recall_environment_enabled_wrong_type():
+    errs = validate_config({
+        "cognition": {"auto_recall": {"environment_enabled": "yes"}},
+    })
+    assert any(
+        "auto_recall.environment_enabled" in e and "expected bool" in e
+        for e in errs
     )
 
 
@@ -266,9 +277,77 @@ def test_lint_config_agent_max_hops_range():
     assert any("agent.max_hops" in str(e) for e in errs)
 
 
+def test_lint_config_agent_max_react_loop_range():
+    errs = lint_config({"agent": {"max_react_loop": 0}})
+    assert any("agent.max_react_loop" in str(e) for e in errs)
+
+
 def test_lint_config_tools_invoke_timeout_range():
     errs = lint_config({"tools": {"invoke_timeout_s": 0}})
     assert any("tools.invoke_timeout_s" in str(e) for e in errs)
+
+
+def test_lint_config_typed_overlay_covers_continuous_loop_and_tool_timeout():
+    errs = lint_config({
+        "tools": {"invoke_timeout_s": 601},
+        "cognition": {
+            "continuous_loop": {
+                "autonomy_level": 101,
+                "heartbeat_hz": 0,
+            },
+        },
+    })
+
+    joined = "\n".join(str(e) for e in errs)
+    assert "tools.invoke_timeout_s" in joined
+    assert "cognition.continuous_loop.autonomy_level" in joined
+    assert "cognition.continuous_loop.heartbeat_hz" in joined
+
+
+def test_lint_config_tools_shell_execution_policy_values():
+    assert lint_config({"tools": {"shell": {"execution_policy": "docker"}}}) == []
+    errs = lint_config({"tools": {"shell": {"execution_policy": "mystery"}}})
+    assert any("tools.shell.execution_policy" in str(e) for e in errs)
+
+
+def test_lint_config_tools_shell_sandbox_image_string():
+    assert lint_config({"tools": {"shell": {"sandbox_image": "alpine:3.20"}}}) == []
+    errs = lint_config({"tools": {"shell": {"sandbox_image": 123}}})
+    assert any("tools.shell.sandbox_image" in str(e) for e in errs)
+
+
+def test_lint_config_tools_shell_sandbox_resource_values():
+    assert lint_config({
+        "tools": {
+            "shell": {
+                "sandbox_memory": "1g",
+                "sandbox_cpus": "0.5",
+                "sandbox_pids_limit": 64,
+                "sandbox_network": "bridge",
+            },
+        },
+    }) == []
+    errs = lint_config({
+        "tools": {
+            "shell": {
+                "sandbox_memory": 1,
+                "sandbox_cpus": 1,
+                "sandbox_pids_limit": 1,
+                "sandbox_network": "host",
+            },
+        },
+    })
+    joined = "\n".join(str(e) for e in errs)
+    assert "tools.shell.sandbox_memory" in joined
+    assert "tools.shell.sandbox_cpus" in joined
+    assert "tools.shell.sandbox_pids_limit" in joined
+    assert "tools.shell.sandbox_network" in joined
+
+
+def test_lint_config_self_critique_enabled_bool():
+    assert lint_config({"cognition": {"self_critique": {"enabled": True}}}) == []
+    errs = lint_config({"cognition": {"self_critique": {"enabled": "yes"}}})
+    assert any("cognition.self_critique.enabled" in str(e) for e in errs)
 
 
 def test_lint_config_memory_v2_dependency():

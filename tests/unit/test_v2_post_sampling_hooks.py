@@ -198,12 +198,19 @@ def _lessons_payload(
 
 
 @pytest.mark.asyncio
-async def test_lessons_default_enabled_with_persona(tmp_path: Path) -> None:
-    """B-168: unlike ExtractMemoriesHook, this hook is ON by default —
-    that's the whole point of the user complaint that prompted it
-    (经验教训自己总结)."""
+async def test_lessons_default_disabled_with_persona(tmp_path: Path) -> None:
+    """Long-term extraction is opt-in so unfinished task trajectories
+    don't become durable lessons."""
     hook = ExtractLessonsHook()
     ctx = _ctx(tmp_path, cfg={})
+    assert hook.is_enabled(ctx) is False
+
+
+@pytest.mark.asyncio
+async def test_lessons_enabled_via_config(tmp_path: Path) -> None:
+    hook = ExtractLessonsHook()
+    cfg = {"evolution": {"memory": {"extract_lessons": {"enabled": True}}}}
+    ctx = _ctx(tmp_path, cfg=cfg)
     assert hook.is_enabled(ctx) is True
 
 

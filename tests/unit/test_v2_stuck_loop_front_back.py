@@ -202,12 +202,25 @@ async def test_stuck_loop_emits_anti_req_violation_with_required_keys() -> None:
     # The 5 keys the chat_reducer_secondary.js reducer + Chat.js card
     # surface depend on. If any of these go missing the UI flickers
     # (loses tool name / error signature / hop number).
-    for key in ("message", "tool", "error_signature", "hop", "kind"):
+    for key in (
+        "message",
+        "tool",
+        "error_signature",
+        "hop",
+        "kind",
+        "strategy_decision",
+        "should_retry_same",
+        "recommended_action",
+        "recovery_options",
+    ):
         assert key in payload, (
             f"stuck_loop payload missing required key {key!r}: {payload!r}"
         )
     assert payload["kind"] == "stuck_loop"
     assert payload["tool"] == "apply_patch"
+    assert payload["strategy_decision"] == "change_plan"
+    assert payload["should_retry_same"] is False
+    assert "change_plan" in payload["recovery_options"]
     # message is the human-readable "agent stuck …" — reducer reads
     # this FIRST (payload.message ?? payload.reason ?? payload.kind).
     assert "stuck" in payload["message"].lower()

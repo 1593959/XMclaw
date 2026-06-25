@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from xmclaw.core.ir import ToolCall, ToolResult, ToolSpec
@@ -63,6 +64,7 @@ META_UNINSTALL_TOOL_NAME = "skill_uninstall"
 # of running list_dir + bash in circles.
 META_STATUS_TOOL_NAME = "skill_status"
 META_VIEW_TOOL_NAME = "skill_view"
+META_DECISION_TOOL_NAME = "skill_decision"
 # Epic #27 G-04 (2026-05-19) — progressive disclosure entry point. One
 # unified ``skill_run(skill_id, args)`` tool that routes the call through
 # the registry, same code path as the per-skill ``skill_<id>`` tools.
@@ -207,10 +209,12 @@ class SkillToolProvider:
         watcher: Any = None,
         disclosure_mode: str = DISCLOSURE_MODE_AUTO,
         unified_threshold: int = _DEFAULT_UNIFIED_THRESHOLD,
+        block_critical_installs: bool = True,
     ) -> None:
         self._registry = registry
         self._description_prefix = description_prefix
         self._tool_name_cache: dict[str, str] | None = None
+        self._block_critical_installs = block_critical_installs
         # B-295: opt-in variant selector for UCB1 over (skill_id, version)
         # arms. None → always HEAD (legacy behaviour). When wired, each
         # invocation asks the selector which version to run; stats
@@ -269,6 +273,7 @@ class SkillToolProvider:
         # list_dir / bash. Both meta-tools.
         specs.append(self._status_spec())
         specs.append(self._view_spec())
+        specs.append(self._decision_spec())
         # Epic #27 G-04 (2026-05-19): unified skill_run dispatcher.
         # Always exposed regardless of disclosure mode — in ``inline``
         # it's an alias the LLM may use; in ``unified`` it's the only
@@ -345,6 +350,8 @@ class SkillToolProvider:
             return self._invoke_status(call, t0)
         if call.name == META_VIEW_TOOL_NAME:
             return self._invoke_view(call, t0)
+        if call.name == META_DECISION_TOOL_NAME:
+            return self._invoke_decision(call, t0)
         if call.name == META_DIFF_TOOL_NAME:
             return self._invoke_diff(call, t0)
         if call.name == META_ROLLBACK_TOOL_NAME:
@@ -706,6 +713,65 @@ class SkillToolProvider:
             reverse=True,
         )
 
+        registered: list[dict[str, Any]] = []
+        try:
+            for sid in self._registry.list_skill_ids():
+                ref = self._registry.ref(sid)
+                manifest = ref.manifest
+                registered.append({
+                    "skill_id": sid,
+                    "active_version": ref.version,
+                    "versions": self._registry.list_versions(sid),
+                    "title": manifest.title or sid,
+                    "description": manifest.description,
+                    "when_to_use": getattr(manifest, "when_to_use", ""),
+                    "triggers": list(getattr(manifest, "triggers", ()) or ()),
+                    "trust_level": str(getattr(manifest, "trust_level", "")),
+                    "requires_restart": bool(
+                        getattr(manifest, "requires_restart", False),
+                    ),
+                })
+        except Exception:  # noqa: BLE001
+            registered = []
+
+        roots: list[dict[str, Any]] = []
+        try:
+            from xmclaw.skills.user_loader import resolve_skill_roots
+
+            canonical, extras = resolve_skill_roots()
+            for kind, root in [("canonical", canonical), *[
+                ("extra", p) for p in extras
+            ]]:
+                path = Path(root).expanduser()
+                entries: list[dict[str, Any]] = []
+                if path.exists() and path.is_dir():
+                    for child in sorted(path.iterdir(), key=lambda p: p.name.lower()):
+                        if not child.is_dir() or child.name.startswith("."):
+                            continue
+                        entries.append({
+                            "id": child.name,
+                            "has_skill_md": (child / "SKILL.md").exists(),
+                            "has_manifest_json": (child / "manifest.json").exists(),
+                            "has_skill_py": (child / "skill.py").exists(),
+                            "path": str(child),
+                        })
+                roots.append({
+                    "kind": kind,
+                    "path": str(path),
+                    "exists": path.exists(),
+                    "skill_dirs": entries,
+                    "skill_dir_count": len(entries),
+                })
+        except Exception as exc:  # noqa: BLE001
+            roots = [{
+                "kind": "error",
+                "path": "",
+                "exists": False,
+                "skill_dirs": [],
+                "skill_dir_count": 0,
+                "error": str(exc),
+            }]
+
         notes: list[str] = []
         if load_failures:
             n = len(load_failures)
@@ -749,12 +815,109 @@ class SkillToolProvider:
                     "load_failures": len(load_failures),
                     "pending_restarts": len(pending_restarts),
                 },
+                "registered": registered,
+                "roots": roots,
                 "load_failures": load_failures,
                 "pending_restarts": pending_restarts,
                 "notes": notes,
             },
             error=None,
             latency_ms=self._elapsed_ms(t0),
+        )
+
+    def _decision_spec(self) -> ToolSpec:
+        """ToolSpec for structured skill routing decisions."""
+        return ToolSpec(
+            name=META_DECISION_TOOL_NAME,
+            description=(
+                "Record your structured skill routing decision for this turn. "
+                "Call this when the skill-discovery block asks you to use a "
+                "candidate skill, browse the catalog, or skip candidates. "
+                "Use action='use' before invoking a matching skill, "
+                "action='skip' before falling back to generic tools, or "
+                "action='browse' before calling skill_browse. This tool has no "
+                "side effects; it exists so the UI/event log can show selected "
+                "skill and concrete skip_reason instead of relying on prose."
+            ),
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["use", "skip", "browse"],
+                    },
+                    "skill_id": {"type": "string"},
+                    "tool_name": {"type": "string"},
+                    "skip_reason": {
+                        "type": "string",
+                        "description": (
+                            "Required for action='skip'. Use one of the "
+                            "allowed skip_reasons from the skill-discovery block."
+                        ),
+                    },
+                    "browse_query": {
+                        "type": "string",
+                        "description": (
+                            "Required for action='browse'. Query you will pass "
+                            "to skill_browse."
+                        ),
+                    },
+                    "note": {"type": "string"},
+                },
+            },
+        )
+
+    def _invoke_decision(self, call: ToolCall, t0: float) -> ToolResult:
+        args = dict(call.args or {})
+        action = str(args.get("action") or "").strip().lower()
+        if action not in {"use", "skip", "browse"}:
+            return self._error_result(
+                call.id,
+                "skill_decision requires action in {'use','skip','browse'}",
+                t0,
+            )
+        skill_id = str(args.get("skill_id") or "").strip()
+        tool_name = str(args.get("tool_name") or "").strip()
+        skip_reason = str(args.get("skip_reason") or "").strip()
+        browse_query = str(args.get("browse_query") or "").strip()
+        note = str(args.get("note") or "").strip()
+        if action == "skip" and not skip_reason:
+            return self._error_result(
+                call.id,
+                "skill_decision(action='skip') requires skip_reason",
+                t0,
+            )
+        if action == "browse" and not browse_query:
+            return self._error_result(
+                call.id,
+                "skill_decision(action='browse') requires browse_query",
+                t0,
+            )
+        if action == "use" and not (skill_id or tool_name):
+            return self._error_result(
+                call.id,
+                "skill_decision(action='use') requires skill_id or tool_name",
+                t0,
+            )
+        content = {
+            "kind": "skill_decision",
+            "action": action,
+            "skill_id": skill_id,
+            "tool_name": tool_name,
+            "skip_reason": skip_reason,
+            "browse_query": browse_query,
+            "note": note,
+            "ok_to_continue": True,
+        }
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content=content,
+            error=None,
+            latency_ms=self._elapsed_ms(t0),
+            metadata={"kind": "skill_decision", "action": action},
         )
 
     def _view_spec(self) -> ToolSpec:
@@ -1752,6 +1915,7 @@ class SkillToolProvider:
                 install_from_source,
                 source.strip(),
                 skill_id=skill_id.strip() if skill_id else None,
+                block_critical=self._block_critical_installs,
             )
         except MarketplaceError as exc:
             return self._error_result(

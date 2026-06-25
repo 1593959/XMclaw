@@ -50,6 +50,10 @@ from typing import Any, Awaitable, Callable, Optional
 from xmclaw.providers.llm.base import Message
 from xmclaw.utils.redact import redact_string
 from xmclaw.context.tool_result_prune import prune_old_tool_results
+from xmclaw.context.summarizer_eviction import (
+    SummarizerEvictionPlan,
+    SummarizerEvictionPlanner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +394,8 @@ class ContextCompressor:
 
         self._states: dict[str, _SessionState] = {}
         self._token_cache: dict[str, int] = {}
+        self.eviction_planner = SummarizerEvictionPlanner()
+        self.last_eviction_plan: SummarizerEvictionPlan | None = None
 
         if not quiet_mode:
             logger.info(
@@ -562,6 +568,7 @@ class ContextCompressor:
         unchanged — context compression NEVER fails a user turn.
         """
         n = len(messages)
+        self.last_eviction_plan = None
         min_for_compress = self.protect_first_n + 3 + 1
         if n <= min_for_compress:
             if not self.quiet_mode:
@@ -609,6 +616,17 @@ class ContextCompressor:
                 if compress_start >= compress_end:
                     return messages
 
+            eviction_plan = self.eviction_planner.plan(
+                messages,
+                session_id=session_id,
+                summarize_start=compress_start,
+                summarize_end=compress_end,
+                focus_topic=focus_topic,
+            )
+            self.last_eviction_plan = eviction_plan
+            compress_start = eviction_plan.summarize_start
+            compress_end = eviction_plan.summarize_end
+
             turns_to_summarize_all = messages[compress_start:compress_end]
 
             # Wave-27 fix-8: USER MESSAGES ARE SACRED. The user's actual
@@ -623,10 +641,13 @@ class ContextCompressor:
             # message history, only its own verbose outputs compress.
             preserved_users: list[Message] = []
             turns_to_summarize: list[Message] = []
-            for _m in turns_to_summarize_all:
-                if _m.role == "user":
+            preserved_idx = set(eviction_plan.preserved_indices)
+            summarize_idx = set(eviction_plan.summarize_indices)
+            for _offset, _m in enumerate(turns_to_summarize_all):
+                _idx = compress_start + _offset
+                if _idx in preserved_idx and _m.role == "user":
                     preserved_users.append(_m)
-                else:
+                elif _idx in summarize_idx:
                     turns_to_summarize.append(_m)
 
             if not self.quiet_mode:

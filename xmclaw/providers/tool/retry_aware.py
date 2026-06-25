@@ -169,6 +169,7 @@ class ErrorAwareRetryProvider(ToolProvider):
     async def invoke(self, call: ToolCall) -> ToolResult:
         t0 = time.perf_counter()
         result = await self._inner.invoke(call)
+        original_result = result
         if (
             not self._enabled
             or self._llm is None
@@ -235,6 +236,8 @@ class ErrorAwareRetryProvider(ToolProvider):
                         call.name, attempt + 1, fixup.get("reason"),
                     )
                     return retry_result
+                if retry_result.error:
+                    break
                 # If the retry failed with a *transient* error, B-17
                 # already fired; if it's a *different* semantic error,
                 # feed it into the next attempt.
@@ -271,8 +274,10 @@ class ErrorAwareRetryProvider(ToolProvider):
             # Unknown action shape — stop trying.
             break
 
-        # All attempts exhausted or hit an unrecoverable wall.
-        return result
+        # All attempts exhausted or hit an unrecoverable wall. Keep the
+        # original error visible so the agent does not mistake a failed
+        # repair attempt for the root cause.
+        return original_result
 
     # ── Internals ──────────────────────────────────────────────────
 

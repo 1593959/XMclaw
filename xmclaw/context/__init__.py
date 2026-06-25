@@ -29,6 +29,12 @@ from xmclaw.context.tool_result_prune import (
     _summarize_tool_result,
     prune_old_tool_results,
 )
+from xmclaw.context.summarizer_eviction import (
+    EvictionRange,
+    SummarizerEvictionPlan,
+    SummarizerEvictionPlanner,
+)
+from xmclaw.context.summarizer_agent import SummarizerAgent
 
 __all__ = [
     "ContextCompressor",
@@ -43,4 +49,8 @@ __all__ = [
     "IngestResult",
     "AssembleResult",
     "CompactResult",
+    "EvictionRange",
+    "SummarizerEvictionPlan",
+    "SummarizerEvictionPlanner",
+    "SummarizerAgent",
 ]

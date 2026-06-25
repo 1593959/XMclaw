@@ -7,6 +7,7 @@
 // 对策——常驻一个 <audio> 元素，在用户点「语音对话」的手势里先播一段
 // 静音 WAV「解锁」它；之后所有 TTS 复用这个已解锁元素，play() 不再被拦。
 import { useCallback, useEffect, useRef, useState } from "react";
+import { authHeaders } from "./api";
 import { useApp } from "../store/app";
 
 // 1 帧静音 WAV（解锁自动播放用）。
@@ -21,11 +22,11 @@ function getSR(): any {
 async function ttsFetch(text: string, token: string | null): Promise<string | null> {
   const clean = text.replace(/```[\s\S]*?```/g, "（代码块略）").slice(0, 4000).trim();
   if (!clean) return null;
-  const url = "/api/v2/voice/tts" + (token ? `?token=${encodeURIComponent(token)}` : "");
+  const url = "/api/v2/voice/tts";
   try {
     const r = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(token, { "Content-Type": "application/json" }),
       body: JSON.stringify({ text: clean }),
     });
     if (!r.ok) return null;

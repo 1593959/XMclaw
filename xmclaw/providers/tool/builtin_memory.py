@@ -93,7 +93,7 @@ class BuiltinToolsMemoryMixin:
         """Wave-27 fix-8 / C: agent self-declares its current focus.
 
         The recorded text gets injected into the GoalAnchor block on
-        the next hop's anchor refresh — survives compression and
+        the next hop's anchor refresh --survives compression and
         context shuffling because the anchor is regenerated each
         time. Empty / blank text clears the slot (use when finishing
         a phase and not yet starting a new one).
@@ -101,7 +101,7 @@ class BuiltinToolsMemoryMixin:
         focus = call.args.get("focus")
         if not isinstance(focus, str):
             return _fail(call, t0, "'focus' must be a string")
-        # Lazy import — keeps this module independent of cognition/.
+        # Lazy import --keeps this module independent of cognition/.
         from xmclaw.cognition.goal_anchor import set_session_focus
         sid = call.session_id or "_default"
         focus_clean = focus.strip()
@@ -109,7 +109,7 @@ class BuiltinToolsMemoryMixin:
         if focus_clean:
             summary = f"focus set: {focus_clean[:80]}"
             if len(focus_clean) > 80:
-                summary += "…"
+                summary += "..."
         else:
             summary = "focus cleared"
         return ToolResult(
@@ -118,7 +118,7 @@ class BuiltinToolsMemoryMixin:
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
 
-    # ── self-modifying memory tools ───────────────────────────────────
+    # -- self-modifying memory tools -----------------------------------
 
     async def _remember(self, call: ToolCall, t0: float) -> ToolResult:
         category = call.args.get("category")
@@ -132,7 +132,7 @@ class BuiltinToolsMemoryMixin:
             basename="MEMORY.md",
             section=category.strip(),
             entry=note.strip(),
-            placeholder_title="MEMORY.md — what I want to remember next time",
+            placeholder_title="MEMORY.md --what I want to remember next time",
         )
 
     async def _memory_pin(self, call: ToolCall, t0: float) -> ToolResult:
@@ -147,7 +147,7 @@ class BuiltinToolsMemoryMixin:
             basename="MEMORY.md",
             section="Pinned",
             entry=content.strip(),
-            placeholder_title="MEMORY.md — what I want to remember next time",
+            placeholder_title="MEMORY.md --what I want to remember next time",
         )
 
     async def _learn_about_user(self, call: ToolCall, t0: float) -> ToolResult:
@@ -162,16 +162,16 @@ class BuiltinToolsMemoryMixin:
             basename="USER.md",
             section=section.strip(),
             entry=fact.strip(),
-            placeholder_title="USER.md — who I'm working with",
+            placeholder_title="USER.md --who I'm working with",
         )
 
     async def _schedule_followup(self, call: ToolCall, t0: float) -> ToolResult:
-        """Create a cron job — agent's self-scheduling primitive.
+        """Create a cron job --agent's self-scheduling primitive.
 
         Wraps :class:`xmclaw.core.scheduler.cron.CronStore` so the agent
         can set its own reminders without learning the full
         ``/api/v2/cron`` REST surface. ``run_once=True`` is implemented
-        by appending a deletion clause to the prompt — the future agent
+        by appending a deletion clause to the prompt --the future agent
         deletes its own job after firing.
         """
         name = call.args.get("name")
@@ -185,7 +185,7 @@ class BuiltinToolsMemoryMixin:
         if not isinstance(prompt, str) or not prompt.strip():
             return _fail(call, t0, "missing or empty 'prompt'")
 
-        # B-37: run_once is now a real CronJob field — CronStore.mark_fired
+        # B-37: run_once is now a real CronJob field --CronStore.mark_fired
         # deletes the job after firing instead of rescheduling. No more
         # "future agent please delete yourself" breadcrumbs.
         full_prompt = prompt.strip()
@@ -223,7 +223,7 @@ class BuiltinToolsMemoryMixin:
 
         Lands in the Web UI's Notes tab + gets vector-indexed by
         the next indexer tick. Used by the agent to record workflows,
-        lessons learned, accumulated reference — first-class evolution
+        lessons learned, accumulated reference --first-class evolution
         surface alongside MEMORY.md.
         """
         from xmclaw.utils.paths import file_memory_dir
@@ -258,7 +258,7 @@ class BuiltinToolsMemoryMixin:
         path = mdir / safe
 
         # B-93: build YAML-style frontmatter when description/tags
-        # passed. Only on replace mode — append preserves whatever
+        # passed. Only on replace mode --append preserves whatever
         # frontmatter the file already had.
         def _build_frontmatter() -> str:
             if not description and not tags:
@@ -267,7 +267,7 @@ class BuiltinToolsMemoryMixin:
             if description:
                 # Escape any literal \"---\" inside the description
                 # so it can't terminate the block early.
-                clean = description.replace("---", "—")
+                clean = description.replace("---", "\u2014")
                 lines.append(f"description: {clean}")
             if tags:
                 lines.append("tags: [" + ", ".join(tags) + "]")
@@ -324,7 +324,7 @@ class BuiltinToolsMemoryMixin:
         if not isinstance(content, str) or not content.strip():
             return _fail(call, t0, "missing 'content'")
         # Reject malformed dates rather than silently writing to a
-        # weird filename — agent sometimes hands us "today" as the
+        # weird filename --agent sometimes hands us "today" as the
         # literal string.
         if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             return _fail(
@@ -347,7 +347,7 @@ class BuiltinToolsMemoryMixin:
         block_parts.append(content.strip())
         block = "\n\n".join(block_parts)
 
-        # B-64: same RMW lock as note_write — concurrent agent +
+        # B-64: same RMW lock as note_write --concurrent agent +
         # cron append on the same daily file would otherwise lose
         # entries.
         from xmclaw.utils.fs_locks import atomic_write_text
@@ -356,7 +356,7 @@ class BuiltinToolsMemoryMixin:
                 if path.is_file():
                     existing = path.read_text(encoding="utf-8", errors="replace")
                     if not existing.startswith("# "):
-                        existing = f"# 日记 {date}\n\n" + existing
+                        existing = f"# 鏃ヨ {date}\n\n" + existing
                     atomic_write_text(
                         path,
                         existing.rstrip() + "\n\n---\n\n" + block + "\n",
@@ -364,7 +364,7 @@ class BuiltinToolsMemoryMixin:
                 else:
                     atomic_write_text(
                         path,
-                        f"# 日记 {date}\n\n" + block + "\n",
+                        f"# 鏃ヨ {date}\n\n" + block + "\n",
                     )
             except OSError as exc:
                 return _fail(call, t0, f"write failed: {exc}")
@@ -390,7 +390,7 @@ class BuiltinToolsMemoryMixin:
         by ProfileExtractor. Each line follows the
         ``ProfileDelta.render_line()`` shape::
 
-            - [auto · {kind} · conf={confidence:.2f} · session={sid}] {text}
+            - [auto 路 {kind} 路 conf={confidence:.2f} 路 session={sid}] {text}
 
         Optional ``topic`` substring filter (case-insensitive) +
         ``kind`` exact filter + ``limit`` cap. Returns [] cleanly
@@ -422,7 +422,7 @@ class BuiltinToolsMemoryMixin:
                 call_id=call.id, ok=True,
                 content={
                     "entries": [],
-                    "note": "USER.md not yet created — no extracted preferences",
+                    "note": "USER.md not yet created --no extracted preferences",
                 },
                 side_effects=(),
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
@@ -443,7 +443,7 @@ class BuiltinToolsMemoryMixin:
                 content={
                     "entries": [],
                     "note": "USER.md has no `## Auto-extracted "
-                            "preferences` section yet — ProfileExtractor "
+                            "preferences` section yet --ProfileExtractor "
                             "hasn't flushed any deltas",
                 },
                 side_effects=(),
@@ -457,20 +457,23 @@ class BuiltinToolsMemoryMixin:
         if nxt > 0:
             section = section[:nxt]
 
-        # Match lines emitted by ProfileDelta.render_line(). Tolerant
-        # of whitespace + accepts both ASCII and CJK middle dots
-        # (·) so future renderer tweaks don't silently break the
-        # parser.
+        # Match lines emitted by ProfileDelta.render_line(). Keep this
+        # tolerant because old USER.md files may contain mojibake
+        # separators from previous Windows console encodings.
         pattern = _re_pref.compile(
-            r"^\s*-\s*\[auto\s*[·.]\s*([^·.\]]+?)\s*[·.]\s*conf=([\d.]+)\s*"
-            r"[·.]\s*session=([^\]]+?)\]\s*(.+)\s*$"
+            r"^\s*-\s*\[auto\s+(.*?)\s+conf=([\d.]+).*?"
+            r"session=([^\]]+?)\]\s*(.+)\s*$"
         )
         entries: list[dict[str, Any]] = []
         for line in section.splitlines():
             m = pattern.match(line)
             if m is None:
                 continue
-            entry_kind = m.group(1).strip().lower()
+            kind_blob = m.group(1).strip()
+            kind_tokens = _re_pref.findall(r"[A-Za-z_][A-Za-z0-9_-]*", kind_blob)
+            if not kind_tokens:
+                continue
+            entry_kind = kind_tokens[-1].strip().lower()
             try:
                 conf = float(m.group(2))
             except ValueError:
@@ -493,6 +496,85 @@ class BuiltinToolsMemoryMixin:
         return ToolResult(
             call_id=call.id, ok=True,
             content={"entries": entries, "matched": len(entries)},
+            side_effects=(),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _memory_decision(self, call: ToolCall, t0: float) -> ToolResult:
+        """Record a structured memory-use decision for the current turn."""
+        action = str(call.args.get("action") or "").strip()
+        reason = str(call.args.get("reason") or "").strip()
+        if action not in {"search", "use", "skip", "write_candidate", "write_fact"}:
+            return _fail(
+                call, t0,
+                "action must be one of search/use/skip/write_candidate/write_fact",
+            )
+        if not reason:
+            return _fail(call, t0, "memory_decision requires a non-empty reason")
+
+        skipped_reason = str(call.args.get("skipped_reason") or "").strip()
+        if action == "skip" and not skipped_reason:
+            return _fail(call, t0, "action='skip' requires skipped_reason")
+
+        used_fact_ids_raw = call.args.get("used_fact_ids") or []
+        if not isinstance(used_fact_ids_raw, list):
+            return _fail(call, t0, "used_fact_ids must be a list")
+        used_fact_ids = [str(x).strip() for x in used_fact_ids_raw if str(x).strip()]
+
+        payload: dict[str, Any] = {
+            "action": action,
+            "query": str(call.args.get("query") or "").strip() or None,
+            "reason": reason,
+            "used_fact_ids": used_fact_ids,
+            "skipped_reason": skipped_reason or None,
+            "recommended_action": (
+                str(call.args.get("recommended_action") or "").strip() or None
+            ),
+            "confidence": float(call.args.get("confidence") or 0.7),
+            "session_id": call.session_id,
+        }
+
+        if action == "write_candidate":
+            text = str(call.args.get("candidate_text") or "").strip()
+            if not text:
+                return _fail(
+                    call, t0,
+                    "action='write_candidate' requires candidate_text",
+                )
+            store = None
+            gateway = getattr(self, "_memory_gateway", None)
+            if gateway is not None:
+                store = getattr(gateway, "candidate_store", None)
+            if store is None:
+                payload["candidate_created"] = False
+                payload["candidate_error"] = "memory candidate store not wired"
+            else:
+                from xmclaw.memory.v2.candidates import MemoryCandidate
+
+                candidate = MemoryCandidate.create(
+                    text=text,
+                    kind=str(call.args.get("kind") or "lesson").strip(),
+                    scope=str(call.args.get("scope") or "project").strip(),
+                    bucket=str(call.args.get("bucket") or "").strip(),
+                    source="memory_decision",
+                    source_event_id=call.id,
+                    confidence=payload["confidence"],
+                    reason=reason,
+                    evidence=[{
+                        "source": "memory_decision",
+                        "query": payload["query"],
+                        "recommended_action": payload["recommended_action"],
+                    }],
+                    metadata={"used_fact_ids": used_fact_ids},
+                )
+                stored = store.create(candidate)
+                payload["candidate_created"] = True
+                payload["candidate"] = stored.to_dict()
+
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content=payload,
             side_effects=(),
             latency_ms=(time.perf_counter() - t0) * 1000.0,
         )
@@ -538,7 +620,7 @@ class BuiltinToolsMemoryMixin:
                 call_id=call.id, ok=True,
                 content={
                     "entries": [],
-                    "note": "journal directory empty — no prior sessions yet",
+                    "note": "journal directory empty --no prior sessions yet",
                 },
                 side_effects=(),
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
@@ -653,7 +735,7 @@ class BuiltinToolsMemoryMixin:
                 )
             preview = str(content)[:280]
             if len(str(content)) > 280:
-                preview += "…"
+                preview += "..."
             entries.append({
                 "role": m.role,
                 "preview": preview,
@@ -709,7 +791,7 @@ class BuiltinToolsMemoryMixin:
         max_matches = max(1, min(10, int(call.args.get("max_matches") or 3)))
         reason = str(call.args.get("reason") or "").strip() or None
 
-        # 2026-05-29 cleanup: share the recall→forget loop with the
+        # 2026-05-29 cleanup: share the recall->forget loop with the
         # v3 multi-action ``memory(action='forget')`` path. The
         # legacy wire format used ``"id"`` instead of ``"fid"``;
         # remap here so existing chat history / UI doesn't break.
@@ -773,7 +855,7 @@ class BuiltinToolsMemoryMixin:
         bucket = call.args.get("bucket") or None
         dry_run = bool(call.args.get("dry_run", True))
         # 2026-05-29: mode="llm" runs paraphrase-level semantic dedup
-        # (catches "空消息超3轮停止" said 7 different ways that cosine
+        # (catches "绌烘秷鎭秴3杞仠姝? said 7 different ways that cosine
         # clustering misses). mode="vector" (default) is the fast
         # embedding-cosine pass.
         mode = str(call.args.get("mode") or "vector").lower()
@@ -828,7 +910,7 @@ class BuiltinToolsMemoryMixin:
         store never re-parses (``run_once=True`` deletes the job
         after firing, so the schedule string is effectively dead
         metadata). This avoids inventing a ``"@once <ts>"`` syntax
-        that ``parse_schedule`` doesn't accept — earlier draft hit
+        that ``parse_schedule`` doesn't accept --earlier draft hit
         the silent-fallback path that schedules everything 1 hour
         from now.
         """
@@ -856,10 +938,10 @@ class BuiltinToolsMemoryMixin:
         import uuid as _uuid
         cron_id = f"commitment-{fid[:8]}-{_uuid.uuid4().hex[:6]}"
         # Cron prompt fires as if the user said this; AgentLoop
-        # treats it like any other turn — including auto-recall,
+        # treats it like any other turn --including auto-recall,
         # so the agent gets the full context (fid + bucket).
         prompt = (
-            f"[Commitment due — fid:{fid}] {text}\n\n"
+            f"[Commitment due --fid:{fid}] {text}\n\n"
             f"Resolve this commitment. When fully handled, call "
             f"``memory(action='forget', old_fid='{fid}', reason='commitment fulfilled')``."
         )
@@ -898,7 +980,7 @@ class BuiltinToolsMemoryMixin:
         """2026-05-29 cleanup: shared recall-then-forget loop used by
         both ``_memory_forget`` (legacy single-purpose tool) and
         ``_memory_multi_action(action='forget', query=...)``. Pre-
-        cleanup the loop was implemented in both places — drift
+        cleanup the loop was implemented in both places --drift
         risk on any future change to forget semantics. Returns the
         ``forgotten`` list (one dict per successful forget).
 
@@ -938,7 +1020,7 @@ class BuiltinToolsMemoryMixin:
     def _build_due_marker(self, text: str, due_ts: Any) -> str:
         """Inline ``[due:YYYY-MM-DDTHH:MMZ]`` marker for commitments.
         Returns the original text unchanged if ``due_ts`` can't be
-        parsed. The marker is intentionally schema-neutral — see the
+        parsed. The marker is intentionally schema-neutral --see the
         ``due_ts`` reservation note in the Phase 4.5 follow-up."""
         try:
             iso = time.strftime(
@@ -951,7 +1033,7 @@ class BuiltinToolsMemoryMixin:
     async def _memory_multi_action(
         self, call: ToolCall, t0: float,
     ) -> ToolResult:
-        """2026-05-28 memory v3 phase 4.1 — single tool, 4 actions.
+        """2026-05-28 memory v3 phase 4.1 --single tool, 4 actions.
 
         Dispatches to the existing MemoryService primitives via the
         same indirection (``_resolve_memory_v2_service``). The
@@ -962,7 +1044,7 @@ class BuiltinToolsMemoryMixin:
         Bucket inference / validation lives in
         ``xmclaw.memory.v2.buckets`` (registry). Unknown buckets
         coerce to ``misc`` at service-level so the agent never gets
-        a "wrong bucket name" error — the fact still lands, just
+        a "wrong bucket name" error --the fact still lands, just
         in the catch-all section of MEMORY.md.
         """
         action = (call.args.get("action") or "").strip()
@@ -989,9 +1071,9 @@ class BuiltinToolsMemoryMixin:
         due_ts = call.args.get("due_ts")
         reason = (call.args.get("reason") or "").strip() or None
 
-        # ── action: add / pin ─────────────────────────────────────
+        # -- action: add / pin -------------------------------------
         # Pin = add with a confidence floor. v3 phase 4.1 note: this
-        # is a soft pin — dedup/compact see it as a high-priority
+        # is a soft pin --dedup/compact see it as a high-priority
         # survivor, but ``forget(fid)`` will still remove it. True
         # hard-pin needs a ``pinned`` column on the Fact model
         # (Phase 4.5 schema bump, paired with ``due_ts``).
@@ -1068,9 +1150,9 @@ class BuiltinToolsMemoryMixin:
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        # ── action: replace ───────────────────────────────────────
+        # -- action: replace ---------------------------------------
         # Both old_fid and old_text paths now flow through
-        # ``service.correct`` — single supersede pipeline, no
+        # ``service.correct`` --single supersede pipeline, no
         # duplicate forget+remember code, SUPERSEDES edge always
         # created.
         if action == "replace":
@@ -1102,8 +1184,8 @@ class BuiltinToolsMemoryMixin:
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        # ── action: forget ────────────────────────────────────────
-        # (action == "forget" — the only branch left after the
+        # -- action: forget ----------------------------------------
+        # (action == "forget" --the only branch left after the
         # validation gate at the top of the method)
         old_fid = (call.args.get("old_fid") or "").strip()
         query = (call.args.get("query") or "").strip()
@@ -1143,7 +1225,7 @@ class BuiltinToolsMemoryMixin:
         )
 
     async def _memory_get(self, call: ToolCall, t0: float) -> ToolResult:
-        """2026-05-28 memory v3 phase 4.2 — read a persona MD file
+        """2026-05-28 memory v3 phase 4.2 --read a persona MD file
         verbatim, optionally narrowed by section or line range.
 
         The output preserves ``<!-- fid:xxx -->`` markers so the
@@ -1152,7 +1234,7 @@ class BuiltinToolsMemoryMixin:
 
         Canonical-name resolution: the shared
         ``_PERSONA_BASENAMES_LOOKUP`` table from ``_helpers`` is the
-        single source of truth — the same one ``update_persona``
+        single source of truth --the same one ``update_persona``
         uses, so a file the agent can edit via one tool is also
         readable via the other. The empty-but-known fallback uses
         ``buckets.known_files()`` so adding a new persona file
@@ -1185,7 +1267,7 @@ class BuiltinToolsMemoryMixin:
         )
         target = Path(pdir) / canonical
         if not target.is_file():
-            # Known persona file but not rendered yet — return empty
+            # Known persona file but not rendered yet --return empty
             # content with a helpful note rather than an error.
             from xmclaw.memory.v2.buckets import known_files
             known = {n.lower() for n in known_files()} | {"bootstrap.md"}
@@ -1213,7 +1295,7 @@ class BuiltinToolsMemoryMixin:
                 f"read failed: {type(exc).__name__}: {exc}",
             )
 
-        # Section filter — extract everything between this ## header
+        # Section filter --extract everything between this ## header
         # and the next ## (or EOF). The header arg accepts both
         # ``## Foo`` and ``Foo``; we always normalise to the former.
         section = call.args.get("section")
@@ -1236,7 +1318,7 @@ class BuiltinToolsMemoryMixin:
                 f"(section {header!r} not found in {canonical})"
             )
 
-        # Line range — 'start-end' (1-indexed, inclusive).
+        # Line range --'start-end' (1-indexed, inclusive).
         line_arg = call.args.get("lines")
         if isinstance(line_arg, str) and line_arg.strip():
             m = _LINES_RANGE_RE.match(line_arg)
@@ -1290,7 +1372,7 @@ class BuiltinToolsMemoryMixin:
         sample = max(50, min(2000, sample))
 
         # List facts to inspect. Cap the scan so big stores don't
-        # block the turn — 5K is plenty for the breakdown.
+        # block the turn --5K is plenty for the breakdown.
         try:
             facts = await svc.recall(
                 None,
@@ -1369,13 +1451,13 @@ class BuiltinToolsMemoryMixin:
                 "dup_ratio": round(ratio, 3),
             }
 
-        # Recommendation hint — gives the agent an explicit signal.
+        # Recommendation hint --gives the agent an explicit signal.
         recommendations: list[str] = []
         for s, stats in dup_ratios.items():
             ratio_v = stats.get("dup_ratio") or 0.0
             if isinstance(ratio_v, (int, float)) and ratio_v >= 0.15:
                 recommendations.append(
-                    f"memory_dedup(scope={s!r}, dry_run=true) — "
+                    f"memory_dedup(scope={s!r}, dry_run=true) --"
                     f"{stats['excess_facts']} excess in {stats['sample_size']}-sample"
                 )
 
@@ -1395,7 +1477,7 @@ class BuiltinToolsMemoryMixin:
                 ],
                 "dup_estimate": dup_ratios,
                 "recommendations": recommendations or [
-                    "no action needed — store looks tidy.",
+                    "no action needed \u2014 store looks tidy.",
                 ],
             },
             error=None,

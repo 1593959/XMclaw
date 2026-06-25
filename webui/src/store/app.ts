@@ -4,7 +4,7 @@
 
 import { create } from "zustand";
 import { flushSync } from "react-dom";
-import { apiDelete, apiGet, fetchPairingToken, setMediaToken } from "../lib/api";
+import { apiDelete, apiGet, authHeaders, fetchPairingToken, setMediaToken } from "../lib/api";
 import { createWsClient, type WsHandle } from "../lib/ws";
 import {
   applyEvent,
@@ -108,7 +108,7 @@ interface AppState {
   openLightbox(url: string, kind?: "image" | "video"): void;
   closeLightbox(): void;
   // 四域导航（10.M3）：任务=主视图，其余为驾驶舱仪表域（模型配置在系统域子标签）。
-  view: "tasks" | "memory" | "skills" | "system" | "files" | "team";
+  view: "tasks" | "memory" | "skills" | "system" | "files" | "team" | "control";
   setView(v: AppState["view"]): void;
   // 工作区联动：时间线点击 → 右栏聚焦文件；nonce 触发重渲染。
   workspaceFocus: { path: string; nonce: number } | null;
@@ -148,8 +148,11 @@ let wsHandle: WsHandle | null = null;
 async function hydrateHistory(sid: string, token: string | null, set: (fn: (s: AppState) => Partial<AppState>) => void) {
   if (!sid) return;
   try {
-    const url = `/api/v2/sessions/${encodeURIComponent(sid)}` + (token ? `?token=${encodeURIComponent(token)}` : "");
-    const r = await fetch(url, { cache: "no-store" });
+    const url = `/api/v2/sessions/${encodeURIComponent(sid)}`;
+    const r = await fetch(url, {
+      cache: "no-store",
+      headers: authHeaders(token),
+    });
     if (!r.ok) return;
     const data = await r.json().catch(() => null);
     const msgs: Array<Record<string, unknown>> = data?.messages || [];
@@ -211,8 +214,8 @@ async function hydrateHistory(sid: string, token: string | null, set: (fn: (s: A
 // B-99: daemon 侧仍在 await 的 ask_user_question，重连后把审批卡放回。
 async function rehydrateQuestions(token: string | null, set: (fn: (s: AppState) => Partial<AppState>) => void) {
   try {
-    const url = "/api/v2/pending_questions" + (token ? `?token=${encodeURIComponent(token)}` : "");
-    const r = await fetch(url);
+    const url = "/api/v2/pending_questions";
+    const r = await fetch(url, { headers: authHeaders(token) });
     if (!r.ok) return;
     const data = await r.json();
     const items: Array<Record<string, unknown>> = Array.isArray(data?.items) ? data.items : [];
@@ -254,8 +257,8 @@ async function rehydrateFanoutReviews(
   set: (fn: (s: AppState) => Partial<AppState>) => void,
 ) {
   try {
-    const url = "/api/v2/pending_fanout_reviews" + (token ? `?token=${encodeURIComponent(token)}` : "");
-    const r = await fetch(url);
+    const url = "/api/v2/pending_fanout_reviews";
+    const r = await fetch(url, { headers: authHeaders(token) });
     if (!r.ok) return;
     const data = await r.json();
     const items: Array<Record<string, unknown>> = Array.isArray(data?.items) ? data.items : [];

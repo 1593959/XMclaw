@@ -17,6 +17,7 @@ import Markdown from "./LazyMarkdown";
 import MermaidView from "./MermaidView";
 import { parseUnifiedDiff } from "../lib/difflines";
 import { DiffBlock } from "./ToolCards";
+import { artifactSrcDoc } from "../lib/artifactSecurity";
 
 const TABS = ["预览", "Diff", "文件", "终端"] as const;
 type Tab = (typeof TABS)[number];
@@ -43,6 +44,7 @@ const ext = (p: string) => (p.split(".").pop() || "").toLowerCase();
 // 会换 srcDoc → 用户实时看到一页页生成/修改。
 function HtmlArtifact({ doc, title }: { doc: string; title: string }) {
   const [full, setFull] = useState(false);
+  const safeDoc = useMemo(() => artifactSrcDoc(doc), [doc]);
   useEffect(() => {
     if (!full) return;
     const onKey = (e: KeyboardEvent) => {
@@ -51,9 +53,7 @@ function HtmlArtifact({ doc, title }: { doc: string; title: string }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [full]);
-  const frame = (cls: string) => (
-    <iframe sandbox="allow-scripts" srcDoc={doc} title={title} className={cls} />
-  );
+  const frame = (cls: string) => <iframe sandbox="" srcDoc={safeDoc} title={title} className={cls} />;
   return (
     <div className="relative">
       <div className="w-full aspect-video rounded border border-mc-border bg-white overflow-hidden">
@@ -95,14 +95,15 @@ function ArtifactView({ kind, content, title }: { kind: string; content: string;
     return <MermaidView content={content} />;
   }
   if (kind === "html") {
-    // 沙箱（allow-scripts，无 same-origin —— 与 Phase 9 桥同纪律）。
+    // Generated SVG/HTML previews are untrusted by default. Keep the
+    // iframe sandbox fully locked down so scripts cannot execute.
     return <HtmlArtifact doc={content} title={title} />;
   }
   if (kind === "svg") {
     return (
       <iframe
-        sandbox="allow-scripts"
-        srcDoc={`<body style="margin:0;background:#fff">${content}</body>`}
+        sandbox=""
+        srcDoc={artifactSrcDoc(content)}
         title={title}
         className="w-full h-72 rounded border border-mc-border bg-white"
       />

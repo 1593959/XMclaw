@@ -8,11 +8,13 @@ inspects those, never swallowed exceptions.
 from __future__ import annotations
 
 import tempfile
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from xmclaw.core.ir import ToolCall
+from xmclaw.memory.v2.candidates import MemoryCandidateStore
 from xmclaw.providers.tool.builtin import BuiltinTools
 
 
@@ -33,6 +35,42 @@ def test_list_tools_default_roster() -> None:
     # Todo tools ship by default -- no kill-switch; they're pure
     # in-memory state with no side effects.
     assert {"todo_write", "todo_read"} <= names
+    memory_spec = next(t for t in tools if t.name == "memory")
+    actions = memory_spec.parameters_schema["properties"]["action"]["enum"]
+    assert "environment" not in actions
+    assert "memory_decision" in names
+
+
+@pytest.mark.asyncio
+async def test_memory_decision_skip_requires_reason() -> None:
+    tools = BuiltinTools()
+    result = await tools.invoke(_call("memory_decision", {
+        "action": "skip",
+        "reason": "当前只是问候",
+    }))
+    assert result.ok is False
+    assert "skipped_reason" in result.error
+
+
+@pytest.mark.asyncio
+async def test_memory_decision_can_create_candidate(tmp_path: Path) -> None:
+    class Gateway:
+        candidate_store = MemoryCandidateStore(tmp_path / "candidates.db")
+
+    tools = BuiltinTools()
+    tools.set_memory_gateway(Gateway())
+    result = await tools.invoke(_call("memory_decision", {
+        "action": "write_candidate",
+        "reason": "用户明确给出长期偏好",
+        "candidate_text": "用户偏好使用中文简洁回复。",
+        "kind": "preference",
+        "scope": "user",
+        "bucket": "user_preference",
+        "confidence": 0.9,
+    }))
+    assert result.ok is True
+    assert result.content["candidate_created"] is True
+    assert result.content["candidate"]["quality_score"] > 0.5
 
 
 def test_list_tools_kill_switches() -> None:
@@ -49,6 +87,55 @@ def test_list_tools_kill_switches() -> None:
     assert "web_fetch" not in names_no_web
     assert "web_search" not in names_no_web
     assert "bash" in names_no_web
+
+
+@pytest.mark.asyncio
+async def test_bash_shell_execution_policy_disabled_refuses() -> None:
+    tools = BuiltinTools(shell_execution_policy="disabled")
+    result = await tools.invoke(_call("bash", {"command": "echo hi"}))
+
+    assert result.ok is False
+    assert "execution_policy=disabled" in result.error
+
+
+@pytest.mark.asyncio
+async def test_bash_shell_execution_policy_docker_uses_sandbox(tmp_path: Path) -> None:
+    calls: list[dict] = []
+
+    def runner(args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return subprocess.CompletedProcess(args, 0, b"docker ok\n", b"")
+
+    tools = BuiltinTools(
+        shell_execution_policy="docker",
+        shell_sandbox_image="alpine:3.20",
+        shell_sandbox_memory="768m",
+        shell_sandbox_cpus="0.5",
+        shell_sandbox_pids_limit=128,
+        shell_sandbox_network="bridge",
+        shell_sandbox_runner=runner,
+    )
+    result = await tools.invoke(
+        _call("bash", {"command": "echo hi", "cwd": str(tmp_path)}),
+    )
+
+    assert result.ok is True
+    assert "docker ok" in result.content
+    assert calls
+    args = calls[0]["args"]
+    assert args[:3] == ["docker", "run", "--rm"]
+    assert "--network" in args and "bridge" in args
+    assert "--memory" in args and "768m" in args
+    assert "--cpus" in args and "0.5" in args
+    assert "--pids-limit" in args and "128" in args
+    assert "--cap-drop" in args and "ALL" in args
+    assert "alpine:3.20" in args
+    assert f"{tmp_path.resolve()}:/workspace" in args
+
+
+def test_bash_shell_execution_policy_rejects_unknown_name() -> None:
+    with pytest.raises(ValueError):
+        BuiltinTools(shell_execution_policy="mystery")
 
 
 def test_list_tools_schemas_well_formed() -> None:

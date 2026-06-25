@@ -65,6 +65,8 @@ class PairingAuthMiddleware(BaseHTTPMiddleware):
         # model regardless of transport.
         token: str | None = request.query_params.get("token")
         if not token:
+            token = request.headers.get("x-xmc-token") or None
+        if not token:
             auth = request.headers.get("authorization", "") or ""
             if auth.lower().startswith("bearer "):
                 token = auth[len("bearer "):].strip() or None

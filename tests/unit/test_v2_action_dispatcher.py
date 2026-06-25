@@ -157,6 +157,36 @@ class FakeToolProvider:
 # ── result dataclass shapes ────────────────────────────────────────────
 
 
+class FakeSelfCritiqueEngine:
+    """Captures Reflexion runtime wiring without invoking an LLM."""
+
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self.raises = raises
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(
+        self,
+        request: Any,
+        *,
+        critic_call: Any | None,
+        memory_service: Any | None,
+    ) -> Any:
+        self.calls.append(
+            {
+                "request": request,
+                "critic_call": critic_call,
+                "memory_service": memory_service,
+            },
+        )
+        if self.raises is not None:
+            raise self.raises
+        return type(
+            "SelfCritiqueRunResult",
+            (),
+            {"status": "completed", "request": request},
+        )()
+
+
 def test_step_execution_result_default_fields() -> None:
     r = StepExecutionResult(step_id="s1", route="stub", ok=True)
     assert r.step_id == "s1"
@@ -178,8 +208,152 @@ def test_plan_execution_result_default_fields() -> None:
     p = PlanExecutionResult(plan_id="p1", step_results=(), all_ok=True)
     assert p.plan_id == "p1"
     assert p.step_results == ()
+    assert p.graph_state is None
+    assert p.self_critique_request is None
+    assert p.self_critique_result is None
     assert p.all_ok is True
     assert p.error is None
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_returns_graph_state_trace() -> None:
+    step = make_step(
+        id="tool_1",
+        action_kind="tool_call",
+        payload={
+            "tool_name": "bash",
+            "args": {"command": "pwd"},
+            "timeout_s": 42,
+            "cache_key": "pwd:v1",
+        },
+        retry_policy={
+            "max_retries": 3,
+            "backoff_s": 0.5,
+            "error_handler": "retry_then_handoff",
+        },
+    )
+    plan = make_plan(id="plan-graph", steps=[step])
+    dispatcher = ActionDispatcher(tool_provider=FakeToolProvider(content="ok"))
+
+    result = await dispatcher.execute_plan(plan)
+
+    assert result.all_ok is True
+    assert result.graph_state is not None
+    snap = result.graph_state.snapshot()
+    assert snap["run_id"] == "plan-graph"
+    assert snap["final"] == "completed"
+    assert snap["subtasks"][0]["id"] == "tool_1"
+    assert snap["subtasks"][0]["status"] == "completed"
+    assert snap["node_policies"][0]["id"] == "tool_1"
+    assert snap["node_policies"][0]["timeout_s"] == 42.0
+    assert snap["node_policies"][0]["max_retries"] == 3
+    assert snap["node_policies"][0]["backoff_s"] == 0.5
+    assert snap["node_policies"][0]["cache_key"] == "pwd:v1"
+    assert snap["node_policies"][0]["error_handler"] == "retry_then_handoff"
+    assert snap["tool_results"][0]["step_id"] == "tool_1"
+    assert snap["tool_results"][0]["tool_name"] == "bash"
+    assert snap["tool_results"][0]["content_preview"]
+    assert result.self_critique_request is None
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_returns_self_critique_request_on_tool_failure() -> None:
+    step = make_step(
+        id="tool_fail",
+        action_kind="tool_call",
+        payload={"tool_name": "bash", "args": {"command": "exit 1"}},
+    )
+    plan = make_plan(id="plan-fail", steps=[step])
+    dispatcher = ActionDispatcher(
+        tool_provider=FakeToolProvider(ok=False, error="exit 1"),
+    )
+
+    result = await dispatcher.execute_plan(plan)
+
+    assert result.all_ok is False
+    assert result.self_critique_request is not None
+    request = result.self_critique_request
+    assert request.trigger == "tool_error"
+    assert request.session_id == "plan-fail"
+    assert "step tool_fail failed" in request.failure_summary
+    assert request.trajectory[0].kind == "tool_call"
+    assert request.trajectory[0].ok is False
+    assert request.graph_state["final"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_runs_configured_self_critique_engine_on_failure() -> None:
+    async def critic_call(prompt: str) -> str:
+        return prompt
+
+    memory_service = object()
+    engine = FakeSelfCritiqueEngine()
+    step = make_step(
+        id="tool_fail",
+        action_kind="tool_call",
+        payload={"tool_name": "bash", "args": {"command": "exit 1"}},
+    )
+    plan = make_plan(id="plan-fail", steps=[step])
+    dispatcher = ActionDispatcher(
+        tool_provider=FakeToolProvider(ok=False, error="exit 1"),
+        self_critique_engine=engine,
+        self_critique_critic_call=critic_call,
+        memory_service=memory_service,
+    )
+
+    result = await dispatcher.execute_plan(plan)
+
+    assert result.self_critique_request is not None
+    assert result.self_critique_result is not None
+    assert result.self_critique_result.status == "completed"
+    assert len(engine.calls) == 1
+    assert engine.calls[0]["request"] is result.self_critique_request
+    assert engine.calls[0]["critic_call"] is critic_call
+    assert engine.calls[0]["memory_service"] is memory_service
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_resolves_self_critique_memory_lazily() -> None:
+    memory_service = object()
+    engine = FakeSelfCritiqueEngine()
+    step = make_step(
+        id="tool_fail",
+        action_kind="tool_call",
+        payload={"tool_name": "bash", "args": {"command": "exit 1"}},
+    )
+    plan = make_plan(id="plan-fail", steps=[step])
+    dispatcher = ActionDispatcher(
+        tool_provider=FakeToolProvider(ok=False, error="exit 1"),
+        self_critique_engine=engine,
+        memory_service_resolver=lambda: memory_service,
+    )
+
+    result = await dispatcher.execute_plan(plan)
+
+    assert result.self_critique_result is not None
+    assert engine.calls[0]["memory_service"] is memory_service
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_swallows_self_critique_engine_failure() -> None:
+    engine = FakeSelfCritiqueEngine(raises=RuntimeError("critic down"))
+    step = make_step(
+        id="tool_fail",
+        action_kind="tool_call",
+        payload={"tool_name": "bash", "args": {"command": "exit 1"}},
+    )
+    plan = make_plan(id="plan-fail", steps=[step])
+    dispatcher = ActionDispatcher(
+        tool_provider=FakeToolProvider(ok=False, error="exit 1"),
+        self_critique_engine=engine,
+    )
+
+    result = await dispatcher.execute_plan(plan)
+
+    assert result.all_ok is False
+    assert result.self_critique_request is not None
+    assert result.self_critique_result is None
+    assert len(engine.calls) == 1
 
 
 def test_plan_execution_result_is_frozen() -> None:
@@ -912,8 +1086,8 @@ async def test_b_lifecycle_events_emitted_for_successful_plan() -> None:
     types_seen = [e.type.value for e in recorded]
     assert types_seen == [
         "plan_started",
-        "plan_step_started", "plan_step_completed",
-        "plan_step_started", "plan_step_completed",
+        "plan_step_started", "graph_state_updated", "plan_step_completed",
+        "plan_step_started", "graph_state_updated", "plan_step_completed",
         "plan_completed",
     ]
     # Plan ids match between events.
@@ -940,6 +1114,8 @@ async def test_b_lifecycle_events_emitted_for_failed_plan() -> None:
     assert "plan_started" in types_seen
     assert "plan_step_failed" in types_seen
     assert "plan_failed" in types_seen
+    assert "graph_state_updated" in types_seen
+    assert "self_critique_requested" in types_seen
     assert "plan_completed" not in types_seen
 
 

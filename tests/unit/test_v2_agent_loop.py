@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,6 +31,7 @@ from xmclaw.providers.llm.base import (
     Pricing,
 )
 from xmclaw.providers.tool.base import ToolProvider
+from xmclaw.providers.tool.builtin import BuiltinTools
 
 
 # ── scripted mock LLM ─────────────────────────────────────────────────────
@@ -174,6 +176,86 @@ async def test_tool_call_then_final_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bash_tool_emits_shell_execution_policy_decision() -> None:
+    """The hop loop should expose the selected shell execution policy
+    before invoking bash, so sandbox decisions are auditable."""
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(
+                id="bash-1",
+                name="bash",
+                args={"command": "echo hi"},
+                provenance="test",
+            ),),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ])
+    tools = BuiltinTools(shell_execution_policy="disabled")
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+
+    result = await agent.run_turn("sess-shell-policy", "run bash")
+
+    events = [
+        ev for ev in result.events
+        if ev.type == EventType.TOOL_SANDBOX_POLICY_DECIDED
+    ]
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["tool_name"] == "bash"
+    assert payload["policy"] == "disabled"
+    assert payload["decision"] == "deny"
+    assert payload["sandbox_runtime"] == "none"
+    assert payload["image"] == ""
+    assert "execution_policy=disabled" in payload["reason"]
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_emits_docker_sandbox_runtime_decision(tmp_path: Path) -> None:
+    """Docker sandbox policy should be visible before invocation."""
+    import subprocess
+
+    bus = InProcessEventBus()
+    llm = _ScriptedLLM(script=[
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(
+                id="bash-1",
+                name="bash",
+                args={"command": "echo hi", "cwd": str(tmp_path)},
+                provenance="test",
+            ),),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ])
+
+    def runner(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, b"ok\n", b"")
+
+    tools = BuiltinTools(
+        shell_execution_policy="docker",
+        shell_sandbox_image="alpine:3.20",
+        shell_sandbox_runner=runner,
+    )
+    agent = AgentLoop(llm=llm, bus=bus, tools=tools)
+
+    result = await agent.run_turn("sess-shell-policy-docker", "run bash")
+
+    events = [
+        ev for ev in result.events
+        if ev.type == EventType.TOOL_SANDBOX_POLICY_DECIDED
+    ]
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["tool_name"] == "bash"
+    assert payload["policy"] == "docker"
+    assert payload["decision"] == "allow"
+    assert payload["sandbox_runtime"] == "docker"
+    assert payload["image"] == "alpine:3.20"
+
+
+@pytest.mark.asyncio
 async def test_tool_invocation_finished_carries_side_effects() -> None:
     """Anti-req #4 gate: grader needs the real side_effects list from
     ToolResult, not a hint from the tool spec. Verify the agent loop
@@ -272,6 +354,12 @@ async def test_tool_call_without_provider_raises_anti_req_violation() -> None:
 async def test_hop_limit_terminates_and_emits_violation() -> None:
     """Model keeps calling tools forever — loop halts at max_hops."""
     bus = InProcessEventBus()
+    observed_events = []
+
+    async def _capture(event):
+        observed_events.append(event)
+
+    bus.subscribe(lambda e: True, _capture)
     loop_response = LLMResponse(
         content="",
         tool_calls=(ToolCall(
@@ -286,6 +374,20 @@ async def test_hop_limit_terminates_and_emits_violation() -> None:
         )},
     )
     agent = AgentLoop(llm=llm, bus=bus, tools=tools, max_hops=3)
+
+    critique_calls: list[dict[str, Any]] = []
+
+    class _CritiqueEngine:
+        async def run(self, request, *, critic_call, memory_service):
+            critique_calls.append({
+                "request": request,
+                "critic_call": critic_call,
+                "memory_service": memory_service,
+            })
+            return type("CritiqueResult", (), {"status": "completed"})()
+
+    agent._self_critique_engine = _CritiqueEngine()
+    agent._self_critique_critic_call = lambda prompt: prompt
     result = await agent.run_turn("sess", "loop forever")
     await bus.drain()
 
@@ -301,9 +403,20 @@ async def test_hop_limit_terminates_and_emits_violation() -> None:
         e for e in result.events
         if e.type == EventType.ANTI_REQ_VIOLATION
     ]
+    critique_events = [
+        e for e in observed_events
+        if e.type == EventType.SELF_CRITIQUE_REQUESTED
+    ]
     assert len(violations) == 1
     assert "max_hops" in violations[0].payload["message"]
     assert "tools_used" in violations[0].payload
+    assert len(critique_events) == 1
+    assert critique_events[0].payload["source"] == "agent_loop"
+    assert critique_events[0].payload["trigger"] == "max_hops_exit"
+    assert critique_events[0].payload["graph_state"]["hops"] == 3
+    assert len(critique_calls) == 1
+    assert critique_calls[0]["request"].trigger == "max_hops_exit"
+    assert critique_calls[0]["request"].session_id == "sess"
 
 
 # ── user message is always published ─────────────────────────────────────
@@ -707,6 +820,13 @@ def _last_user_message(messages: list[Message]) -> str:
     return ""
 
 
+def _message_blob(messages: list[Message]) -> str:
+    return "\n\n".join(
+        m.content if isinstance(m.content, str) else str(m.content)
+        for m in messages
+    )
+
+
 @pytest.mark.asyncio
 async def test_b202_frustration_injects_curriculum_hint_when_tool_present() -> None:
     """Frustration markers + tool wired ⇒ hint block lands in the user
@@ -725,7 +845,7 @@ async def test_b202_frustration_injects_curriculum_hint_when_tool_present() -> N
     await agent.run_turn("sess-b202-1", "为什么你又这样做？错了！")
     await bus.drain()
 
-    sent = _last_user_message(llm.captured_messages[-1])
+    sent = _message_blob(llm.captured_messages[-1])
     assert "<curriculum-hint>" in sent
     assert "propose_curriculum_edit" in sent
 
@@ -747,7 +867,7 @@ async def test_b202_no_hint_when_tool_not_wired() -> None:
     await agent.run_turn("sess-b202-2", "为什么你又这样做？")
     await bus.drain()
 
-    sent = _last_user_message(llm.captured_messages[-1])
+    sent = _message_blob(llm.captured_messages[-1])
     assert "<curriculum-hint>" not in sent
 
 
@@ -768,7 +888,7 @@ async def test_b202_no_hint_on_neutral_message() -> None:
     await agent.run_turn("sess-b202-3", "Please write me a haiku.")
     await bus.drain()
 
-    sent = _last_user_message(llm.captured_messages[-1])
+    sent = _message_blob(llm.captured_messages[-1])
     assert "<curriculum-hint>" not in sent
 
 
@@ -793,8 +913,8 @@ async def test_b202_hint_dedup_within_session() -> None:
     await agent.run_turn("sess-b202-4", "为什么还是错？")  # turn 2, still frustrated
     await bus.drain()
 
-    turn1 = _last_user_message(llm.captured_messages[0])
-    turn2 = _last_user_message(llm.captured_messages[1])
+    turn1 = _message_blob(llm.captured_messages[0])
+    turn2 = _message_blob(llm.captured_messages[1])
     assert "<curriculum-hint>" in turn1
     assert "<curriculum-hint>" not in turn2
 
@@ -819,8 +939,8 @@ async def test_b202_hint_resets_on_clear_session() -> None:
     await agent.run_turn("sess-b202-5", "你看看，错了")
     await bus.drain()
 
-    turn1 = _last_user_message(llm.captured_messages[0])
-    turn_after_reset = _last_user_message(llm.captured_messages[1])
+    turn1 = _message_blob(llm.captured_messages[0])
+    turn_after_reset = _message_blob(llm.captured_messages[1])
     assert "<curriculum-hint>" in turn1
     assert "<curriculum-hint>" in turn_after_reset
 

@@ -59,6 +59,42 @@ _RUNNING_TAIL = {
 }
 
 
+def _recent_strategy_signals(
+    bus: Any | None,
+    *,
+    session_id: str,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    if bus is None or not hasattr(bus, "query"):
+        return []
+    try:
+        events = bus.query(
+            session_id=session_id,
+            types=["anti_req_violation"],
+            limit=50,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict[str, Any]] = []
+    for ev in reversed(events):
+        payload = getattr(ev, "payload", None) or {}
+        if not isinstance(payload, dict):
+            continue
+        if not payload.get("strategy_decision") and payload.get("kind") not in {"stuck_loop", "no_progress"}:
+            continue
+        out.append({
+            "kind": payload.get("kind"),
+            "strategy_decision": payload.get("strategy_decision"),
+            "should_retry_same": payload.get("should_retry_same"),
+            "recommended_action": payload.get("recommended_action") or payload.get("message"),
+            "tool": payload.get("tool"),
+            "error_signature": payload.get("error_signature"),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 # user 消息尾部搭载的注入块（session-workspace 提示 / memory 注入等，
 # 见 agent_loop.py）。preview 里剥掉，否则任务标题全是 "<memory-v2-facts>"。
 # 标签名单与 webui/src/lib/reducer.ts 的 INJECTED_BLOCKS 保持同步。
@@ -85,6 +121,10 @@ def _store() -> SessionStore | None:
         return SessionStore(default_sessions_db_path())
     except Exception:  # noqa: BLE001
         return None
+
+
+def _artifact_store(request: Request) -> Any | None:
+    return getattr(request.app.state, "artifact_ledger_store", None)
 
 
 def _derive(events: list[Any], now: float) -> dict[str, Any]:
@@ -140,16 +180,8 @@ def _derive(events: list[Any], now: float) -> dict[str, Any]:
             last_resp_ok = payload.get("ok") is not False
             last_resp_more_hops = bool(payload.get("tool_calls_count") or 0)
 
-    # 如果存在 todo 列表，优先使用 todo 进度（更实时、更细粒度）。
-    # 只有纯 plan 无 todo 时才回退到 plan 进度。
-    # 修复：当 plan 与 todo 并存时，旧逻辑优先 plan 导致 TaskRail 与前端
-    # PlanStrip 显示不一致（plan 已停/前端刷新后丢失，但 todo 仍在更新）。
-    if todo_total > 0:
-        steps_total = todo_total
-        steps_done = todo_done
-    else:
-        steps_total = plan_total
-        steps_done = plan_done
+    steps_total = plan_total or todo_total
+    steps_done = plan_done if plan_total else todo_done
 
     # awaiting_input 仅当未答问题真的挂在事件流尾部（最后事件就是提问）。
     # 旧条件只看 asked>answered 计数 —— 历史会话里被弃置的提问会让任务
@@ -199,6 +231,7 @@ async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
 
     bus = getattr(request.app.state, "bus", None)
     can_query = bus is not None and hasattr(bus, "query")
+    artifact_store = _artifact_store(request)
     now = time.time()
     # Authoritative "is this turn actually live" signal — a session whose
     # turn died mid-flight keeps a recent event tail and would otherwise
@@ -248,6 +281,18 @@ async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
             except Exception:  # noqa: BLE001
                 pass  # 单 session 推导失败不拖垮整个列表
         snap["status"] = _truthful_status(sid, snap["status"])
+        if artifact_store is not None:
+            try:
+                snap["artifacts"] = artifact_store.list_recent(session_id=sid, limit=5)
+            except Exception:  # noqa: BLE001
+                snap["artifacts"] = []
+        else:
+            snap["artifacts"] = []
+        snap["strategy_signals"] = _recent_strategy_signals(
+            bus,
+            session_id=sid,
+            limit=3,
+        )
         tasks.append(snap)
 
     # 2026-06-16: surface sessions that are LIVE in the event log but not
@@ -302,3 +347,26 @@ async def list_tasks(request: Request, limit: int = 30) -> JSONResponse:
 
     tasks.sort(key=lambda t: t["updated_at"], reverse=True)
     return JSONResponse({"tasks": tasks})
+
+
+@router.get("/{session_id}/artifacts")
+async def list_task_artifacts(
+    request: Request,
+    session_id: str,
+    limit: int = 50,
+) -> JSONResponse:
+    store = _artifact_store(request)
+    if store is None:
+        return JSONResponse({"enabled": False, "artifacts": [], "stats": {}})
+    try:
+        artifacts = store.list_recent(session_id=session_id, limit=limit)
+        return JSONResponse({
+            "enabled": True,
+            "artifacts": artifacts,
+            "stats": store.stats(),
+        })
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"enabled": False, "artifacts": [], "error": str(exc)},
+            status_code=500,
+        )

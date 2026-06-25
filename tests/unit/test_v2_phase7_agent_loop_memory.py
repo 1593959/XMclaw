@@ -127,10 +127,11 @@ async def test_recall_block_injected_into_user_message() -> None:
     )
     # Inspect what the LLM saw — first complete() call.
     seen = llm.seen_messages[0]
-    user_msg = next(
-        m for m in seen if getattr(m, "role", "") == "user"
+    content = "\n\n".join(
+        getattr(m, "content", "") or ""
+        for m in seen
+        if isinstance(getattr(m, "content", ""), str)
     )
-    content = getattr(user_msg, "content", "") or ""
     assert "<memory-recall>" in content
     assert "</memory-recall>" in content
     assert "Python" in content

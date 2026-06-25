@@ -26,6 +26,7 @@ from xmclaw.skills.registry import SkillRegistry
 from xmclaw.skills.tool_bridge import (
     META_BROWSE_TOOL_NAME,
     META_COMPOSE_TOOL_NAME,
+    META_DECISION_TOOL_NAME,
     META_DIFF_TOOL_NAME,
     META_INSTALL_TOOL_NAME,
     META_PROPOSE_TOOL_NAME,
@@ -45,6 +46,7 @@ _META_TOOL_NAMES = frozenset({
     META_UNINSTALL_TOOL_NAME,
     # Epic #27 P0 G-01 (2026-05-19) — introspection meta-tools.
     META_STATUS_TOOL_NAME,
+    META_DECISION_TOOL_NAME,
     META_VIEW_TOOL_NAME,
     # Epic #27 G-04 (2026-05-19) — progressive-disclosure run dispatcher.
     META_RUN_TOOL_NAME,
@@ -417,6 +419,44 @@ async def test_g01_skill_status_no_watcher_reports_clean_state() -> None:
     assert content["load_failures"] == []
     assert content["pending_restarts"] == []
     assert "clean state" in " ".join(content["notes"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_skill_decision_records_structured_skip_reason() -> None:
+    bridge = SkillToolProvider(SkillRegistry())
+    call = ToolCall(
+        name=META_DECISION_TOOL_NAME,
+        args={
+            "action": "skip",
+            "skill_id": "frontend.ui-review",
+            "skip_reason": "candidate_not_applicable_to_task",
+            "note": "task is backend only",
+        },
+        provenance="test",
+    )
+
+    result = await bridge.invoke(call)
+
+    assert result.ok
+    assert result.content["kind"] == "skill_decision"
+    assert result.content["action"] == "skip"
+    assert result.content["skip_reason"] == "candidate_not_applicable_to_task"
+    assert result.metadata["kind"] == "skill_decision"
+
+
+@pytest.mark.asyncio
+async def test_skill_decision_requires_reason_for_skip() -> None:
+    bridge = SkillToolProvider(SkillRegistry())
+    call = ToolCall(
+        name=META_DECISION_TOOL_NAME,
+        args={"action": "skip", "skill_id": "frontend.ui-review"},
+        provenance="test",
+    )
+
+    result = await bridge.invoke(call)
+
+    assert not result.ok
+    assert "requires skip_reason" in (result.error or "")
 
 
 @pytest.mark.asyncio

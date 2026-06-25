@@ -121,14 +121,21 @@ function EditCard({ e }: { e: Entry }) {
         >
           {fileName}
         </button>
-        <button onClick={() => setOpen(!open)} className="flex items-center gap-2 cursor-pointer shrink-0">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          className="flex items-center gap-2 cursor-pointer shrink-0"
+        >
           <span className="text-xs text-mc-ok">+{stat.adds}</span>
           <span className="text-xs text-mc-err">−{stat.dels}</span>
         </button>
         <div className="flex-1" />
         {open && (
           <button
+            type="button"
             onClick={() => setShowFull(!showFull)}
+            aria-pressed={showFull}
             className={
               "text-[11px] px-2 py-0.5 rounded border cursor-pointer " +
               (showFull
@@ -139,7 +146,12 @@ function EditCard({ e }: { e: Entry }) {
             预览
           </button>
         )}
-        <button onClick={() => setOpen(!open)} className="text-mc-faint text-xs cursor-pointer">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          className="text-mc-faint text-xs cursor-pointer"
+        >
           {open ? "▾" : "▸"}
         </button>
       </div>
@@ -166,7 +178,9 @@ function TerminalCard({ e }: { e: Entry }) {
   return (
     <div className="border border-mc-border rounded-md bg-black/40 min-w-0">
       <button
+        type="button"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer"
       >
         <StatusDot status={e.status} />

@@ -1209,6 +1209,55 @@ def build_tools_from_config(
 
     enable_bash = tools_section.get("enable_bash", True)
     enable_web = tools_section.get("enable_web", True)
+    shell_section = tools_section.get("shell") or {}
+    shell_execution_policy = tools_section.get("shell_execution_policy")
+    if isinstance(shell_section, dict):
+        shell_execution_policy = shell_section.get(
+            "execution_policy", shell_execution_policy,
+        )
+    if shell_execution_policy is None:
+        shell_execution_policy = "host_guarded"
+    bash_guardrails_mode = tools_section.get("bash_guardrails_mode")
+    if isinstance(shell_section, dict):
+        bash_guardrails_mode = shell_section.get(
+            "bash_guardrails_mode", bash_guardrails_mode,
+        )
+    if bash_guardrails_mode is None:
+        bash_guardrails_mode = "strict"
+    shell_sandbox_image = "python:3.12-alpine"
+    shell_sandbox_memory = "512m"
+    shell_sandbox_cpus = "1.0"
+    shell_sandbox_pids_limit = 256
+    shell_sandbox_network = "none"
+    if isinstance(shell_section, dict):
+        shell_sandbox_image = str(
+            shell_section.get(
+                "sandbox_image",
+                shell_section.get("image", shell_sandbox_image),
+            )
+            or shell_sandbox_image
+        )
+        shell_sandbox_memory = str(
+            shell_section.get("sandbox_memory", shell_section.get("memory", shell_sandbox_memory))
+            or shell_sandbox_memory
+        )
+        shell_sandbox_cpus = str(
+            shell_section.get("sandbox_cpus", shell_section.get("cpus", shell_sandbox_cpus))
+            or shell_sandbox_cpus
+        )
+        try:
+            shell_sandbox_pids_limit = int(
+                shell_section.get(
+                    "sandbox_pids_limit",
+                    shell_section.get("pids_limit", shell_sandbox_pids_limit),
+                )
+            )
+        except (TypeError, ValueError):
+            shell_sandbox_pids_limit = 256
+        shell_sandbox_network = str(
+            shell_section.get("sandbox_network", shell_section.get("network", shell_sandbox_network))
+            or shell_sandbox_network
+        )
     # 2026-05-14 default-flip: browser tools are headless DOM-scoped,
     # much safer than enable_bash (which is also default-on). Lazy
     # playwright import means daemons without ``playwright install
@@ -1425,6 +1474,13 @@ def build_tools_from_config(
     builtins = BuiltinTools(
         allowed_dirs=allowed_dirs,
         enable_bash=bool(enable_bash),
+        shell_execution_policy=str(shell_execution_policy),
+        bash_guardrails_mode=str(bash_guardrails_mode),
+        shell_sandbox_image=shell_sandbox_image,
+        shell_sandbox_memory=shell_sandbox_memory,
+        shell_sandbox_cpus=shell_sandbox_cpus,
+        shell_sandbox_pids_limit=shell_sandbox_pids_limit,
+        shell_sandbox_network=shell_sandbox_network,
         enable_web=bool(enable_web),
         workspace_root_provider=_workspace_root_provider(),
         workspace_manager_provider=_workspace_manager_provider(),
@@ -2131,6 +2187,9 @@ def build_agent_from_config(
     file_read calls were silently capped at the old default of 20 and
     crashed with empty text. Explicit ``max_hops`` kwarg still wins
     over the config (used by tests).
+
+    2026-06-24: ``cfg.agent.max_react_loop`` is accepted as the
+    explicit ReAct-loop name and takes precedence over ``max_hops``.
     """
     _warn_on_lint_errors(cfg)
     # Health-check: track per-component build outcome so the daemon can
@@ -2140,7 +2199,12 @@ def build_agent_from_config(
         agent_cfg = cfg.get("agent")
         if isinstance(agent_cfg, Mapping):
             try:
-                max_hops = int(agent_cfg.get("max_hops", 100))
+                max_hops = int(
+                    agent_cfg.get(
+                        "max_react_loop",
+                        agent_cfg.get("max_hops", 100),
+                    ),
+                )
             except (TypeError, ValueError):
                 max_hops = 100
         else:
@@ -2182,6 +2246,16 @@ def build_agent_from_config(
     default_profile = registry.default()
     llm = default_profile.llm if default_profile is not None else None
     _build_status["llm"] = "ok" if llm is not None else "skipped"
+    # Materialize bundled persona templates *before* the LLM-is-None early
+    # return. Otherwise echo-mode boots (no api_key) never seed SOUL.md /
+    # IDENTITY.md / USER.md etc., and the v2 renderer writes empty placeholder
+    # files that the user sees as "not initialized".
+    from xmclaw.core.persona import ensure_default_profile
+    profile_dir = _resolve_persona_profile_dir(cfg)
+    try:
+        ensure_default_profile(profile_dir)
+    except OSError:
+        pass
     if llm is None:
         return None
     tools = build_tools_from_config(
@@ -2250,26 +2324,21 @@ def build_agent_from_config(
         if not isinstance(policy_raw, str):
             policy_raw = None
     policy = PolicyMode.parse(policy_raw, default=PolicyMode.DETECT_ONLY)
+    # Wave-27 fix-LAT17: when the user explicitly disables prompt-injection
+    # scanning, flip the global kill-switch so all callsites (memory recall,
+    # tool results, web fetch, channel inbound, skill bodies) skip scanning.
+    if policy == PolicyMode.DISABLED:
+        from xmclaw.security.prompt_scanner import set_scanning_enabled
+        set_scanning_enabled(False)
     # Persona system: assemble system prompt from the 7-file SOUL pack
     # (xmclaw/core/persona). Mirrors comparable agents layout.
     # The DEFAULT_IDENTITY_LINE is always slot 0 so identity survives
     # third-party endpoints that compress long system prompts.
-    from xmclaw.core.persona import (
-        build_system_prompt,
-        ensure_default_profile,
-    )
+    from xmclaw.core.persona import build_system_prompt
     from xmclaw.core.persona.loader import (
         ensure_bootstrap_marker,
         render_tools_section,
     )
-    profile_dir = _resolve_persona_profile_dir(cfg)
-    # Materialize bundled templates on first install so the user can
-    # actually edit them (otherwise they only see the prompt output, not
-    # the source files). Idempotent — won't overwrite existing files.
-    try:
-        ensure_default_profile(profile_dir)
-    except OSError:
-        pass
     # Wave-27 fix-LAT4: write BOOTSTRAP.md when the install looks
     # fresh (IDENTITY.md still byte-equal to the template). The
     # ``bootstrap_prefix`` in the system prompt then nudges the agent

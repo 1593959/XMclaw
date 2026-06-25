@@ -20,6 +20,8 @@ filters were active.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -79,8 +81,7 @@ def test_unified_query_returns_v2_fields(memory_client: TestClient) -> None:
     """V2 result schema: id + text + kind + scope + distance +
     matched_axes (alongside V1-compat fields layer + score)."""
     svc = memory_client._svc  # type: ignore[attr-defined]
-    import asyncio
-    fact = asyncio.get_event_loop().run_until_complete(
+    fact = asyncio.run(
         svc.remember(
             "用户喜欢 Python",
             kind=FactKind.PREFERENCE,
@@ -104,6 +105,81 @@ def test_unified_query_returns_v2_fields(memory_client: TestClient) -> None:
     assert "score" in hit
     assert "matched_axes" in hit
     assert "semantic" in hit["matched_axes"]
+    assert body["recall_mode"] == "hybrid"
+
+
+def test_unified_query_uses_hybrid_by_default(
+    memory_client: TestClient,
+) -> None:
+    """Unified query should expose the BM25+vector recall path by default."""
+    svc = memory_client._svc  # type: ignore[attr-defined]
+    seen: dict[str, object] = {}
+
+    async def mock_recall_hybrid(query: str, **kwargs):
+        seen["query"] = query
+        seen["kwargs"] = kwargs
+        return []
+
+    svc.recall_hybrid = mock_recall_hybrid  # type: ignore[method-assign]
+    r = memory_client.post(
+        "/api/v2/memory/unified_query",
+        json={
+            "semantic": "alembic",
+            "layer": "long_term",
+            "temporal": {"since": 10, "until": 20},
+            "limit": 3,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["recall_mode"] == "hybrid"
+    assert seen["query"] == "alembic"
+    assert seen["kwargs"] == {
+        "k": 3,
+        "only_layer": "long_term",
+        "time_range": (10.0, 20.0),
+        "include_relations": True,
+        "min_confidence": 0.0,
+    }
+
+
+def test_unified_query_can_force_vector_mode(
+    memory_client: TestClient,
+) -> None:
+    """Operators can still force the legacy vector path for debugging."""
+    svc = memory_client._svc  # type: ignore[attr-defined]
+    asyncio.run(
+        svc.remember(
+            "legacy vector mode fact",
+            kind=FactKind.LESSON,
+            scope=FactScope.PROJECT,
+        )
+    )
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("recall_hybrid should not be called")
+
+    svc.recall_hybrid = fail_if_called  # type: ignore[method-assign]
+    r = memory_client.post(
+        "/api/v2/memory/unified_query",
+        json={
+            "semantic": "legacy vector mode",
+            "recall_mode": "vector",
+            "limit": 3,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["recall_mode"] == "vector"
+
+
+def test_unified_query_rejects_unknown_recall_mode(
+    memory_client: TestClient,
+) -> None:
+    r = memory_client.post(
+        "/api/v2/memory/unified_query",
+        json={"semantic": "x", "recall_mode": "magic"},
+    )
+    assert r.status_code == 400
+    assert "recall_mode" in r.json()["error"]
 
 
 def test_unified_query_empty_body_400(memory_client: TestClient) -> None:
@@ -136,8 +212,7 @@ def test_unified_query_layer_filter(memory_client: TestClient) -> None:
     """``layer`` param routes to recall(only_layer=...). V1's
     short_term collapses to working under V2."""
     svc = memory_client._svc  # type: ignore[attr-defined]
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         svc.remember(
             "transient fact",
             kind=FactKind.LESSON,
@@ -213,8 +288,7 @@ def test_unified_put_collapses_short_term_layer(
     body = r.json()
     fact_id = body["id"]
     svc = memory_client._svc  # type: ignore[attr-defined]
-    import asyncio
-    fact = asyncio.get_event_loop().run_until_complete(
+    fact = asyncio.run(
         svc.get_fact(fact_id)
     )
     assert fact is not None

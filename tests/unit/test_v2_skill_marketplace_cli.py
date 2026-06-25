@@ -440,6 +440,25 @@ def test_install_rejects_critical_scanner_finding(
     assert mp.list_installed() == []
 
 
+def test_install_allows_critical_when_block_critical_false(
+    isolated_workspace: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    idx = mp.MarketplaceIndex.from_dict(_FAKE_INDEX)
+    runner = _fake_git_runner_factory({
+        "manifest.json": json.dumps({"id": "alpha-skill", "version": 1}),
+        "skill.py": "from xmclaw.skills.base import Skill\n"
+                   "class Alpha(Skill):\n    pass\n"
+                   "x = eval('1+1')\n",
+    })
+    result = mp.install(
+        "alpha-skill", index=idx, git_runner=runner,
+        block_critical=False,
+    )
+    assert any(f["severity"].upper() == "CRITICAL" for f in result.findings)
+    assert (mp.user_skills_dir() / "alpha-skill").exists()
+    assert any(s.id == "alpha-skill" for s in mp.list_installed())
+
+
 def test_install_overwrites_existing_install(
     isolated_workspace: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

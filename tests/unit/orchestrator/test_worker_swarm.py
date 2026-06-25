@@ -1,6 +1,8 @@
 """Tests for WorkerSwarm."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from xmclaw.core.bus.events import EventType
@@ -36,6 +38,25 @@ class FakeAgentLoopWithBus(FakeAgentLoop):
     def __init__(self) -> None:
         super().__init__()
         self._bus = FakeBus()
+
+
+class ConcurrentFakeAgentLoop(FakeAgentLoop):
+    def __init__(self) -> None:
+        super().__init__()
+        self.active = 0
+        self.max_active = 0
+
+    async def run_turn(self, session_id: str, user_message: str, **kwargs):
+        self.calls.append({"session_id": session_id, "message": user_message})
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.02)
+            class _R:
+                content = f"result:{user_message}"
+            return _R()
+        finally:
+            self.active -= 1
 
 
 class TestWorkerAgent:
@@ -163,3 +184,69 @@ class TestWorkerSwarm:
         assert len(result.task_results) == 3
         # t2's enriched prompt should include t1's output
         assert any("result:" in c["message"] for c in loop.calls[1:])
+
+    async def test_execute_plan_uses_graph_executor_concurrency_limit(self):
+        loop = ConcurrentFakeAgentLoop()
+        swarm = WorkerSwarm(agent_loop=loop, max_workers=2)
+        plan = ExecutionPlan(
+            plan_id="p-concurrency",
+            goal="parallel",
+            tasks=[
+                Task(task_id=f"t{i}", description=f"task {i}", prompt=f"do {i}")
+                for i in range(4)
+            ],
+            dependencies={},
+        )
+
+        result = await swarm.execute_plan(plan, synthesize=False)
+
+        assert result.ok is True
+        assert len(result.task_results) == 4
+        assert loop.max_active == 2
+
+    async def test_execute_plan_returns_graph_state_trace(self):
+        loop = FakeAgentLoop()
+        swarm = WorkerSwarm(agent_loop=loop, max_workers=2, task_timeout_s=42.0)
+        plan = ExecutionPlan(
+            plan_id="p-graph",
+            goal="graph trace",
+            tasks=[
+                Task(task_id="t1", description="a", prompt="do a"),
+                Task(task_id="t2", description="b", prompt="do b"),
+            ],
+            dependencies={"t2": ["t1"]},
+        )
+
+        result = await swarm.execute_plan(plan, synthesize=False)
+
+        assert result.ok is True
+        assert result.graph_state is not None
+        snap = result.graph_state.snapshot()
+        assert snap["final"] == "completed"
+        assert snap["metadata"]["source"] == "worker_swarm"
+        assert snap["subtasks"][1]["dependencies"] == ["t1"]
+        assert snap["node_policies"][0]["timeout_s"] == 42.0
+        assert [s["status"] for s in snap["subtasks"]] == ["completed", "completed"]
+        assert len(snap["artifacts"]) == 2
+
+    async def test_execute_plan_deadlock_is_failed_graph_state(self):
+        loop = FakeAgentLoop()
+        swarm = WorkerSwarm(agent_loop=loop, max_workers=2)
+        plan = ExecutionPlan(
+            plan_id="p-cycle",
+            goal="cycle",
+            tasks=[
+                Task(task_id="t1", description="a", prompt="do a"),
+                Task(task_id="t2", description="b", prompt="do b"),
+            ],
+            dependencies={"t1": ["t2"], "t2": ["t1"]},
+        )
+
+        result = await swarm.execute_plan(plan, synthesize=False)
+
+        assert result.ok is False
+        assert result.task_results == []
+        assert result.graph_state is not None
+        snap = result.graph_state.snapshot()
+        assert snap["final"] == "failed"
+        assert snap["errors"][0]["kind"] == "swarm_deadlock"

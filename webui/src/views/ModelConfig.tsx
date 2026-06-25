@@ -6,7 +6,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useApp } from "../store/app";
-import { apiGet, apiPatch } from "../lib/api";
+import { apiGetFresh, apiPatch } from "../lib/api";
 
 const ChannelEditor = lazy(() => import("./ChannelEditor"));
 
@@ -84,11 +84,17 @@ export default function ModelConfig() {
 
   const load = useCallback(() => {
     if (!token) return;
+    const ctl = new AbortController();
     setLoading(true);
-    apiGet<{ on_disk?: DiskProfile[] }>("/api/v2/llm/profiles", token)
+    apiGetFresh<{ on_disk?: DiskProfile[] }>("/api/v2/llm/profiles", token, ctl.signal)
       .then((d) => setDisk(d?.on_disk || []))
-      .catch(() => setDisk([]))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!ctl.signal.aborted) setDisk([]);
+      })
+      .finally(() => {
+        if (!ctl.signal.aborted) setLoading(false);
+      });
+    return () => ctl.abort();
   }, [token]);
 
   useEffect(load, [load]);

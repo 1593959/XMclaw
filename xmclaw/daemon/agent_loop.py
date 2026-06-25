@@ -560,6 +560,16 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # registry from factory.py / build_agent_from_config wires the
         # standard ExtractMemoriesHook.
         self._cfg = cfg or {}
+        _agent_cfg = self._cfg.get("agent", {}) if isinstance(self._cfg, dict) else {}
+        _state_graph_cfg = (
+            _agent_cfg.get("state_graph", {})
+            if isinstance(_agent_cfg, dict) else {}
+        )
+        _state_graph_cfg = _state_graph_cfg if isinstance(_state_graph_cfg, dict) else {}
+        self._state_graph_enabled = bool(_state_graph_cfg.get("enabled", True))
+        self._state_graph_emit_phase_events = bool(
+            _state_graph_cfg.get("emit_phase_events", True),
+        )
         self._post_sampling_registry = post_sampling_registry
         # B-198 Phase 3: optional PersonaStore set post-construction
         # by the daemon lifespan (the store is built AFTER the agent
@@ -1275,7 +1285,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             pdir = _resolve_persona_profile_dir(self._cfg or {})
             if pdir is None:
                 return
-            await render_affected_files(memory_v2, pdir, written)
+            await render_affected_files(
+                memory_v2,
+                pdir,
+                written,
+                include_auto_sections=False,
+            )
         except Exception as exc:  # noqa: BLE001
             from xmclaw.utils.log import get_logger
             get_logger(__name__).warning(
@@ -1739,7 +1754,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 schedule = backoff_schedule(ce.reason)
                 if ce.retryable and _b227_attempts < len(schedule):
                     _b227_attempts += 1
-                    _delay = schedule[_b227_attempts - 1]
+                    _delay_ms = schedule[_b227_attempts - 1]
+                    _delay = _delay_ms / 1000.0
                     try:
                         from xmclaw.utils.log import get_logger
                         get_logger(__name__).warning(
@@ -1933,6 +1949,78 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             await asyncio.sleep(0)
             return event
 
+        import uuid as _uuid
+        turn_uuid = _uuid.uuid4().hex
+        _turn_phase_graph = None
+        _turn_started_event_published = False
+        if bool(getattr(self, "_state_graph_enabled", True)):
+            try:
+                from xmclaw.daemon.turn_state_graph import TurnStateGraph
+                from xmclaw.daemon.turn_graph_state import graph_state_event_payload
+                _turn_phase_graph = TurnStateGraph.create(
+                    session_id=session_id,
+                    run_id=turn_uuid,
+                    user_message=user_message,
+                )
+                self._last_turn_graph_state = _turn_phase_graph.state
+            except Exception:  # noqa: BLE001
+                _turn_phase_graph = None
+
+        async def _mark_turn_phase(
+            phase: str,
+            status: str,
+            **metadata: Any,
+        ) -> None:
+            if _turn_phase_graph is None:
+                return
+            try:
+                metadata = dict(metadata)
+                if status == "running":
+                    state = _turn_phase_graph.start(phase, **metadata)
+                elif status == "completed":
+                    state = _turn_phase_graph.complete(phase, **metadata)
+                else:
+                    error = str(metadata.pop("error", status))
+                    state = _turn_phase_graph.fail(
+                        phase,
+                        error,
+                        **metadata,
+                    )
+                self._last_turn_graph_state = state
+                if (
+                    not bool(getattr(self, "_state_graph_emit_phase_events", True))
+                    or not _turn_started_event_published
+                ):
+                    return
+                from xmclaw.daemon.turn_graph_state import graph_state_event_payload
+                await publish(
+                    EventType.GRAPH_STATE_UPDATED,
+                    graph_state_event_payload(state, phase=f"{phase}_{status}"),
+                    correlation_id=turn_uuid,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        async def _finalize_turn_graph(final: str, **metadata: Any) -> None:
+            if _turn_phase_graph is None:
+                return
+            try:
+                state = _turn_phase_graph.finalize(final, **metadata)
+                self._last_turn_graph_state = state
+                if (
+                    not bool(getattr(self, "_state_graph_emit_phase_events", True))
+                    or not _turn_started_event_published
+                ):
+                    return
+                from xmclaw.daemon.turn_graph_state import graph_state_event_payload
+                await publish(
+                    EventType.GRAPH_STATE_UPDATED,
+                    graph_state_event_payload(state, phase="turn_finalized"),
+                    correlation_id=turn_uuid,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
         # Wave-32: UserPromptSubmit hook dispatch. Runs BEFORE we
         # announce the user message on the bus so a hook returning
         # ``decision=deny`` can short-circuit the turn cleanly. A
@@ -2012,6 +2100,7 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # the SYSTEM PROMPT (not the user message) so the user never
         # sees it in their chat bubble, while the LLM still receives it.
         _recall_for_system: str = ""
+        await _mark_turn_phase("recall", "running", query=user_message[:500])
         try:
             cog_cfg = (
                 self._cfg.get("cognition", {})
@@ -2084,6 +2173,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 )
             except Exception:  # noqa: BLE001
                 pass
+        finally:
+            await _mark_turn_phase(
+                "recall",
+                "completed",
+                context_chars=len(_recall_for_system or ""),
+            )
 
         # Deduct auto_recall cost from the unified recall budget.
         _recall_budget_spent = time.monotonic() - _recall_budget_start
@@ -3274,6 +3369,22 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # Auto-recall context — injected into user message to preserve cache.
         if _recall_for_system:
             _user_dynamic_blocks.append(_recall_for_system)
+        # Task runtime context: recent artifacts + strategy-switch signals.
+        # This is execution state, not durable memory, and rides on the user
+        # message so the cacheable system prefix stays stable.
+        try:
+            from xmclaw.daemon.task_runtime_context import (
+                build_task_runtime_context,
+            )
+            _runtime_block = build_task_runtime_context(
+                session_id=session_id,
+                artifact_store=getattr(self, "_artifact_ledger_store", None),
+                bus=self._bus,
+            )
+            if _runtime_block:
+                _user_dynamic_blocks.append(_runtime_block)
+        except Exception:  # noqa: BLE001
+            pass
 
         # Ultrathink: when the user toggles 「深思」, force the agent to
         # actually exercise its thinking surface before acting — not just
@@ -3473,82 +3584,65 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             except Exception:  # noqa: BLE001 — never break a turn over routing
                 pass
 
-        # Jarvis Phase 6.3: active skill routing.
-        #
-        # When a skill_registry is wired (via app.py post-construction
-        # injection), fuzzy-match the user message against HEAD skills
-        # and FORCE the top matches into the tool list regardless of the
-        # prefilter's token-overlap score.  This closes the gap where
-        # prefilter drops a genuinely-relevant skill because the user's
-        # wording didn't share enough tokens with the English skill
-        # description (CJK queries are the canonical victim).
-        skill_router_hint = ""
+        # Skill discovery middleware owns active skill routing. It emits
+        # structured candidates/events and renders a system block that requires
+        # using a matched skill, querying skill_browse, or recording a concrete
+        # skip reason.
+        skill_autonomy_hint = ""
+        _skill_decision = None
         _skill_registry = getattr(self, "_skill_registry", None)
-        if _skill_registry is not None and user_message:
-            try:
-                routed = _skill_registry.find_multi(
-                    user_message, top_k=3,
+        await _mark_turn_phase("skill_discovery", "running")
+        try:
+            if _skill_registry is not None and user_message:
+                from xmclaw.skills.discovery import (
+                    SkillDiscoveryMiddleware,
+                    merge_skill_specs,
                 )
-                if routed:
-                    _routed_specs: list[ToolSpec] = []
-                    for _skill in routed:
-                        try:
-                            _ref = _skill_registry.ref(_skill.id)
-                            _desc = (
-                                _ref.manifest.description
-                                or _ref.manifest.title
-                                or _skill.id
-                            )
-                            if _ref.manifest.triggers:
-                                _desc += (
-                                    f"\nUse when: "
-                                    f"{', '.join(_ref.manifest.triggers[:6])}"
+                _skill_decision = SkillDiscoveryMiddleware(
+                    _skill_registry,
+                    self._cfg if isinstance(self._cfg, dict) else {},
+                ).discover(user_message)
+                tool_specs = merge_skill_specs(tool_specs, _skill_decision.tool_specs)
+                if _skill_decision.system_block:
+                    skill_autonomy_hint = _skill_decision.system_block
+                try:
+                    _bus = getattr(self, "_bus", None)
+                    if _bus is not None:
+                        for _ev in _skill_decision.events:
+                            _pub = getattr(_bus, "publish", None)
+                            if callable(_pub):
+                                _event = make_event(
+                                    session_id=session_id,
+                                    agent_id=self._agent_id,
+                                    type=EventType.INNER_MONOLOGUE,
+                                    payload={
+                                        "kind": "skill_discovery",
+                                        **dict(_ev),
+                                    },
                                 )
-                            _safe_id = _skill.id.replace(".", "__")
-                            _routed_specs.append(ToolSpec(
-                                name=f"skill_{_safe_id}"[:64],
-                                description=f"Skill: {_desc}",
-                                parameters_schema={
-                                    "type": "object",
-                                    "additionalProperties": True,
-                                },
-                            ))
-                        except Exception:
-                            pass
-
-                    if _routed_specs:
-                        _existing_names = {
-                            getattr(s, "name", "")
-                            for s in (tool_specs or [])
-                        }
-                        _new_specs = [
-                            s for s in _routed_specs
-                            if getattr(s, "name", "") not in _existing_names
-                        ]
-                        if _new_specs:
-                            # Prepend routed skills BEFORE regular skills
-                            # so the LLM sees them as strongly relevant.
-                            _non_skills = [
-                                s for s in (tool_specs or [])
-                                if not (getattr(s, "name", "") or "").startswith("skill_")
-                            ]
-                            _skills = [
-                                s for s in (tool_specs or [])
-                                if (getattr(s, "name", "") or "").startswith("skill_")
-                            ]
-                            tool_specs = _non_skills + _new_specs + _skills
-
-                            _names = [
-                                getattr(s, "name", "") for s in _new_specs
-                            ]
-                            skill_router_hint = (
-                                "\n\n[系统提示: 根据你的查询，以下技能高度相关，"
-                                "建议优先使用而非 bash / file_* / web_search 手写： "
-                                + ", ".join(_names)
-                                + "]"
-                            )
-            except Exception:  # noqa: BLE001
-                pass
+                                events.append(_event)
+                                _maybe = _pub(_event)
+                                if hasattr(_maybe, "__await__"):
+                                    await _maybe
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            await _mark_turn_phase(
+                "skill_discovery",
+                "completed",
+                matched=bool(getattr(_skill_decision, "matched", False)),
+                candidate_count=len(
+                    getattr(_skill_decision, "candidates", ()) or (),
+                ),
+                required_action=str(
+                    getattr(_skill_decision, "required_action", "") or "",
+                ),
+                must_browse_catalog=bool(
+                    getattr(_skill_decision, "must_browse_catalog", False),
+                ),
+            )
 
         # Jarvis Phase 1-2: tool description compressor.
         # After skill prefilter + active routing, further reduce token
@@ -3660,20 +3754,109 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # 之后（静态系统提示仍命中缓存）。用户消息只保留**纯 user_message**
         # —— 不再以用户身份夹带系统内容。Anthropic 折叠进 system 参数、
         # OpenAI 透传，保持单条 system 消息对所有后端最稳。
+        await _mark_turn_phase("prompt_pack", "running")
+        try:
+            from xmclaw.daemon.prompt_memory_pack import PromptMemoryPack
+            _prompt_memory_pack = PromptMemoryPack()
+            _prompt_memory_pack.add(
+                "memory-context",
+                memory_ctx_block,
+                source="memory_gateway/v2_render",
+                priority=10,
+                reason="durable facts selected for this turn",
+            )
+            _prompt_memory_pack.add(
+                "memory-files",
+                memory_files_block,
+                source="relevant_file_picker",
+                priority=20,
+                reason="human-readable memory files selected for this query",
+            )
+            _prompt_memory_pack.add(
+                "memory-recall",
+                unified_recall_block,
+                source="memory_v2_recall",
+                priority=30,
+                reason="query-matched facts with distance metadata",
+            )
+            _prompt_memory_pack.add(
+                "workspace",
+                workspace_hint_block,
+                source="session_workspace",
+                priority=40,
+                reason="where to place task-local scratch artifacts",
+            )
+            for _idx, _block in enumerate(_user_dynamic_blocks, 1):
+                _prompt_memory_pack.add(
+                    f"dynamic-context-{_idx}",
+                    _block,
+                    source="agent_loop",
+                    priority=50 + _idx,
+                )
+            _prompt_memory_pack.add(
+                "curriculum-hint",
+                curriculum_hint_block,
+                source="curriculum_router",
+                priority=70,
+            )
+            _prompt_memory_pack.add(
+                "curriculum-strategies",
+                curriculum_strategies_block,
+                source="reasoning_bank",
+                priority=80,
+            )
+            _prompt_memory_pack.add(
+                "skill-autonomy",
+                skill_autonomy_hint,
+                source="skill_discovery",
+                priority=90,
+                reason="structured skill candidates and skip requirements",
+            )
+            _prompt_memory_pack.add(
+                "skill-browse-hint",
+                skill_browse_hint,
+                source="skill_prefilter",
+                priority=95,
+            )
+            _prompt_memory_pack.add(
+                "correction-hint",
+                _correction_hint,
+                source="correction_detector",
+                priority=100,
+            )
+            _prompt_memory_pack.add(
+                "output-schema",
+                _schema_block,
+                source="schema_constraint",
+                priority=110,
+            )
+            _prompt_memory_pack_block = _prompt_memory_pack.render()
+        except Exception:  # noqa: BLE001
+            _prompt_memory_pack_block = (
+                memory_ctx_block
+                + memory_files_block
+                + unified_recall_block
+                + workspace_hint_block
+                + ("\n\n" + "\n\n".join(_user_dynamic_blocks) if _user_dynamic_blocks else "")
+                + curriculum_hint_block
+                + curriculum_strategies_block
+                + skill_autonomy_hint
+                + skill_browse_hint
+                + _correction_hint
+                + _schema_block
+            )
+        finally:
+            await _mark_turn_phase(
+                "prompt_pack",
+                "completed",
+                pack_chars=len(_prompt_memory_pack_block or ""),
+                has_pack=bool((_prompt_memory_pack_block or "").strip()),
+            )
+
         _turn_context_block = (
             continuation_anchor
             + time_block
-            + memory_ctx_block
-            + memory_files_block
-            + unified_recall_block
-            + workspace_hint_block
-            + ("\n\n" + "\n\n".join(_user_dynamic_blocks) if _user_dynamic_blocks else "")
-            + curriculum_hint_block
-            + curriculum_strategies_block
-            + skill_router_hint
-            + skill_browse_hint
-            + _correction_hint
-            + _schema_block
+            + _prompt_memory_pack_block
         )
         if _turn_context_block.strip():
             system_content = (
@@ -3714,8 +3897,39 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
         # bubble by correlation_id; without this, each chunk would land in
         # its own bubble. Includes the hop number so multi-hop turns get
         # one bubble per hop (which is what users see in the upstream agent too).
-        import uuid as _uuid
-        turn_uuid = _uuid.uuid4().hex
+        try:
+            from xmclaw.daemon.turn_graph_state import (
+                build_turn_graph_state,
+                graph_state_event_payload,
+            )
+            _turn_graph_state = build_turn_graph_state(
+                session_id=session_id,
+                run_id=turn_uuid,
+                user_message=user_message,
+                artifact_store=getattr(self, "_artifact_ledger_store", None),
+                prompt_memory_pack_present=bool(_prompt_memory_pack_block),
+                skill_discovery=_skill_decision,
+            )
+            if _turn_phase_graph is not None:
+                from xmclaw.cognition.graph_runtime import apply_updates
+                _snap = _turn_graph_state.snapshot()
+                _turn_phase_graph.state = apply_updates(
+                    _turn_phase_graph.state,
+                    {
+                        "metadata": dict(_snap.get("metadata") or {}),
+                        "artifacts": list(_snap.get("artifacts") or []),
+                    },
+                )
+                _turn_graph_state = _turn_phase_graph.state
+            self._last_turn_graph_state = _turn_graph_state
+            await publish(
+                EventType.GRAPH_STATE_UPDATED,
+                graph_state_event_payload(_turn_graph_state, phase="turn_started"),
+                correlation_id=turn_uuid,
+            )
+            _turn_started_event_published = True
+        except Exception:  # noqa: BLE001
+            _turn_graph_state = None
 
         # B-397: anti-loop guard. The agent_loop hops up to ``max_hops``
         # times. Real-world failure (xmclaw-architecture-redesign.md,
@@ -4111,6 +4325,12 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             and len(self._active_plan_steps) >= 2
             and effective_tools is not None
         ):
+            await _mark_turn_phase(
+                "hop_loop",
+                "running",
+                mode="swarm",
+                subtask_count=len(self._active_plan_steps),
+            )
             _swarm_fanout_ok = False
             _swarm_report = ""
             try:
@@ -4214,6 +4434,20 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                     await self._persist_history(session_id, messages)
                 except Exception:  # noqa: BLE001
                     pass
+                await _mark_turn_phase(
+                    "hop_loop",
+                    "completed",
+                    mode="swarm",
+                    hops=0,
+                    subtask_count=len(_subtasks),
+                )
+                await _mark_turn_phase(
+                    "memory_writeback",
+                    "completed",
+                    mode="swarm",
+                    persisted=True,
+                )
+                await _finalize_turn_graph("completed", mode="swarm", ok=True)
                 return AgentTurnResult(
                     ok=True,
                     text=_swarm_report,
@@ -4232,7 +4466,8 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
 
         # 2026-06-09 P2: instant mode — true single-shot, no hop loop.
         if self._active_run_modes.get(session_id) == "instant":
-            return await self._run_instant_single_shot(
+            await _mark_turn_phase("hop_loop", "running", mode="instant")
+            _instant_result = await self._run_instant_single_shot(
                 session_id=session_id,
                 llm=llm,
                 messages=messages,
@@ -4242,7 +4477,29 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
                 llm_timeout_s=_dynamic_llm_timeout,
                 _turn_metrics=_turn_metrics,
             )
+            await _mark_turn_phase(
+                "hop_loop",
+                "completed" if _instant_result.ok else "failed",
+                mode="instant",
+                ok=_instant_result.ok,
+                hops=_instant_result.hops,
+                error=_instant_result.error or "",
+            )
+            await _mark_turn_phase(
+                "memory_writeback",
+                "completed",
+                mode="instant",
+                persisted=True,
+            )
+            await _finalize_turn_graph(
+                "completed" if _instant_result.ok else "failed",
+                mode="instant",
+                ok=_instant_result.ok,
+                error=_instant_result.error or "",
+            )
+            return _instant_result
 
+        await _mark_turn_phase("hop_loop", "running", mode="agent")
         _hop_result = await self._run_hop_loop(
             session_id=session_id,
             user_message=user_message,
@@ -4262,6 +4519,46 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             bus=self._bus,
         )
         if _hop_result is not None:
+            await _mark_turn_phase(
+                "hop_loop",
+                "completed" if _hop_result.ok else "failed",
+                mode="agent",
+                ok=_hop_result.ok,
+                hops=_hop_result.hops,
+                tool_calls=len(_hop_result.tool_calls or []),
+                error=_hop_result.error or "",
+            )
+            if not _hop_result.ok:
+                try:
+                    from xmclaw.daemon.self_critique_runtime import (
+                        maybe_run_turn_self_critique,
+                    )
+                    _trigger = (
+                        "stuck_loop_exit"
+                        if _hop_result.error == "stuck_loop"
+                        else "failed_turn"
+                    )
+                    await maybe_run_turn_self_critique(
+                        self,
+                        _hop_result,
+                        trigger=_trigger,
+                        session_id=session_id,
+                        user_message=user_message,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            await _mark_turn_phase(
+                "memory_writeback",
+                "completed",
+                mode="agent",
+                persisted=True,
+            )
+            await _finalize_turn_graph(
+                "completed" if _hop_result.ok else "failed",
+                mode="agent",
+                ok=_hop_result.ok,
+                error=_hop_result.error or "",
+            )
             return _hop_result
 
 
@@ -4287,10 +4584,43 @@ class AgentLoop(HopLoopMixin, HistoryCompressionMixin):
             "hops": self._max_hops,
             "tools_used": sorted({c.get("name", "?") for c in tool_calls_made}),
         })
-        return AgentTurnResult(
+        _max_hops_result = AgentTurnResult(
             ok=False, text=truncation_text,
             hops=self._max_hops,
             tool_calls=tool_calls_made,
             events=events,
             error=f"hit max_hops={self._max_hops}",
         )
+        try:
+            from xmclaw.daemon.self_critique_runtime import (
+                maybe_run_turn_self_critique,
+            )
+            await maybe_run_turn_self_critique(
+                self,
+                _max_hops_result,
+                trigger="max_hops_exit",
+                session_id=session_id,
+                user_message=user_message,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        await _mark_turn_phase(
+            "hop_loop",
+            "failed",
+            mode="agent",
+            error=f"hit max_hops={self._max_hops}",
+            hops=self._max_hops,
+        )
+        await _mark_turn_phase(
+            "memory_writeback",
+            "completed",
+            mode="agent",
+            persisted=True,
+        )
+        await _finalize_turn_graph(
+            "failed",
+            mode="agent",
+            ok=False,
+            error=f"hit max_hops={self._max_hops}",
+        )
+        return _max_hops_result

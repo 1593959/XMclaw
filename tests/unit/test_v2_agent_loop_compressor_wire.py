@@ -14,6 +14,7 @@ from typing import Optional
 import pytest
 
 from xmclaw.core.bus import InProcessEventBus
+from xmclaw.core.bus.events import EventType
 from xmclaw.core.ir import ToolCallShape
 from xmclaw.daemon.agent_loop import AgentLoop
 from xmclaw.providers.llm.base import (
@@ -124,6 +125,64 @@ async def test_compressor_fires_when_forced() -> None:
     from xmclaw.context.compressor import SUMMARY_PREFIX
     found = any(SUMMARY_PREFIX in (m.content or "") for m in out)
     assert found, "compressor didn't insert summary prefix"
+
+
+@pytest.mark.asyncio
+async def test_compressor_emits_summarizer_eviction_plan_event() -> None:
+    """AgentLoop should surface the compressor's eviction plan as a
+    compact runtime event, not only store it on the compressor object."""
+    llm = _RecordingLLM(script=[LLMResponse(content="ok")])
+    bus = InProcessEventBus()
+    captured = []
+
+    async def _capture(ev):
+        captured.append(ev)
+
+    bus.subscribe(lambda ev: True, _capture)
+    agent = AgentLoop(llm=llm, bus=bus)
+    cc = agent._get_compressor()
+
+    async def _fake(prompt: str, max_tokens: int) -> Optional[str]:
+        return f"FAKE summary len={len(prompt)}"
+
+    cc.summarize_call = _fake
+    cc.threshold_tokens = 1
+    cc.tail_token_budget = 50
+
+    msgs = [
+        Message(role="system", content="S"),
+        Message(role="user", content="u1 " + "x" * 200),
+        Message(role="assistant", content="a1 " + "y" * 200),
+        Message(role="user", content="u2 " + "x" * 200),
+        Message(role="assistant", content="a2 " + "y" * 200),
+        Message(role="user", content="u3 " + "x" * 200),
+        Message(role="assistant", content="a3 " + "y" * 200),
+        Message(role="user", content="u4 " + "x" * 200),
+    ]
+    out, _did_compress = await agent._maybe_compress_messages(
+        msgs, "s-evict", force=True,
+    )
+    await bus.drain()
+
+    from xmclaw.context.compressor import SUMMARY_PREFIX
+    assert any(SUMMARY_PREFIX in (m.content or "") for m in out)
+    events = [
+        ev for ev in captured
+        if ev.type == EventType.SUMMARIZER_EVICTION_PLANNED
+    ]
+    assert events
+    payload = events[0].payload
+    assert payload["session_id"] == "s-evict"
+    assert payload["messages_before"] <= len(msgs)
+    assert payload["summarize_start"] < payload["summarize_end"]
+    assert payload["ranges"]
+    assert 0 < payload["evict_ratio"] <= 1
+    assert payload["summary_provenance"]["session_id"] == "s-evict"
+    assert payload["summary_provenance"]["source_message_range"] == [
+        payload["summarize_start"],
+        payload["summarize_end"],
+    ]
+    assert payload["summary_provenance"]["summary_kind"] == "conversation_middle"
 
 
 @pytest.mark.asyncio

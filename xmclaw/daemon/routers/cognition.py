@@ -329,6 +329,26 @@ async def list_tasks(request: Request) -> JSONResponse:
     })
 
 
+@router.get("/tasks/graph-state")
+async def task_graph_state(request: Request) -> JSONResponse:
+    """Return the canonical GraphState snapshot for scheduled tasks."""
+    sched = _task_scheduler(request)
+    if sched is None:
+        return _not_wired(request)
+    snapshot = getattr(sched, "snapshot_graph_state", None)
+    if snapshot is None:
+        return JSONResponse(
+            {"ok": False, "error": "task scheduler does not support graph_state"},
+            status_code=503,
+        )
+    state = await snapshot(
+        thread_id="cognition-api",
+        run_id="task-scheduler-api",
+        goal="task scheduler graph",
+    )
+    return JSONResponse(state.snapshot())
+
+
 @router.get("/tasks/graph")
 async def task_graph(request: Request) -> JSONResponse:
     """Return task dependency graph (DAG) for visualisation.

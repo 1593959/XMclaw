@@ -1,8 +1,8 @@
 // 文件域：工作区 markdown 文件树 + 编辑器（2026-06-17 用户点名「在前端加上
 // md 文件树，我自己修改」；同日美化 UI）。读/写走 /api/v2/files。
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useApp } from "../store/app";
-import { apiGet, apiSend } from "../lib/api";
+import { apiGetFresh, apiSend } from "../lib/api";
 
 const Markdown = lazy(() => import("../components/LazyMarkdown"));
 
@@ -64,12 +64,17 @@ export default function FilesView() {
   const [saving, setSaving] = useState(false);
   const [fileErr, setFileErr] = useState<string | null>(null);
   const [mode, setMode] = useState<"edit" | "preview">("edit");
+  const openSeq = useRef(0);
 
   useEffect(() => {
     if (!token) return;
-    apiGet<{ roots: Root[] }>("/api/v2/files/roots", token)
+    const ctl = new AbortController();
+    apiGetFresh<{ roots: Root[] }>("/api/v2/files/roots", token, ctl.signal)
       .then((d) => setRoots(d.roots || []))
-      .catch(() => setRoots([]));
+      .catch(() => {
+        if (!ctl.signal.aborted) setRoots([]);
+      });
+    return () => ctl.abort();
   }, [token]);
 
   async function loadDir(path: string) {
@@ -84,7 +89,7 @@ export default function FilesView() {
     }
     setLoading((l) => ({ ...l, [path]: true }));
     try {
-      const d = await apiGet<{ entries?: Entry[] }>(
+      const d = await apiGetFresh<{ entries?: Entry[] }>(
         `/api/v2/files?path=${encodeURIComponent(path)}`, token);
       setChildren((c) => ({ ...c, [path]: d.entries || [] }));
     } catch {
@@ -96,16 +101,20 @@ export default function FilesView() {
 
   async function openFile(e: Entry) {
     if (!token) return;
+    const seq = openSeq.current + 1;
+    openSeq.current = seq;
     setSel(e);
     setFileErr(null);
     setReadOnly(!isText(e.name));
     setMode(isMd(e.name) ? "preview" : "edit");
     try {
-      const d = await apiGet<{ content?: string }>(
+      const d = await apiGetFresh<{ content?: string }>(
         `/api/v2/files?path=${encodeURIComponent(e.path)}`, token);
+      if (openSeq.current !== seq) return;
       setContent(d.content ?? "");
       setOriginal(d.content ?? "");
     } catch {
+      if (openSeq.current !== seq) return;
       setFileErr("文件读取失败（可能超过 1 MiB 或非文本）");
       setContent("");
       setOriginal("");

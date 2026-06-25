@@ -959,7 +959,7 @@ def resolve_skill_roots(
     if isinstance(sp_cfg, dict) and "extra" in sp_cfg:
         extra_raw = sp_cfg.get("extra") or []
     else:
-        extra_raw = ["~/.agents/skills"]
+        extra_raw = ["~/.agents/skills", str(Path.cwd() / "skills")]
     extras: list[Path] = []
     if isinstance(extra_raw, list):
         for raw in extra_raw:

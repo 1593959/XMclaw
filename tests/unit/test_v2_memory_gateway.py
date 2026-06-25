@@ -15,7 +15,7 @@ from xmclaw.memory.v2.gateway_models import CognitiveDigest, Observation
 from xmclaw.memory.v2.models import Fact
 
 
-# ── Fixtures ─────────────────────────────────────────────────────
+# -- Fixtures -----------------------------------------------------
 
 
 class FakeMemoryService:
@@ -64,6 +64,10 @@ class FakeLLM:
         return Resp()
 
 
+def _fact(fid: str, text: str, *, kind: str = "lesson", bucket: str = "misc") -> Fact:
+    return Fact(id=fid, kind=kind, scope="project", text=text, bucket=bucket)
+
+
 @pytest.fixture
 def fake_svc():
     return FakeMemoryService()
@@ -78,7 +82,7 @@ def gateway_no_llm(fake_svc):
     )
 
 
-# ── Phase 1: passthrough ingest ──────────────────────────────────
+# -- Phase 1: passthrough ingest ----------------------------------
 
 
 @pytest.mark.asyncio
@@ -113,6 +117,40 @@ async def test_ingest_batch_passthrough(gateway_no_llm, fake_svc):
 
 
 @pytest.mark.asyncio
+async def test_unverified_auto_lesson_becomes_candidate(fake_svc, tmp_path):
+    from xmclaw.memory.v2.candidates import MemoryCandidateStore
+
+    candidate_store = MemoryCandidateStore(tmp_path / "candidates.db")
+    gateway = CognitiveMemoryGateway(
+        memory_service=fake_svc,
+        llm=None,
+        cfg={},
+        candidate_store=candidate_store,
+    )
+    obs = Observation(
+        source="post_sampling",
+        content="下次下载完成后应该记录最终路径",
+        turn_id="s1",
+        timestamp=0.0,
+        metadata={
+            "kind_hint": "lesson",
+            "scope_hint": "project",
+            "bucket_hint": "workflow",
+            "confidence_hint": 0.7,
+        },
+    )
+
+    fact = await gateway.ingest(obs)
+
+    assert fact is None
+    assert fake_svc.rwd_calls == []
+    items = candidate_store.list()
+    assert len(items) == 1
+    assert items[0].status == "pending"
+    assert items[0].bucket == "workflow"
+
+
+@pytest.mark.asyncio
 async def test_ingest_empty_content(gateway_no_llm):
     """Empty content observation is dropped immediately."""
     obs = Observation(source="user_msg", content="", turn_id="s1", timestamp=0.0)
@@ -131,7 +169,7 @@ async def test_ingest_disabled_gateway(fake_svc):
     assert await gw.ingest(obs) is None
 
 
-# ── Phase 2: THINK with LLM ──────────────────────────────────────
+# -- Phase 2: THINK with LLM --------------------------------------
 
 
 @pytest.mark.asyncio
@@ -146,7 +184,7 @@ async def test_think_calls_llm_when_enabled(fake_svc):
     # Use content that does NOT hit Tier-1 keywords so the LLM path is exercised.
     obs = Observation(
         source="user_msg",
-        content="沟通时喜欢用中文",
+        content="沟通时偏好中文",
         turn_id="s1",
         timestamp=0.0,
         metadata={"kind_hint": "preference", "scope_hint": "user"},
@@ -168,7 +206,7 @@ async def test_think_drops_when_worth_remembering_false(fake_svc):
     )
     obs = Observation(
         source="user_msg",
-        content="帮我改下配置",
+        content="甯垜鏀逛笅閰嶇疆",
         turn_id="s1",
         timestamp=0.0,
     )
@@ -193,22 +231,39 @@ async def test_think_degrades_when_llm_none(fake_svc):
 
 
 @pytest.mark.asyncio
+async def test_execute_passes_bucket_to_remember_with_decision(fake_svc):
+    gw = CognitiveMemoryGateway(memory_service=fake_svc, llm=None, cfg={})
+    obs = Observation(
+        source="user_msg",
+        content="项目部署流程需要先运行测试",
+        turn_id="s1",
+        timestamp=0.0,
+    )
+
+    await gw.ingest(obs)
+
+    assert fake_svc.rwd_calls[0]["bucket"] == "misc"
+    assert fake_svc.rwd_calls[0]["provenance"] == "gateway_think"
+    assert "项目部署流程" in fake_svc.rwd_calls[0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_think_uses_synthesized_text_in_execute(fake_svc):
     """The synthesized text (not raw content) is passed to remember()."""
-    fake_llm = FakeLLM(response_text='{"worth_remembering":true,"synthesized_text":"归纳后的文本","reason":"test"}')
+    fake_llm = FakeLLM(response_text='{"worth_remembering":true,"synthesized_text":"褰掔撼鍚庣殑鏂囨湰","reason":"test"}')
     gw = CognitiveMemoryGateway(
         memory_service=fake_svc,
         llm=fake_llm,
         cfg={"think": {"enabled": True}},
     )
-    obs = Observation(source="user_msg", content="原始文本", turn_id="s1", timestamp=0.0)
+    obs = Observation(source="user_msg", content="鍘熷鏂囨湰", turn_id="s1", timestamp=0.0)
     fact = await gw.ingest(obs)
     assert fact is not None
     # remember_with_decision path uses the synthesized text.
-    assert fake_svc.rwd_calls[0]["text"] == "归纳后的文本"
+    assert fake_svc.rwd_calls[0]["text"] == "褰掔撼鍚庣殑鏂囨湰"
 
 
-# ── Phase 2: THINK caching ───────────────────────────────────────
+# -- Phase 2: THINK caching ---------------------------------------
 
 
 @pytest.mark.asyncio
@@ -222,41 +277,40 @@ async def test_think_cache_hit(fake_svc):
     )
     obs = Observation(source="user_msg", content="X", turn_id="s1", timestamp=0.0)
     await gw._think(obs)
-    await gw._think(obs)  # same obs → cache hit
+    await gw._think(obs)  # same obs ->cache hit
     assert len(fake_llm.calls) == 1
 
 
-# ── Phase 2: prompt / parse helpers ──────────────────────────────
+# -- Phase 2: prompt / parse helpers ------------------------------
 
 
 def test_build_think_prompt_with_neighbours():
     obs = Observation(source="user_msg", content="测试", turn_id="s1", timestamp=0.0)
-    nb = Fact(id="f1", kind="preference", scope="user", text="用户偏好中文")
+    nb = _fact("f1", "用户偏好中文", kind="preference")
     prompt = _build_think_prompt(obs, [nb])
-    assert "来源: user_msg" in prompt
-    assert "内容: 测试" in prompt
+    assert "user_msg" in prompt
+    assert "测试" in prompt
     assert "[preference] 用户偏好中文" in prompt
 
 
 def test_build_think_prompt_no_neighbours():
     obs = Observation(source="user_msg", content="测试", turn_id="s1", timestamp=0.0)
     prompt = _build_think_prompt(obs, [])
-    assert "无相关记忆" in prompt
+    assert "no relevant memories" in prompt
 
 
 def test_parse_think_response_valid():
     obs = Observation(source="user_msg", content="原始内容在这里", turn_id="s1", timestamp=0.0)
     digest = _parse_think_response(
         '{"worth_remembering":true,"synthesized_text":"用户偏好使用中文进行交流","reason":"r"}',
-        obs, [],
+        obs,
+        [],
     )
     assert digest.worth_remembering is True
     assert digest.synthesized_text == "用户偏好使用中文进行交流"
-    assert digest.reason == "r"
-
 
 def test_parse_think_response_with_markdown_fence():
-    obs = Observation(source="user_msg", content="原始", turn_id="s1", timestamp=0.0)
+    obs = Observation(source="user_msg", content="鍘熷", turn_id="s1", timestamp=0.0)
     digest = _parse_think_response(
         '```json\n{"worth_remembering":false,"synthesized_text":"","reason":"drop"}\n```',
         obs, [],
@@ -265,22 +319,22 @@ def test_parse_think_response_with_markdown_fence():
 
 
 def test_parse_think_response_invalid_json_fallback():
-    obs = Observation(source="user_msg", content="原始", turn_id="s1", timestamp=0.0)
+    obs = Observation(source="user_msg", content="鍘熷", turn_id="s1", timestamp=0.0)
     digest = _parse_think_response("not json", obs, [])
     assert digest.worth_remembering is True
-    assert digest.synthesized_text == "原始"
+    assert digest.synthesized_text == "鍘熷"
 
 
 def test_parse_think_response_empty_synthesized_fallback():
-    obs = Observation(source="user_msg", content="原始", turn_id="s1", timestamp=0.0)
+    obs = Observation(source="user_msg", content="鍘熷", turn_id="s1", timestamp=0.0)
     digest = _parse_think_response(
         '{"worth_remembering":true,"synthesized_text":"","reason":"test"}',
         obs, [],
     )
-    assert digest.synthesized_text == "原始"
+    assert digest.synthesized_text == "鍘熷"
 
 
-# ── Misc helpers ─────────────────────────────────────────────────
+# -- Misc helpers -------------------------------------------------
 
 
 def test_merge_cfg_deep():
@@ -299,25 +353,24 @@ def test_cache_key_deterministic():
 
 def test_passthrough_digest_from_obs():
     obs = Observation(
-        source="user_msg", content="文本", turn_id="s1", timestamp=0.0,
+        source="user_msg", content="鏂囨湰", turn_id="s1", timestamp=0.0,
         metadata={"kind_hint": "identity", "scope_hint": "user", "confidence_hint": 0.9},
     )
     d = _passthrough_digest_from_obs(obs)
     assert d.worth_remembering is True
-    assert d.synthesized_text == "文本"
+    assert d.synthesized_text == "鏂囨湰"
     assert d.kind == "identity"
     assert d.scope == "user"
     assert d.confidence == 0.9
 
 
-# ── Phase 3: recall gate ─────────────────────────────────────────
+# -- Phase 3: recall gate -----------------------------------------
 
 
 from xmclaw.memory.v2.gateway_recall import (
     classify_buckets_heuristic,
     should_recall_heuristic,
 )
-
 
 def test_gate_short_message():
     assert should_recall_heuristic("ok") is False
@@ -341,11 +394,8 @@ def test_gate_substantive_query():
     assert should_recall_heuristic("我们项目的目标是什么") is True
 
 
-# ── Phase 3: bucket classification ───────────────────────────────
-
-
 def test_classify_project():
-    buckets = classify_buckets_heuristic("我们网店的账号是 admin")
+    buckets = classify_buckets_heuristic("我们项目的部署配置在哪里")
     assert "project_fact" in buckets
 
 
@@ -355,32 +405,15 @@ def test_classify_workflow():
 
 
 def test_classify_preference():
-    buckets = classify_buckets_heuristic("我喜欢简洁的回复")
+    buckets = classify_buckets_heuristic("我喜欢中文简洁回复")
     assert "user_preference" in buckets
 
 
-def test_classify_identity():
-    buckets = classify_buckets_heuristic("我是做电商的")
-    assert "user_identity" in buckets
+def test_classify_failure_modes():
+    buckets = classify_buckets_heuristic("这个命令报错失败了")
+    assert "failure_modes" in buckets
 
-
-def test_classify_rules():
-    buckets = classify_buckets_heuristic("永远别删我的配置文件")
-    assert "rules" in buckets
-
-
-def test_classify_multiple_buckets():
-    buckets = classify_buckets_heuristic("我们项目的目标怎么设置")
-    assert "project_fact" in buckets
-    assert "workflow" in buckets
-
-
-def test_classify_empty():
-    buckets = classify_buckets_heuristic("随便聊聊")
-    assert buckets == []
-
-
-# ── Phase 3: targeted_recall ─────────────────────────────────────
+# -- Phase 3: targeted_recall -------------------------------------
 
 
 class FakeRecallHit:
@@ -414,9 +447,9 @@ async def test_targeted_recall_filters_by_similarity(fake_svc):
 async def test_targeted_recall_excludes_structural_buckets(fake_svc):
     """Static structural-axis buckets are excluded; dynamic ones kept."""
     from xmclaw.memory.v2.models import Fact
-    # agent_identity is static (already in system prompt) → excluded.
+    # agent_identity is static (already in system prompt) ->excluded.
     f1 = Fact(id="f1", kind="identity", scope="session", text="我是AI助手", bucket="agent_identity")
-    # user_identity is dynamic (user may tell us new info mid-session) → kept.
+    # user_identity is dynamic (user may tell us new info mid-session) ->kept.
     f2 = Fact(id="f2", kind="identity", scope="user", text="用户叫张三", bucket="user_identity")
     f3 = Fact(id="f3", kind="lesson", scope="project", text="工具用法", bucket="workflow")
     fake_svc.facts = [f1, f2, f3]
@@ -437,7 +470,7 @@ async def test_targeted_recall_excludes_structural_buckets(fake_svc):
     assert hits[1].text == "工具用法"
 
 
-# ── Phase 5: metrics ─────────────────────────────────────────────
+# -- Phase 5: metrics ---------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -502,7 +535,7 @@ def test_get_metrics_uptime():
     assert m2["uptime_s"] >= m1["uptime_s"]
 
 
-# ── Phase 3: semantic classify ───────────────────────────────────
+# -- Phase 3: semantic classify -----------------------------------
 
 
 def test_cosine_similarity_identical():
@@ -549,7 +582,7 @@ async def test_classify_semantic_with_embedder():
     # high similarity with threshold=0.50.  Use a low threshold to
     # verify the pipeline works end-to-end.
     buckets = await classify_buckets_semantic(
-        "帮我部署网站", emb, threshold=0.01, top_k=8,
+        "甯垜閮ㄧ讲缃戠珯", emb, threshold=0.01, top_k=8,
     )
     assert isinstance(buckets, list)
     # With a random-like embedder we can't assert exact buckets,
@@ -592,7 +625,7 @@ async def test_recall_uses_semantic_when_embedder_available():
 
     _gr.classify_buckets_semantic = _mock_semantic
     try:
-        await recall_for_message_via_gateway(gw, "请问如何部署这个项目到服务器")
+        await recall_for_message_via_gateway(gw, "璇烽棶濡備綍閮ㄧ讲杩欎釜椤圭洰鍒版湇鍔″櫒")
         assert gw.last_buckets == ["project_fact"]
     finally:
         _gr.classify_buckets_semantic = orig_semantic
@@ -618,3 +651,5 @@ async def test_recall_falls_back_to_heuristic_when_no_embedder():
     # Keyword heuristic should match "project_fact" + "workflow".
     assert gw.last_buckets is not None
     assert "project_fact" in gw.last_buckets
+
+

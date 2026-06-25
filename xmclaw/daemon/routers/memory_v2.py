@@ -893,6 +893,114 @@ async def get_fact_detail(
 # ── Manual create ────────────────────────────────────────────────
 
 
+def _get_candidate_store(request: Request) -> Any | None:
+    store = getattr(request.app.state, "memory_candidate_store", None)
+    if store is not None:
+        return store
+    agent = getattr(request.app.state, "agent", None)
+    gateway = getattr(agent, "_memory_gateway", None) if agent else None
+    return getattr(gateway, "candidate_store", None) if gateway else None
+
+
+@router.get("/candidates")
+async def list_candidates(
+    request: Request,
+    status: str | None = Query("pending"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    store = _get_candidate_store(request)
+    if store is None:
+        return {"enabled": False, "items": [], "stats": {}}
+    items = store.list(status=status, limit=limit, offset=offset)
+    return {
+        "enabled": True,
+        "items": [item.to_dict() for item in items],
+        "stats": store.stats(),
+    }
+
+
+@router.get("/candidates/{candidate_id}")
+async def get_candidate(request: Request, candidate_id: str) -> Any:
+    store = _get_candidate_store(request)
+    if store is None:
+        return JSONResponse(
+            {"error": "memory_candidate_store_not_wired"},
+            status_code=503,
+        )
+    item = store.get(candidate_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    return {"candidate": item.to_dict()}
+
+
+@router.post("/candidates/{candidate_id}/reject")
+async def reject_candidate(request: Request, candidate_id: str) -> Any:
+    store = _get_candidate_store(request)
+    if store is None:
+        return JSONResponse(
+            {"error": "memory_candidate_store_not_wired"},
+            status_code=503,
+        )
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    reason = str(body.get("reason") or "rejected_by_user").strip()
+    item = store.decide(candidate_id, status="rejected", reason=reason)
+    if item is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    return {"candidate": item.to_dict()}
+
+
+@router.post("/candidates/{candidate_id}/approve")
+async def approve_candidate(request: Request, candidate_id: str) -> Any:
+    svc = _get_service(request)
+    if svc is None:
+        return _v2_disabled_response()
+    store = _get_candidate_store(request)
+    if store is None:
+        return JSONResponse(
+            {"error": "memory_candidate_store_not_wired"},
+            status_code=503,
+        )
+    candidate = store.get(candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    if candidate.status != "pending":
+        return JSONResponse(
+            {"error": "candidate_not_pending", "status": candidate.status},
+            status_code=409,
+        )
+    try:
+        body = await request.json() if request.headers.get("content-length") else {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    text = str(body.get("text") or candidate.text).strip()
+    kind = str(body.get("kind") or candidate.kind).strip()
+    scope = str(body.get("scope") or candidate.scope).strip()
+    bucket = str(body.get("bucket") if body.get("bucket") is not None else candidate.bucket)
+    confidence = float(body.get("confidence", candidate.confidence))
+    if not text:
+        return JSONResponse({"error": "missing_text"}, status_code=400)
+    fact = await svc.remember(
+        text,
+        kind=kind,
+        scope=scope,
+        confidence=confidence,
+        source_event_id=candidate.source_event_id,
+        bucket=bucket,
+        provenance="candidate_approved",
+    )
+    updated = store.decide(
+        candidate_id,
+        status="promoted",
+        reason=str(body.get("reason") or "approved_by_user").strip(),
+        promoted_fact_id=fact.id,
+    )
+    return {"candidate": updated.to_dict() if updated else None, "fact": fact.to_dict()}
+
+
 @router.post("/facts")
 async def create_fact(request: Request) -> Any:
     svc = _get_service(request)

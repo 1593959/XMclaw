@@ -36,6 +36,20 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+# Wave-27 fix-LAT17: global kill-switch for prompt-injection scanning.
+# Set by daemon factory when ``security.prompt_injection = "disabled"``.
+# When False, ``scan_text`` returns an empty result without running any
+# regex, so every callsite (tool results, web fetch, memory recall,
+# channel inbound, skill bodies) is affected uniformly.
+_scanning_enabled: bool = True
+
+
+def set_scanning_enabled(enabled: bool) -> None:
+    """Enable or disable prompt-injection scanning globally."""
+    global _scanning_enabled
+    _scanning_enabled = enabled
+    logger.info("prompt_scanner scanning_enabled=%s", enabled)
+
 
 class PolicyMode(str, Enum):
     """What to do when a finding meets or exceeds the configured threshold.
@@ -47,11 +61,15 @@ class PolicyMode(str, Enum):
       redaction, not the attack payload.
     * ``BLOCK`` — short-circuit the turn: AgentLoop records an
       ``ANTI_REQ_VIOLATION`` and returns without continuing the hop.
+    * ``DISABLED`` — do not scan at all. For trusted local environments
+      where the scanner's false positives hurt usability more than the
+      attack surface matters.
     """
 
     DETECT_ONLY = "detect_only"
     REDACT = "redact"
     BLOCK = "block"
+    DISABLED = "disabled"
 
     @classmethod
     def parse(cls, raw: str | None, *, default: "PolicyMode" = None) -> "PolicyMode":
@@ -828,6 +846,8 @@ def scan_text(
     """
     if not text:
         return ScanResult(scanned_length=0)
+    if not _scanning_enabled:
+        return ScanResult(scanned_length=len(text))
 
     findings: list[Finding] = []
     for spec in _ALL_PATTERNS:

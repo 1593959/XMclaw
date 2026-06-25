@@ -28,6 +28,19 @@ Classifier verdicts
   ``ask_user_question`` is a follow-up that doesn't belong in the
   guardrail module itself.
 
+Per-environment mode
+--------------------
+
+``classify_command`` accepts ``mode``:
+
+* ``strict`` (default) — current behavior: ``deny`` rules block,
+  ``confirm`` rules require confirmation (currently fail-closed).
+* ``permissive`` — ``confirm`` rules become ``allow``; ``deny``
+  rules still block only genuinely catastrophic operations (fork
+  bomb, disk destroyers, recursive chmod at root, etc.). This is
+  the "I trust this local environment" setting.
+* ``disabled`` — everything is ``allow``.
+
 Design notes
 ------------
 
@@ -311,14 +324,24 @@ _CONFIRM_PATTERNS: Final[tuple[tuple[re.Pattern[str], str, str], ...]] = (
 )
 
 
-def classify_command(command: str | None) -> Verdict:
+def classify_command(
+    command: str | None,
+    *,
+    mode: str = "strict",
+) -> Verdict:
     """Return the guardrail verdict for ``command``.
 
     ``None`` / empty / whitespace-only commands are allowed
     through — let the upstream subprocess layer handle the "empty
     command" error path with its existing message.
+
+    ``mode`` controls how aggressively the guardrails intervene:
+    ``strict`` (default), ``permissive`` (confirm rules become allow),
+    or ``disabled`` (always allow).
     """
     if not command or not command.strip():
+        return Verdict(decision="allow")
+    if mode == "disabled":
         return Verdict(decision="allow")
     text = command
     # Tokenised deny rules first — they're cheaper than regex and
@@ -332,7 +355,9 @@ def classify_command(command: str | None) -> Verdict:
     for rx, pid, reason in _CONFIRM_PATTERNS:
         if rx.search(text):
             return Verdict(
-                decision="confirm", pattern_id=pid, reason=reason,
+                decision="allow" if mode == "permissive" else "confirm",
+                pattern_id=pid,
+                reason=reason,
             )
     return Verdict(decision="allow")
 

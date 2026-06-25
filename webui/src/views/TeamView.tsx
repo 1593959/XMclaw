@@ -1,8 +1,9 @@
 // 专家团视图（P0）：把 fanout / subagent 事件重组为结构化团队看板。
 // 组长拆解 → 专家并行 → 整合。Mission Control 风格，深空墨底。
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../store/app";
+import { apiGetFresh } from "../lib/api";
 import type { Entry } from "../lib/types";
 
 const ROLE_META: Record<string, { icon: string; label: string; tone: string }> = {
@@ -18,6 +19,44 @@ interface Round {
   leader: Entry | null;           // fanout 条目
   agents: Entry[];                // 该批次下的 subagent 条目
   ungrouped: boolean;             // 没有 fanout 头的散落 subagent
+}
+
+interface GraphNode {
+  id?: string;
+  task_id?: string;
+  status?: string;
+  dependencies?: string[];
+  prompt?: string;
+  description?: string;
+}
+
+interface GraphError {
+  kind?: string;
+  task_id?: string;
+  node_id?: string;
+  message?: string;
+  error?: string;
+}
+
+interface GraphInspection {
+  ok?: boolean;
+  runnable?: string[];
+  runnable_ids?: string[];
+  blocked?: string[];
+  blocked_ids?: string[];
+  failed?: string[];
+  failed_ids?: string[];
+  cycles?: string[][];
+}
+
+interface GraphStateSnapshot {
+  final?: string;
+  confidence?: number;
+  subtasks?: GraphNode[];
+  errors?: GraphError[];
+  metadata?: {
+    inspection?: GraphInspection;
+  };
 }
 
 function groupRounds(entries: Entry[]): Round[] {
@@ -50,7 +89,31 @@ function str(val: unknown): string {
 
 export default function TeamView() {
   const entries = useApp((s) => s.chat.entries);
+  const token = useApp((s) => s.token);
   const rounds = useMemo(() => groupRounds(entries), [entries]);
+  const [graphState, setGraphState] = useState<GraphStateSnapshot | null>(null);
+
+  useEffect(() => {
+    if (!token) {
+      setGraphState(null);
+      return;
+    }
+
+    const ctl = new AbortController();
+    apiGetFresh<GraphStateSnapshot>(
+      "/api/v2/cognition/tasks/graph-state",
+      token,
+      ctl.signal,
+    )
+      .then((snapshot) => setGraphState(snapshot || null))
+      .catch(() => {
+        if (!ctl.signal.aborted) {
+          setGraphState(null);
+        }
+      });
+
+    return () => ctl.abort();
+  }, [token]);
 
   return (
     <div className="h-full flex flex-col min-w-0">
@@ -64,6 +127,7 @@ export default function TeamView() {
 
       {/* 内容 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {graphState && <GraphStatePanel graphState={graphState} />}
         {rounds.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-mc-faint">
             <div className="text-4xl mb-3">👥</div>
@@ -77,6 +141,134 @@ export default function TeamView() {
             <RoundCard key={round.id} round={round} />
           ))
         )}
+      </div>
+    </div>
+  );
+}
+
+function GraphStatePanel({ graphState }: { graphState: GraphStateSnapshot }) {
+  const nodes = graphState.subtasks || [];
+  const errors = graphState.errors || [];
+  const inspection = graphState.metadata?.inspection || {};
+  const runnable = inspection.runnable_ids || inspection.runnable || [];
+  const blocked = inspection.blocked_ids || inspection.blocked || [];
+  const failed = inspection.failed_ids || inspection.failed || [];
+  const cycles = inspection.cycles || [];
+
+  if (nodes.length === 0 && errors.length === 0 && !graphState.final) {
+    return null;
+  }
+
+  return (
+    <section className="border border-mc-border rounded-lg bg-mc-panel/50 overflow-hidden">
+      <div className="px-4 py-3 border-b border-mc-border bg-mc-panel/70 flex flex-wrap items-center gap-2">
+        <div className="mr-auto min-w-0">
+          <h3 className="text-sm font-semibold text-mc-text">GraphState</h3>
+          <p className="text-xs text-mc-faint mt-0.5">
+            StateGraph task topology, reducers, blockers, and failure surface
+          </p>
+        </div>
+        {graphState.final && <GraphPill label="final" value={graphState.final} />}
+        {typeof graphState.confidence === "number" && (
+          <GraphPill label="confidence" value={graphState.confidence.toFixed(2)} />
+        )}
+        <GraphPill label="nodes" value={String(nodes.length)} />
+        <GraphPill label="errors" value={String(errors.length)} tone={errors.length ? "err" : "ok"} />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-mc-border text-xs">
+        <GraphMetric label="runnable" value={runnable.length} tone="ok" />
+        <GraphMetric label="blocked" value={blocked.length} tone={blocked.length ? "warn" : "muted"} />
+        <GraphMetric label="failed" value={failed.length} tone={failed.length ? "err" : "muted"} />
+        <GraphMetric label="cycles" value={cycles.length} tone={cycles.length ? "err" : "muted"} />
+      </div>
+
+      {nodes.length > 0 && (
+        <div className="divide-y divide-mc-border">
+          {nodes.slice(0, 8).map((node, idx) => (
+            <GraphNodeRow key={node.id || node.task_id || idx} node={node} />
+          ))}
+        </div>
+      )}
+
+      {errors.length > 0 && (
+        <div className="px-4 py-3 border-t border-mc-border bg-mc-bg/40 space-y-1">
+          {errors.slice(0, 4).map((err, idx) => (
+            <div key={`${err.task_id || err.node_id || "error"}_${idx}`} className="text-xs text-mc-err">
+              {err.kind || "error"} {err.task_id || err.node_id ? `@ ${err.task_id || err.node_id}` : ""}
+              {": "}
+              {err.message || err.error || "unknown graph error"}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function GraphMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "ok" | "warn" | "err" | "muted";
+}) {
+  const toneClass =
+    tone === "ok"
+      ? "text-mc-ok"
+      : tone === "warn"
+        ? "text-amber-300"
+        : tone === "err"
+          ? "text-mc-err"
+          : "text-mc-muted";
+
+  return (
+    <div className="bg-mc-panel/60 px-4 py-3">
+      <div className={`text-lg font-semibold ${toneClass}`}>{value}</div>
+      <div className="text-[10px] uppercase tracking-wide text-mc-faint">{label}</div>
+    </div>
+  );
+}
+
+function GraphPill({
+  label,
+  value,
+  tone = "muted",
+}: {
+  label: string;
+  value: string;
+  tone?: "ok" | "err" | "muted";
+}) {
+  const toneClass = tone === "ok" ? "text-mc-ok" : tone === "err" ? "text-mc-err" : "text-mc-muted";
+  return (
+    <span className={`text-[10px] px-2 py-1 rounded bg-mc-bg border border-mc-border ${toneClass}`}>
+      {label}: {value}
+    </span>
+  );
+}
+
+function GraphNodeRow({ node }: { node: GraphNode }) {
+  const title = node.id || node.task_id || "unnamed";
+  const deps = node.dependencies || [];
+  const preview = node.description || node.prompt || "";
+
+  return (
+    <div className="px-4 py-3 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs font-medium text-mc-text truncate">{title}</span>
+          {node.status && <StatusBadge status={node.status} />}
+        </div>
+        {preview && (
+          <p className="text-xs text-mc-muted mt-1 line-clamp-2" title={preview}>
+            {preview}
+          </p>
+        )}
+      </div>
+      <div className="text-[10px] text-mc-faint md:text-right">
+        deps: {deps.length ? deps.join(", ") : "none"}
       </div>
     </div>
   );
@@ -173,7 +365,9 @@ function AgentCard({ agent }: { agent: Entry }) {
       {(agent.outputPreview || agent.errorPreview) && (
         <>
           <button
+            type="button"
             onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
             className="mt-2 text-[10px] text-mc-accent hover:text-mc-accent-dim"
           >
             {expanded ? "收起" : "查看详情"}

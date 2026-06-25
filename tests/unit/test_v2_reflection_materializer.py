@@ -39,11 +39,43 @@ def materializer(persona_dir: Path):
     rm = ReflectionMaterializer(
         bus=bus,
         persona_dir_provider=lambda: persona_dir,
+        cfg={"cognition": {"reflection_materialize": {
+            "materialize_inner_monologue": True,
+        }}},
     )
     return bus, rm
 
 
 # ── Inner-monologue paths ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_inner_monologue_not_materialized_by_default(
+    persona_dir: Path,
+):
+    from xmclaw.cognition.reflection_materializer import (
+        ReflectionMaterializer,
+    )
+    bus = InProcessEventBus()
+    rm = ReflectionMaterializer(
+        bus=bus,
+        persona_dir_provider=lambda: persona_dir,
+    )
+    await rm.start()
+
+    await bus.publish(make_event(
+        session_id="_system",
+        agent_id="reflection",
+        type=EventType.INNER_MONOLOGUE,
+        payload={
+            "kind": "plan",
+            "text": "Next time, try a different download mirror.",
+        },
+    ))
+    await bus.drain()
+
+    assert not (persona_dir / "AGENTS.md").exists()
+    await rm.stop()
 
 
 @pytest.mark.asyncio

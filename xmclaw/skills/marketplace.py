@@ -627,11 +627,10 @@ def _validate_structure(install_path: Path) -> dict[str, Any]:
     has_manifest = (install_path / "manifest.json").is_file()
     has_skill_md = (install_path / "SKILL.md").is_file()
     has_skill_py = (install_path / "skill.py").is_file()
-    has_init_py = (install_path / "__init__.py").is_file()
-    if not (has_manifest or has_skill_md or has_skill_py or has_init_py):
+    if not (has_manifest or has_skill_md or has_skill_py):
         raise InstallValidationError(
             f"directory at {install_path} has none of: manifest.json, "
-            "SKILL.md, skill.py, __init__.py — does not look like a skill"
+            "SKILL.md, skill.py — does not look like a skill"
         )
     # If there's a python skill, do a cheap textual check that *something*
     # in it talks about Skill / SkillBase. We don't run the file (that's
@@ -652,8 +651,65 @@ def _validate_structure(install_path: Path) -> dict[str, Any]:
         "has_manifest": has_manifest,
         "has_skill_md": has_skill_md,
         "has_skill_py": has_skill_py,
-        "has_init_py": has_init_py,
     }
+
+
+def _normalise_nested_skill_tree(install_path: Path, skill_id: str) -> bool:
+    """Promote one nested SKILL.md directory to the install root.
+
+    Public Claude/agent skill repositories often keep the actual skill
+    under ``.claude/skills/<name>/`` or ``skills/<name>/``. XMclaw's
+    runtime loads one skill per install root, so we copy the nested
+    skill directory to the root and preserve the original checkout in
+    ``.source_repo`` for inspection.
+    """
+    if (
+        (install_path / "SKILL.md").is_file()
+        or (install_path / "manifest.json").is_file()
+        or (install_path / "skill.py").is_file()
+    ):
+        return False
+
+    ignored = {".git", "node_modules", ".venv", "venv", "__pycache__"}
+    candidates: list[Path] = []
+    for skill_md in install_path.rglob("SKILL.md"):
+        rel = skill_md.relative_to(install_path)
+        if any(part in ignored for part in rel.parts):
+            continue
+        if len(rel.parts) > 5:
+            continue
+        candidates.append(skill_md.parent)
+
+    if not candidates:
+        return False
+
+    preferred = [
+        c for c in candidates
+        if c.name.lower() == skill_id.lower()
+        or c.parent.name.lower() in {"skills", ".skills"}
+        or any(part.lower() == ".claude" for part in c.parts)
+    ]
+    pool = preferred or candidates
+    if len(pool) != 1:
+        names = ", ".join(str(c.relative_to(install_path)) for c in pool[:8])
+        raise InstallValidationError(
+            "found multiple nested SKILL.md directories; install one "
+            f"sub-skill explicitly. candidates: {names}"
+        )
+
+    chosen = pool[0]
+    source_repo = install_path / ".source_repo"
+    temp_repo = install_path.with_name(f"{install_path.name}.__normalise_tmp__")
+    if source_repo.exists():
+        _safe_rmtree(source_repo)
+    if temp_repo.exists():
+        _safe_rmtree(temp_repo)
+    shutil.move(str(install_path), str(temp_repo))
+    install_path.mkdir(parents=True, exist_ok=True)
+    chosen_in_temp = temp_repo / chosen.relative_to(install_path)
+    shutil.copytree(chosen_in_temp, install_path, dirs_exist_ok=True)
+    shutil.move(str(temp_repo), str(source_repo))
+    return True
 
 
 def detect_mcp_server(install_path: Path) -> dict[str, Any] | None:
@@ -785,7 +841,11 @@ _CRITICAL_INSTALL_ALLOWLIST: frozenset[str] = frozenset({
 })
 
 
-def _scan_for_critical(install_path: Path) -> list[dict[str, Any]]:
+def _scan_for_critical(
+    install_path: Path,
+    *,
+    block_critical: bool = True,
+) -> list[dict[str, Any]]:
     """Run :func:`xmclaw.security.skill_scanner.scan_directory` on the
     install. Any CRITICAL finding raises :class:`InstallScanFailed` so we
     fail-closed. Lower-severity findings are returned to the caller for
@@ -793,6 +853,11 @@ def _scan_for_critical(install_path: Path) -> list[dict[str, Any]]:
 
     2026-06-09: a small allowlist prevents false-positive blocks on
     common Python idioms (see ``_CRITICAL_INSTALL_ALLOWLIST``).
+
+    Wave-27 fix-LAT18: ``block_critical=False`` lets trusted local
+    environments install skills that would otherwise be rejected by the
+    static scanner (e.g. MCP servers with subprocess/eval patterns).
+    Findings are still returned for observability.
     """
     # Lazy import: keeps ``import xmclaw.skills.marketplace`` cheap when
     # the caller only needs index parsing (e.g. the daemon router's
@@ -815,9 +880,10 @@ def _scan_for_critical(install_path: Path) -> list[dict[str, Any]]:
             if finding.severity == GuardSeverity.CRITICAL:
                 if finding.rule_id in _CRITICAL_INSTALL_ALLOWLIST:
                     continue
-                critical_msgs.append(
-                    f"{finding.rule_id} in {finding.tool_name}: {finding.title}"
-                )
+                if block_critical:
+                    critical_msgs.append(
+                        f"{finding.rule_id} in {finding.tool_name}: {finding.title}"
+                    )
     if critical_msgs:
         raise InstallScanFailed(
             "marketplace install rejected: CRITICAL findings — "
@@ -835,6 +901,7 @@ def install(
     git_runner: Any = None,
     install_root: Path | None = None,
     now: float | None = None,
+    block_critical: bool = True,
 ) -> InstallResult:
     """Install a skill by id from the curated index.
 
@@ -882,8 +949,9 @@ def install(
 
     findings: list[dict[str, Any]] = []
     try:
+        _normalise_nested_skill_tree(target, skill.id)
         _validate_structure(target)
-        findings = _scan_for_critical(target)
+        findings = _scan_for_critical(target, block_critical=block_critical)
     except MarketplaceError:
         # Roll back on any post-clone failure — leaving a half-installed
         # directory means the daemon's UserSkillsLoader picks it up on
@@ -946,6 +1014,7 @@ def install_from_source(
     git_runner: Any = None,
     install_root: Path | None = None,
     now: float | None = None,
+    block_critical: bool = True,
 ) -> InstallResult:
     """Install a skill from an arbitrary source URL (not requiring the
     curated index).
@@ -998,14 +1067,15 @@ def install_from_source(
         _local_copy(resolved["path"], target)
     findings: list[dict[str, Any]] = []
     try:
+        _normalise_nested_skill_tree(target, final_id)
         _validate_structure(target)
-        findings = _scan_for_critical(target)
+        findings = _scan_for_critical(target, block_critical=block_critical)
     except MarketplaceError as skill_err:
         # 不是传统 skill —— 先看看是不是 MCP server（2026-06-07）。是则不拒绝，
         # 返回一个可热加载 + 落盘的 mcp_config，让调用方接进 mcp_hub。
         mcp = detect_mcp_server(target)
         if mcp is not None:
-            findings = _scan_for_critical(target)  # 安全扫描照跑
+            findings = _scan_for_critical(target, block_critical=block_critical)  # 安全扫描照跑
             mcp_config = {
                 "command": mcp["command"],
                 "args": mcp["args"],

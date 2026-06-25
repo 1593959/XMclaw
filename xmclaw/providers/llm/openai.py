@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
@@ -306,7 +307,7 @@ class OpenAILLM(LLMProvider):
         """
         # Fast-path: exact same message list + same flags → cached result.
         cache_key = (
-            tuple(id(m) for m in messages),
+            tuple(_message_cache_fingerprint(m) for m in messages),
             prompt_cache_enabled,
             model,
             base_url,
@@ -575,14 +576,14 @@ class OpenAILLM(LLMProvider):
             except Exception as _e:
                 _etype = type(_e).__name__
                 _msg = str(_e)[:200]
-                if (
-                    "429" not in _msg
-                    and "529" not in _msg
-                    and "overloaded" not in _msg.lower()
-                    and "rate" not in _msg.lower()
-                    and "capacity" not in _msg.lower()
-                    and _attempt >= _max_retries
-                ):
+                _is_retryable = (
+                    "429" in _msg
+                    or "529" in _msg
+                    or "overloaded" in _msg.lower()
+                    or "rate" in _msg.lower()
+                    or "capacity" in _msg.lower()
+                )
+                if not _is_retryable or _attempt >= _max_retries:
                     raise
                 _delay = _base_delay * (2 ** _attempt)
                 from xmclaw.utils.log import get_logger
@@ -997,6 +998,30 @@ class OpenAILLM(LLMProvider):
             self.close()
         except Exception:
             pass
+
+
+def _message_cache_fingerprint(m: Message) -> tuple[Any, ...]:
+    tool_calls = tuple(
+        (
+            getattr(tc, "id", None),
+            getattr(tc, "name", ""),
+            json.dumps(
+                getattr(tc, "args", {}) or {},
+                sort_keys=True,
+                ensure_ascii=False,
+            ),
+        )
+        for tc in (m.tool_calls or ())
+    )
+    return (
+        m.role,
+        m.content,
+        m.tool_call_id,
+        tuple(m.images or ()),
+        m.thinking,
+        m.thinking_signature,
+        tool_calls,
+    )
 
 
 # ── Image helpers (B-Vision) ───────────────────────────────────────

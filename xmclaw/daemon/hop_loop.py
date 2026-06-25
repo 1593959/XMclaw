@@ -103,6 +103,15 @@ def _check_memory_honesty(
     )
 
 
+def _stuck_loop_signature(tool_call: dict[str, Any]) -> tuple[str, str] | None:
+    """Return the comparable (tool, error) signature for a failed call."""
+    if bool(tool_call.get("ok")):
+        return None
+    tool = str(tool_call.get("name") or "unknown_tool")
+    error = str(tool_call.get("error") or "tool failed without an error message")
+    return tool, error[:240]
+
+
 async def _invoke_single_tool(
     call: Any,
     effective_tools: Any,
@@ -383,6 +392,8 @@ class HopLoopMixin:
         """
         _NO_PROGRESS_THRESHOLD = 5
         _no_progress_counter = 0
+        _STUCK_LOOP_THRESHOLD = 3
+        _stuck_loop_streak: list[tuple[str, str]] = []
         # B-302: honesty guard — max 1 correction per turn to avoid loops.
         _B302_MAX_CORRECTIONS = 1
         _b302_corrected = 0
@@ -1632,6 +1643,30 @@ class HopLoopMixin:
                 # look frozen. Minimum display time is enforced in Phase C.
                 _invoke_start_ts: dict[str, float] = {}
 
+                async def _publish_shell_policy_decision(call: Any) -> None:
+                    if getattr(call, "name", "") != "bash":
+                        return
+                    policy = getattr(effective_tools, "_shell_execution_policy", None)
+                    if policy is None:
+                        return
+                    reason = policy.refusal_reason()
+                    sandbox = getattr(effective_tools, "_shell_sandbox", None)
+                    await publish(EventType.TOOL_SANDBOX_POLICY_DECIDED, {
+                        "tool_name": call.name,
+                        "policy": getattr(policy, "name", "unknown"),
+                        "decision": "deny" if reason else "allow",
+                        "reason": reason or "",
+                        "sandbox_runtime": (
+                            "docker"
+                            if getattr(policy, "name", "") == "docker"
+                            else "host"
+                            if getattr(policy, "name", "") == "host_guarded"
+                            else "none"
+                        ),
+                        "image": str(getattr(sandbox, "image", "") or ""),
+                        "call_id": call.id,
+                    })
+
                 async def _invoke_one(call: Any) -> Any:
                     _invoke_start_ts[call.id] = time.perf_counter()
 
@@ -1655,6 +1690,7 @@ class HopLoopMixin:
 
                     _progress_task = asyncio.create_task(_progress_loop())
                     try:
+                        await _publish_shell_policy_decision(call)
                         return await maybe_await_cached(
                             _spec_cache, call,
                             lambda c=call: self._invoke_single_tool(
@@ -1753,6 +1789,7 @@ class HopLoopMixin:
                 # finished in < 300ms we pause before publishing FINISHED.
                 _MIN_TOOL_DISPLAY_MS = 300.0
                 _had_success_this_hop = False
+                _tool_calls_at_hop_start = len(tool_calls_made)
                 # B-Vision: collect ``metadata.attach_image`` paths from
                 # any tools that produced screenshots, so we can inject
                 # a single multimodal user message AFTER the batch (the
@@ -2168,6 +2205,56 @@ class HopLoopMixin:
                 except Exception:  # noqa: BLE001
                     pass
 
+                # B-397: stop pathological loops where the model keeps
+                # retrying the same tool and receiving the same error.
+                for _call_record in tool_calls_made[_tool_calls_at_hop_start:]:
+                    _signature = _stuck_loop_signature(_call_record)
+                    if _signature is None:
+                        _stuck_loop_streak.clear()
+                        continue
+                    if _stuck_loop_streak and _stuck_loop_streak[-1] != _signature:
+                        _stuck_loop_streak = [_signature]
+                    else:
+                        _stuck_loop_streak.append(_signature)
+
+                    if len(_stuck_loop_streak) >= _STUCK_LOOP_THRESHOLD:
+                        _tool_name, _error_signature = _signature
+                        _message = "agent stuck - same tool error 3x in a row"
+                        await publish(EventType.ANTI_REQ_VIOLATION, {
+                            "message": _message,
+                            "tool": _tool_name,
+                            "error_signature": _error_signature,
+                            "hop": hop,
+                            "kind": "stuck_loop",
+                            "failure_count": len(_stuck_loop_streak),
+                            "strategy_decision": "change_plan",
+                            "should_retry_same": False,
+                            "recommended_action": (
+                                "stop_retrying_same_tool_error; re-read state, "
+                                "choose a different tool or ask the user for "
+                                "missing context"
+                            ),
+                            "recovery_options": [
+                                "change_plan",
+                                "query_artifact_ledger",
+                                "query_memory",
+                                "ask_user",
+                            ],
+                        })
+                        return AgentTurnResult(
+                            ok=False,
+                            text=(
+                                "I've stopped because the agent appears to be "
+                                f"stuck in a loop: `{_tool_name}` returned "
+                                "the same error 3 times in a row. Last error: "
+                                f"{_error_signature}"
+                            ),
+                            hops=hop + 1,
+                            tool_calls=tool_calls_made,
+                            events=events,
+                            error="stuck_loop",
+                        )
+
                 # Meta-cognitive no-progress guard: if we haven't made a
                 # successful tool call for N consecutive hops, we're
                 # probably stuck in a wasteful retry loop (different
@@ -2187,6 +2274,19 @@ class HopLoopMixin:
                             "error_signature": "no_progress",
                             "hop": hop,
                             "kind": "no_progress",
+                            "failure_count": _no_progress_counter,
+                            "strategy_decision": "ask_user",
+                            "should_retry_same": False,
+                            "recommended_action": (
+                                "stop autonomous retries; ask the user for "
+                                "missing constraints or switch to a simpler plan"
+                            ),
+                            "recovery_options": [
+                                "ask_user",
+                                "change_plan",
+                                "query_artifact_ledger",
+                                "query_memory",
+                            ],
                         })
                         return AgentTurnResult(
                             ok=False,

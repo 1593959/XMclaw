@@ -12,15 +12,18 @@ export default function SegTabs<T extends string>({
   cur,
   onPick,
   className = "",
+  label = "Section tabs",
 }: {
   tabs: ReadonlyArray<SegTab<T>>;
   cur: T;
   onPick: (v: T) => void;
   className?: string;
+  label?: string;
 }) {
   return (
     <div
       role="tablist"
+      aria-label={label}
       className={
         "inline-flex gap-0.5 p-0.5 rounded-lg bg-mc-panel2 border border-mc-border " +
         className
@@ -30,9 +33,12 @@ export default function SegTabs<T extends string>({
         const active = cur === t.id;
         return (
           <button
+            type="button"
             key={t.id}
             role="tab"
             aria-selected={active}
+            aria-pressed={active}
+            tabIndex={active ? 0 : -1}
             onClick={() => onPick(t.id)}
             className={
               "text-xs px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap " +

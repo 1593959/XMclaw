@@ -352,6 +352,8 @@ async def render_persona_file(
     memory_service: Any,
     profile_dir: Path,
     basename: str,
+    *,
+    include_auto_sections: bool = True,
 ) -> bool:
     """Re-render one persona MD file from current L1 state.
 
@@ -378,6 +380,8 @@ async def render_persona_file(
     log = get_logger(__name__)
 
     buckets = FILE_TO_BUCKETS.get(basename) or []
+    if not include_auto_sections:
+        buckets = []
     target = Path(profile_dir) / basename
     try:
         current = (
@@ -497,6 +501,8 @@ async def render_persona_file(
 async def render_all_persona_files(
     memory_service: Any,
     profile_dir: Path,
+    *,
+    include_auto_sections: bool = True,
 ) -> dict[str, bool]:
     """Re-render every persona MD file the renderer knows about.
 
@@ -507,7 +513,10 @@ async def render_all_persona_files(
     report: dict[str, bool] = {}
     for basename in FILE_TO_BUCKETS:
         report[basename] = await render_persona_file(
-            memory_service, profile_dir, basename,
+            memory_service,
+            profile_dir,
+            basename,
+            include_auto_sections=include_auto_sections,
         )
     return report
 
@@ -516,6 +525,8 @@ async def render_affected_files(
     memory_service: Any,
     profile_dir: Path,
     written_facts: list[Any],
+    *,
+    include_auto_sections: bool = True,
 ) -> set[str]:
     """Render only the files affected by a batch of recent writes.
 
@@ -525,6 +536,9 @@ async def render_affected_files(
     Returns the set of basenames actually rewritten — empty when
     none of the new facts had a routable bucket.
     """
+    if not include_auto_sections:
+        return set()
+
     affected: set[str] = set()
     for f in written_facts:
         b = getattr(f, "bucket", "") or ""
@@ -538,7 +552,10 @@ async def render_affected_files(
     rewritten: set[str] = set()
     for basename in affected:
         if await render_persona_file(
-            memory_service, profile_dir, basename,
+            memory_service,
+            profile_dir,
+            basename,
+            include_auto_sections=include_auto_sections,
         ):
             rewritten.add(basename)
     return rewritten

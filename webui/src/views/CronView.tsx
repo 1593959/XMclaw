@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../store/app";
-import { apiDelete, apiGet, apiPost } from "../lib/api";
+import { apiDelete, apiGetFresh, apiPost } from "../lib/api";
 
 interface CronJob {
   id: string;
@@ -39,11 +39,17 @@ export default function CronView() {
 
   const load = useCallback(() => {
     if (!token) return;
+    const ctl = new AbortController();
     setLoading(true);
-    apiGet<{ jobs?: CronJob[] }>("/api/v2/cron", token)
+    apiGetFresh<{ jobs?: CronJob[] }>("/api/v2/cron", token, ctl.signal)
       .then((d) => setJobs(d?.jobs || []))
-      .catch(() => setJobs([]))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!ctl.signal.aborted) setJobs([]);
+      })
+      .finally(() => {
+        if (!ctl.signal.aborted) setLoading(false);
+      });
+    return () => ctl.abort();
   }, [token]);
 
   useEffect(load, [load]);

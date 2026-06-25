@@ -20,7 +20,7 @@ REQUIRED_BUCKETS = {
     "workflow", "tool_quirks", "failure_modes",
     "values", "rules",
     # New in v3 (close the coverage gap).
-    "project_fact", "commitment", "misc",
+    "project_fact", "commitment", "environment", "misc",
 }
 
 
@@ -108,7 +108,7 @@ def test_for_file_aggregates_buckets_correctly():
 
     memory_buckets = {b.tag for b in bm.for_file("MEMORY.md")}
     assert memory_buckets == {
-        "failure_modes", "project_fact", "commitment", "misc",
+        "failure_modes", "environment", "project_fact", "commitment", "misc",
     }
 
 

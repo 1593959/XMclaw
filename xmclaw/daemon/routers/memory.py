@@ -834,6 +834,7 @@ async def unified_query(request: Request) -> JSONResponse:
             "until": 1715200000.0
           },
           "layer": "long_term",           # optional restriction
+          "recall_mode": "hybrid",        # optional: hybrid | vector
           "limit": 10                     # default 10
         }
 
@@ -857,6 +858,17 @@ async def unified_query(request: Request) -> JSONResponse:
     temporal_raw = body.get("temporal")
     layer = body.get("layer")
     limit = int(body.get("limit") or 10)
+    recall_mode_raw = body.get("recall_mode", body.get("mode", "hybrid"))
+    recall_mode = (
+        str(recall_mode_raw).strip().lower()
+        if recall_mode_raw is not None
+        else "hybrid"
+    )
+    if recall_mode not in {"hybrid", "vector"}:
+        return JSONResponse(
+            {"error": "recall_mode must be one of: hybrid, vector"},
+            status_code=400,
+        )
 
     # At least one axis required.
     if not semantic and not relation and not temporal_raw:
@@ -917,19 +929,37 @@ async def unified_query(request: Request) -> JSONResponse:
     v2_layer = layer if layer in (
         "working", "long_term", "procedural",
     ) else None
+    query_text = semantic if isinstance(semantic, str) and semantic else (
+        relation if isinstance(relation, str) and relation else None
+    )
 
     try:
-        hits = await svc.recall(
-            query=semantic if isinstance(semantic, str) and semantic else (
-                relation if isinstance(relation, str) and relation else None
-            ),
-            k=limit,
-            only_layer=v2_layer,
-            time_range=time_range,
-            keyword_only=False,
-            include_relations=True,
-            min_confidence=0.0,
-        )
+        used_recall_mode = "vector"
+        if (
+            recall_mode == "hybrid"
+            and isinstance(query_text, str)
+            and query_text.strip()
+            and hasattr(svc, "recall_hybrid")
+        ):
+            hits = await svc.recall_hybrid(
+                query_text,
+                k=limit,
+                only_layer=v2_layer,
+                time_range=time_range,
+                include_relations=True,
+                min_confidence=0.0,
+            )
+            used_recall_mode = "hybrid"
+        else:
+            hits = await svc.recall(
+                query=query_text,
+                k=limit,
+                only_layer=v2_layer,
+                time_range=time_range,
+                keyword_only=False,
+                include_relations=True,
+                min_confidence=0.0,
+            )
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             {"error": f"query failed: {exc!s}"},
@@ -946,6 +976,7 @@ async def unified_query(request: Request) -> JSONResponse:
 
     return JSONResponse({
         "n": len(hits),
+        "recall_mode": used_recall_mode,
         "results": [
             {
                 "id": h.fact.id,

@@ -43,6 +43,18 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from xmclaw.cognition.graph_runtime import (
+    GraphState,
+    apply_updates,
+    with_policy,
+)
+from xmclaw.cognition.self_critique import (
+    SelfCritiqueRequest,
+    SelfCritiqueRunResult,
+    TrajectoryEvent,
+)
+from xmclaw.cognition.tool_history import ToolHistoryProcessor
+
 logger = logging.getLogger(__name__)
 
 # Epic #26 Phase B (2026-05-19) — lazy import of EventType / make_event
@@ -110,6 +122,9 @@ class PlanExecutionResult:
     step_results: tuple[StepExecutionResult, ...]
     all_ok: bool
     error: str | None = None
+    graph_state: GraphState | None = None
+    self_critique_request: SelfCritiqueRequest | None = None
+    self_critique_result: SelfCritiqueRunResult | None = None
 
 
 # ── Dispatcher ─────────────────────────────────────────────────────────
@@ -149,6 +164,10 @@ class ActionDispatcher:
         cost_tracker: Any | None = None,
         plan_budget_usd: float | None = None,
         plan_store: Any | None = None,
+        self_critique_engine: Any | None = None,
+        self_critique_critic_call: Any | None = None,
+        memory_service: Any | None = None,
+        memory_service_resolver: Any | None = None,
     ) -> None:
         self._agent_loop = agent_loop
         self._skill_registry = skill_registry
@@ -189,6 +208,13 @@ class ActionDispatcher:
         # /api/v2/cognition/plans can show plans-in-flight + plans
         # interrupted by restart. None = no persistence (legacy).
         self._plan_store = plan_store
+        # Reflexion-style self critique is optional runtime wiring.
+        # Keep all collaborators duck-typed so cognition never imports
+        # daemon/provider/memory implementations directly.
+        self._self_critique_engine = self_critique_engine
+        self._self_critique_critic_call = self_critique_critic_call
+        self._memory_service = memory_service
+        self._memory_service_resolver = memory_service_resolver
 
     # ── Public surface ────────────────────────────────────────────────
 
@@ -229,6 +255,23 @@ class ActionDispatcher:
         goal_id = _attr_str(plan, "goal_id", "")
         steps = list(_attr_iter(plan, "steps"))
         t0_plan = time.monotonic()
+        graph_state = GraphState(
+            thread_id=goal_id or plan_id,
+            run_id=plan_id,
+            goal=_attr_str(plan, "goal", goal_id or plan_id),
+        )
+        if steps:
+            graph_state = apply_updates(
+                graph_state,
+                {
+                    "subtasks": [
+                        _step_graph_summary(s, i) for i, s in enumerate(steps)
+                    ],
+                    "node_policies": [
+                        _step_node_policy_summary(s, i) for i, s in enumerate(steps)
+                    ],
+                },
+            )
 
         # Epic #26 Phase C: snapshot cost at plan start so we can
         # compute per-plan spend (vs daemon-wide cost_tracker totals).
@@ -352,11 +395,48 @@ class ActionDispatcher:
                             logger.exception(
                                 "plan_store.finalise swallowed (budget)",
                             )
+                    failed_graph = apply_updates(
+                        graph_state,
+                        {
+                            "errors": {
+                                "kind": "budget_exceeded",
+                                "message": budget_msg,
+                                "step_index": idx,
+                            },
+                            "final": "failed",
+                            "confidence": _attr_float(plan, "confidence", 0.0),
+                        },
+                    )
+                    critique_request = _build_self_critique_request(
+                        trigger="plan_failed",
+                        plan=plan,
+                        plan_id=plan_id,
+                        goal_id=goal_id,
+                        failure_summary=budget_msg,
+                        results=tuple(results),
+                        graph_state=failed_graph,
+                    )
+                    await self._emit_plan_event(
+                        EventType.SELF_CRITIQUE_REQUESTED if EventType else None,
+                        plan_id=plan_id,
+                        goal_id=goal_id,
+                        payload=_self_critique_event_payload(
+                            critique_request,
+                            plan_id=plan_id,
+                            goal_id=goal_id,
+                        ),
+                    )
+                    critique_result = await self._maybe_run_self_critique(
+                        critique_request,
+                    )
                     return PlanExecutionResult(
                         plan_id=plan_id,
                         step_results=tuple(results),
                         all_ok=False,
                         error=budget_msg,
+                        graph_state=failed_graph,
+                        self_critique_request=critique_request,
+                        self_critique_result=critique_result,
                     )
 
             await self._emit_plan_event(
@@ -393,6 +473,22 @@ class ActionDispatcher:
                 )
 
             results.append(outcome)
+            graph_state = apply_updates(
+                graph_state,
+                _outcome_graph_updates(outcome, step=step, step_index=idx),
+            )
+            await self._emit_plan_event(
+                EventType.GRAPH_STATE_UPDATED if EventType else None,
+                plan_id=plan_id,
+                goal_id=goal_id,
+                payload=_graph_state_event_payload(
+                    graph_state,
+                    plan_id=plan_id,
+                    goal_id=goal_id,
+                    step_id=outcome.step_id,
+                    step_index=idx,
+                ),
+            )
             # Stash output so later steps can reference it via
             # {{step_id.field}} substitution.
             if outcome.output:
@@ -464,6 +560,7 @@ class ActionDispatcher:
                     step_results=tuple(results),
                     all_ok=False,
                     error=None,
+                    graph_state=graph_state,
                 )
 
             if not outcome.ok:
@@ -504,11 +601,48 @@ class ActionDispatcher:
                             logger.exception(
                                 "plan_store.finalise swallowed (failed)",
                             )
+                    failed_graph = apply_updates(
+                        graph_state,
+                        {
+                            "errors": {
+                                "kind": "plan_failed",
+                                "message": agg_error,
+                                "step_id": outcome.step_id,
+                            },
+                            "final": "failed",
+                            "confidence": _attr_float(plan, "confidence", 0.0),
+                        },
+                    )
+                    critique_request = _build_self_critique_request(
+                        trigger=_critique_trigger_for_outcome(outcome),
+                        plan=plan,
+                        plan_id=plan_id,
+                        goal_id=goal_id,
+                        failure_summary=agg_error,
+                        results=tuple(results),
+                        graph_state=failed_graph,
+                    )
+                    await self._emit_plan_event(
+                        EventType.SELF_CRITIQUE_REQUESTED if EventType else None,
+                        plan_id=plan_id,
+                        goal_id=goal_id,
+                        payload=_self_critique_event_payload(
+                            critique_request,
+                            plan_id=plan_id,
+                            goal_id=goal_id,
+                        ),
+                    )
+                    critique_result = await self._maybe_run_self_critique(
+                        critique_request,
+                    )
                     return PlanExecutionResult(
                         plan_id=plan_id,
                         step_results=tuple(results),
                         all_ok=False,
                         error=agg_error,
+                        graph_state=failed_graph,
+                        self_critique_request=critique_request,
+                        self_critique_result=critique_result,
                     )
                 # else: retry_policy says continue — record the failure
                 # but proceed with the next step.
@@ -558,11 +692,46 @@ class ActionDispatcher:
                 logger.exception(
                     "plan_store.finalise swallowed (completed/failed)",
                 )
+        final_graph = apply_updates(
+            graph_state,
+            {
+                "final": "completed" if all_ok else "failed",
+                "confidence": _attr_float(plan, "confidence", 0.0),
+            },
+        )
+        critique_request = None
+        if not all_ok:
+            critique_request = _build_self_critique_request(
+                trigger="plan_failed",
+                plan=plan,
+                plan_id=plan_id,
+                goal_id=goal_id,
+                failure_summary="continue_on_failure partials",
+                results=tuple(results),
+                graph_state=final_graph,
+            )
+            await self._emit_plan_event(
+                EventType.SELF_CRITIQUE_REQUESTED if EventType else None,
+                plan_id=plan_id,
+                goal_id=goal_id,
+                payload=_self_critique_event_payload(
+                    critique_request,
+                    plan_id=plan_id,
+                    goal_id=goal_id,
+                ),
+            )
+        critique_result = (
+            await self._maybe_run_self_critique(critique_request)
+            if critique_request is not None else None
+        )
         return PlanExecutionResult(
             plan_id=plan_id,
             step_results=tuple(results),
             all_ok=all_ok,
             error=None,
+            graph_state=final_graph,
+            self_critique_request=critique_request,
+            self_critique_result=critique_result,
         )
 
     async def execute_step(
@@ -661,6 +830,38 @@ class ActionDispatcher:
                 "ActionDispatcher._emit_plan_event failed; "
                 "swallowing so plan execution is not blocked"
             )
+
+    async def _maybe_run_self_critique(
+        self,
+        request: SelfCritiqueRequest,
+    ) -> SelfCritiqueRunResult | None:
+        """Best-effort Reflexion hook for failed plan trajectories."""
+        engine = self._self_critique_engine
+        if engine is None:
+            return None
+        run = getattr(engine, "run", None)
+        if not callable(run):
+            logger.warning(
+                "self_critique_engine has no callable run(); skipping",
+            )
+            return None
+        try:
+            memory_service = self._memory_service
+            if memory_service is None and callable(self._memory_service_resolver):
+                memory_service = self._memory_service_resolver()
+                if hasattr(memory_service, "__await__"):
+                    memory_service = await memory_service
+            result = run(
+                request,
+                critic_call=self._self_critique_critic_call,
+                memory_service=memory_service,
+            )
+            if hasattr(result, "__await__"):
+                result = await result
+            return result
+        except Exception:  # noqa: BLE001
+            logger.exception("self critique run failed; swallowing")
+            return None
 
     async def dispatch(self, step: Any) -> dict[str, Any]:
         """Compatibility shim for the :class:`Planner.execute` contract.
@@ -1271,6 +1472,213 @@ def _retry_policy_continue(step: Any) -> bool:
     if not isinstance(rp, dict):
         return False
     return bool(rp.get("continue_on_failure", False))
+
+
+def _step_graph_summary(step: Any, index: int) -> dict[str, Any]:
+    """Serializable summary of a plan step for GraphState.subtasks."""
+    return {
+        "id": _attr_str(step, "id", f"step_{index}"),
+        "index": index,
+        "action_kind": _attr_str(step, "action_kind", "llm_turn"),
+        "depends_on": list(_attr_iter(step, "depends_on")),
+        "expected_outcome": _attr_str(step, "expected_outcome", ""),
+        "status": "pending",
+    }
+
+
+def _step_node_policy_summary(step: Any, index: int) -> dict[str, Any]:
+    """Normalize retry/timeout/cache policy for GraphState.node_policies."""
+    payload = _attr_dict(step, "payload")
+    retry_policy = _attr_dict(step, "retry_policy")
+    raw_policy = {
+        "timeout_s": (
+            retry_policy.get("timeout_s")
+            or payload.get("timeout_s")
+            or payload.get("timeout_seconds")
+            or 300.0
+        ),
+        "max_retries": retry_policy.get("max_retries", 2),
+        "backoff_s": retry_policy.get("backoff_s", 1.0),
+        "cache_key": retry_policy.get("cache_key") or payload.get("cache_key"),
+        "error_handler": (
+            retry_policy.get("error_handler")
+            or payload.get("error_handler")
+        ),
+    }
+    policy = with_policy(raw_policy)
+    return {
+        "id": _attr_str(step, "id", f"step_{index}"),
+        "index": index,
+        "action_kind": _attr_str(step, "action_kind", "llm_turn"),
+        "timeout_s": policy.timeout_s,
+        "max_retries": policy.max_retries,
+        "backoff_s": policy.backoff_s,
+        "cache_key": policy.cache_key,
+        "error_handler": policy.error_handler,
+    }
+
+
+def _outcome_graph_updates(
+    outcome: StepExecutionResult,
+    *,
+    step: Any,
+    step_index: int,
+) -> dict[str, Any]:
+    """Map one step outcome into GraphState reducer updates."""
+    action_kind = _attr_str(step, "action_kind", "llm_turn")
+    base = {
+        "step_id": outcome.step_id,
+        "step_index": step_index,
+        "action_kind": action_kind,
+        "route": outcome.route,
+        "ok": outcome.ok,
+        "pending": outcome.pending,
+        "latency_ms": outcome.latency_ms,
+    }
+    output = dict(outcome.output or {})
+    updates: dict[str, Any] = {
+        "subtasks": {
+            **base,
+            "status": (
+                "pending" if outcome.pending else
+                "completed" if outcome.ok else
+                "failed"
+            ),
+            "output_keys": sorted(output.keys()),
+        },
+    }
+    if outcome.ok:
+        if action_kind == "tool_call" or outcome.route == "tool_call":
+            tool_name = _tool_name_from_step(step)
+            updates["tool_results"] = ToolHistoryProcessor().from_output(
+                step_id=outcome.step_id,
+                step_index=step_index,
+                tool_name=tool_name,
+                ok=True,
+                output=output,
+                latency_ms=outcome.latency_ms,
+            ).to_dict()
+        elif action_kind == "subagent" or outcome.route == "subagent":
+            updates["artifacts"] = {
+                **base,
+                "kind": "subagent_result",
+                "output": output,
+            }
+        else:
+            updates["messages"] = {
+                **base,
+                "role": "assistant",
+                "content": _compact_output_text(output),
+            }
+    else:
+        updates["errors"] = {
+            **base,
+            "error": outcome.error or "unknown",
+            "output": output,
+        }
+    return updates
+
+
+def _tool_name_from_step(step: Any) -> str:
+    payload = _attr_dict(step, "payload")
+    for key in ("tool_name", "name"):
+        val = payload.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return _attr_str(step, "action_kind", "tool")
+
+
+def _compact_output_text(output: dict[str, Any]) -> str:
+    """Best-effort compact text for GraphState.messages."""
+    for key in ("text", "content", "result", "summary"):
+        val = output.get(key)
+        if isinstance(val, str) and val:
+            return val[:4000]
+    if not output:
+        return ""
+    try:
+        import json
+        return json.dumps(output, ensure_ascii=False, sort_keys=True)[:4000]
+    except Exception:  # noqa: BLE001
+        return str(output)[:4000]
+
+
+def _critique_trigger_for_outcome(outcome: StepExecutionResult) -> str:
+    if outcome.route == "tool_call":
+        return "tool_error"
+    return "plan_failed"
+
+
+def _build_self_critique_request(
+    *,
+    trigger: str,
+    plan: Any,
+    plan_id: str,
+    goal_id: str,
+    failure_summary: str,
+    results: tuple[StepExecutionResult, ...],
+    graph_state: GraphState,
+) -> SelfCritiqueRequest:
+    trajectory: list[TrajectoryEvent] = []
+    for result in results:
+        output = dict(result.output or {})
+        content = _compact_output_text(output)
+        if not content and result.error:
+            content = result.error
+        trajectory.append(
+            TrajectoryEvent(
+                kind=result.route,
+                content=content,
+                ok=result.ok,
+                tool_name=str(output.get("tool_name") or ""),
+                error=result.error or "",
+            ),
+        )
+    return SelfCritiqueRequest(
+        trigger=trigger,  # type: ignore[arg-type]
+        session_id=goal_id or plan_id,
+        goal=_attr_str(plan, "goal", goal_id or plan_id),
+        failure_summary=failure_summary,
+        trajectory=tuple(trajectory),
+        graph_state=graph_state.snapshot(),
+        grader_score=_attr_float(plan, "confidence", 0.0),
+    )
+
+
+def _graph_state_event_payload(
+    graph_state: GraphState,
+    *,
+    plan_id: str,
+    goal_id: str,
+    step_id: str | None = None,
+    step_index: int | None = None,
+) -> dict[str, Any]:
+    snap = graph_state.snapshot()
+    return {
+        "plan_id": plan_id,
+        "goal_id": goal_id,
+        "step_id": step_id,
+        "step_index": step_index,
+        "final": snap.get("final"),
+        "subtasks": len(snap.get("subtasks") or []),
+        "tool_results": len(snap.get("tool_results") or []),
+        "errors": len(snap.get("errors") or []),
+    }
+
+
+def _self_critique_event_payload(
+    request: SelfCritiqueRequest,
+    *,
+    plan_id: str,
+    goal_id: str,
+) -> dict[str, Any]:
+    return {
+        "plan_id": plan_id,
+        "goal_id": goal_id,
+        "trigger": request.trigger,
+        "failure_summary": request.failure_summary[:1000],
+        "trajectory_events": len(request.trajectory),
+    }
 
 
 def _coerce_jsonish(value: Any) -> Any:

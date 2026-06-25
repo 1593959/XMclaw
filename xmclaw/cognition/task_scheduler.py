@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
+from xmclaw.cognition.graph_runtime import (
+    GraphState,
+    apply_updates,
+    inspect_graph_state,
+)
 from xmclaw.utils.paths import default_events_db_path
 
 TaskStatus = Literal["pending", "blocked", "running", "completed", "failed", "retrying", "escalated"]
@@ -72,7 +77,7 @@ class Task:
             id=data["id"],
             prompt=data["prompt"],
             priority=data.get("priority", 5),
-            dependencies=list(data.get("dependencies", [])),
+            dependencies=_coerce_dependencies(data.get("dependencies", [])),
             status=data.get("status", "pending"),
             retries=data.get("retries", 0),
             max_retries=data.get("max_retries", 3),
@@ -246,6 +251,91 @@ class TaskScheduler:
         }
 
     # ── 生命周期 ──
+
+    async def snapshot_graph_state(
+        self,
+        *,
+        thread_id: str = "task-scheduler",
+        run_id: str = "task-scheduler",
+        goal: str = "scheduled task graph",
+        limit: int = 1000,
+    ) -> GraphState:
+        """Return a GraphState snapshot of the persisted task DAG."""
+        tasks = await self.list_tasks(limit=limit)
+        tasks_by_id = {t.id: t for t in tasks}
+        ordered: list[Task] = []
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(task: Task) -> None:
+            if task.id in visited:
+                return
+            if task.id in visiting:
+                ordered.append(task)
+                visited.add(task.id)
+                return
+            visiting.add(task.id)
+            for dep_id in task.dependencies:
+                dep = tasks_by_id.get(dep_id)
+                if dep is not None:
+                    visit(dep)
+            visiting.discard(task.id)
+            if task.id not in visited:
+                ordered.append(task)
+                visited.add(task.id)
+
+        for task in sorted(tasks, key=lambda t: (t.created_at, t.id)):
+            visit(task)
+        tasks = ordered
+        total = len(tasks)
+        completed = len([t for t in tasks if t.status == "completed"])
+        terminal = {"completed", "failed", "escalated"}
+        final = (
+            "completed"
+            if total and all(t.status in terminal for t in tasks)
+            else "running"
+            if any(t.status == "running" for t in tasks)
+            else "pending"
+        )
+        errors = [
+            {
+                "kind": "task_failed",
+                "task_id": t.id,
+                "status": t.status,
+                "message": t.error or "",
+            }
+            for t in tasks
+            if t.status in {"failed", "escalated"} or t.error
+        ]
+        state = GraphState(
+            thread_id=thread_id,
+            run_id=run_id,
+            goal=goal,
+            final=final,
+            confidence=(completed / total) if total else 0.0,
+        )
+        state = apply_updates(
+            state,
+            {
+                "subtasks": [_task_graph_summary(t, i) for i, t in enumerate(tasks)],
+                "node_policies": [_task_node_policy(t) for t in tasks],
+                "errors": errors,
+                "metadata": {
+                    "total_tasks": total,
+                    "completed_tasks": completed,
+                    "running_tasks": len([t for t in tasks if t.status == "running"]),
+                    "blocked_tasks": len([t for t in tasks if t.status == "blocked"]),
+                    "failed_tasks": len(
+                        [t for t in tasks if t.status in {"failed", "escalated"}]
+                    ),
+                },
+            },
+        )
+        inspection = inspect_graph_state(state)
+        return apply_updates(
+            state,
+            {"metadata": {"inspection": inspection.to_dict()}},
+        )
 
     async def start(self) -> None:
         """启动调度循环。"""
@@ -448,3 +538,43 @@ class TaskScheduler:
                 params,
             )
             self._conn.commit()
+
+
+def _task_graph_summary(task: Task, index: int) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "index": index,
+        "kind": "task",
+        "status": task.status,
+        "prompt": task.prompt[:500],
+        "dependencies": list(task.dependencies),
+        "agent_id": task.agent_id,
+        "priority": task.priority,
+    }
+
+
+def _coerce_dependencies(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return [value] if value else []
+        if isinstance(parsed, list):
+            return [str(v) for v in parsed]
+        return []
+    if isinstance(value, list | tuple):
+        return [str(v) for v in value]
+    return []
+
+
+def _task_node_policy(task: Task) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "max_retries": task.max_retries,
+        "retries": task.retries,
+        "timeout_s": float(task.timeout_seconds),
+        "agent_id": task.agent_id,
+        "priority": task.priority,
+    }

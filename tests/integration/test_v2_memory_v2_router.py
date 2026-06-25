@@ -28,6 +28,8 @@ from xmclaw.memory.v2 import (
     EmbeddingService,
     InMemoryGraphBackend,
     InMemoryVectorBackend,
+    MemoryCandidate,
+    MemoryCandidateStore,
     MemoryService,
     StubEmbedder,
 )
@@ -118,6 +120,49 @@ def test_create_and_list_facts() -> None:
         body = r2.json()
         assert body["total"] == 1
         assert body["facts"][0]["text"] == "用户喜欢简短回复"
+
+
+def test_candidate_list_reject_and_approve(tmp_path) -> None:
+    app = _build_app()
+    store = MemoryCandidateStore(tmp_path / "candidates.db")
+    reject = store.create(MemoryCandidate.create(
+        text="未验证的失败方法",
+        kind="lesson",
+        scope="project",
+        bucket="failure_modes",
+        source="post_sampling",
+        reason="unverified_extracted_lesson",
+    ))
+    approve = store.create(MemoryCandidate.create(
+        text="用户偏好使用中文交流",
+        kind="preference",
+        scope="user",
+        bucket="user_preference",
+        source="post_sampling",
+        reason="explicit_preference",
+    ))
+    app.state.memory_candidate_store = store
+
+    with TestClient(app) as client:
+        listed = client.get("/api/v2/memory/v2/candidates").json()
+        assert listed["enabled"] is True
+        assert listed["stats"]["by_status"]["pending"] == 2
+
+        r1 = client.post(
+            f"/api/v2/memory/v2/candidates/{reject.id}/reject",
+            json={"reason": "wrong method"},
+        )
+        assert r1.status_code == 200, r1.text
+        assert r1.json()["candidate"]["status"] == "rejected"
+
+        r2 = client.post(
+            f"/api/v2/memory/v2/candidates/{approve.id}/approve",
+            json={"reason": "user preference"},
+        )
+        assert r2.status_code == 200, r2.text
+        body = r2.json()
+        assert body["candidate"]["status"] == "promoted"
+        assert body["fact"]["text"] == "用户偏好使用中文交流"
 
 
 def test_create_rejects_invalid_kind() -> None:

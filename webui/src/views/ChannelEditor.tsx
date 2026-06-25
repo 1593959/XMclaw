@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { useApp } from "../store/app";
 import { apiDelete, apiPost } from "../lib/api";
+import { ToggleButton } from "../components/UiButton";
 import type { ChannelDraft } from "./ModelConfig";
 
 const PROVIDERS = [
@@ -538,16 +539,17 @@ function Field({
 
 function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   return (
-    <button
+    <ToggleButton
       onClick={onClick}
+      pressed={on}
+      label={on ? "关闭开关" : "打开开关"}
       className={"relative w-10 h-5.5 rounded-full transition-colors cursor-pointer shrink-0 " + (on ? "bg-mc-accent" : "bg-mc-border")}
       style={{ height: 22 }}
-      aria-pressed={on}
     >
       <span
         className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform"
         style={{ transform: on ? "translateX(18px)" : "translateX(0)" }}
       />
-    </button>
+    </ToggleButton>
   );
 }

@@ -7,11 +7,16 @@ loop because context is keyed by session.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from xmclaw.cognition.graph_executor import GraphExecutor
+from xmclaw.cognition.graph_runtime import (
+    GraphState,
+    apply_updates,
+    inspect_graph_state,
+)
 from xmclaw.orchestrator.plan_engine import ExecutionPlan, Task
 from xmclaw.utils.log import get_logger
 
@@ -35,6 +40,7 @@ class SwarmResult:
     task_results: list[TaskResult] = field(default_factory=list)
     synthesized_output: str = ""
     elapsed_seconds: float = 0.0
+    graph_state: GraphState | None = None
 
 
 class WorkerAgent:
@@ -175,10 +181,12 @@ class WorkerSwarm:
         agent_loop: Any,
         max_workers: int = 4,
         default_tools_allowlist: set[str] | frozenset[str] | None = None,
+        task_timeout_s: float = 300.0,
     ) -> None:
         self._agent_loop = agent_loop
-        self._max_workers = max_workers
+        self._max_workers = max(1, int(max_workers))
         self._default_tools = default_tools_allowlist
+        self._task_timeout_s = max(1.0, float(task_timeout_s))
         self._workers: dict[str, WorkerAgent] = {}
 
     async def execute_plan(
@@ -195,56 +203,59 @@ class WorkerSwarm:
         """
         start = time.monotonic()
         results: dict[str, TaskResult] = {}
-        pending = {t.task_id: t for t in plan.tasks}
-        deps = {t.task_id: set(plan.dependencies.get(t.task_id, [])) for t in plan.tasks}
+        task_by_id = {t.task_id: t for t in plan.tasks}
+        graph_state = _plan_graph_state(plan, task_timeout_s=self._task_timeout_s)
 
-        while pending:
-            # Find tasks whose dependencies are all satisfied.
-            ready_ids = [
-                tid for tid, task in pending.items()
-                if not deps[tid] or all(d in results and results[d].ok for d in deps[tid])
-            ]
-            if not ready_ids:
-                # Cycle or broken dependency — break to avoid infinite loop.
-                _log.error("worker_swarm.deadlock plan_id=%s", plan.plan_id)
-                break
+        async def run_worker_node(node: dict[str, Any], _state: GraphState):
+            task_id = str(node.get("id") or "")
+            task = task_by_id[task_id]
+            worker = self._get_or_create_worker(task)
+            result = await worker.execute(
+                task,
+                parent_session_id=parent_session_id,
+                parent_goal=plan.goal,
+                completed_tasks=[
+                    f"{t.task_id}: {results[t.task_id].output[:80]}"
+                    for t in plan.tasks
+                    if t.task_id in results and results[t.task_id].ok
+                ],
+            )
+            results[task.task_id] = result
+            if not result.ok:
+                raise RuntimeError(result.error or "worker returned ok=False")
+            return _task_result_graph_updates(task, result)
 
-            # Batch size limited by max_workers.
-            batch = ready_ids[: self._max_workers]
-            batch_tasks = [pending[tid] for tid in batch]
-
-            # Create / reuse workers for this batch.
-            coros: list[asyncio.Task[TaskResult]] = []
-            for task in batch_tasks:
-                worker = self._get_or_create_worker(task)
-                coros.append(asyncio.create_task(worker.execute(
-                    task,
-                    parent_session_id=parent_session_id,
-                    parent_goal=plan.goal,
-                    completed_tasks=[
-                        f"{t.task_id}: {results[t.task_id].output[:80]}"
-                        for t in plan.tasks
-                        if t.task_id in results and results[t.task_id].ok
-                    ],
-                )))
-
-            batch_results = await asyncio.gather(*coros, return_exceptions=True)
-            for task, res in zip(batch_tasks, batch_results):
-                if isinstance(res, BaseException):  # noqa: BLE001
-                    results[task.task_id] = TaskResult(
-                        task_id=task.task_id,
-                        ok=False,
-                        error=str(res),
-                    )
-                else:
-                    results[task.task_id] = res
-                del pending[task.task_id]
+        execution = await GraphExecutor(max_concurrency=self._max_workers).run(
+            graph_state,
+            {"swarm_task": run_worker_node},
+        )
+        graph_state = execution.state
+        if not execution.ok and not results:
+            _log.error("worker_swarm.deadlock plan_id=%s", plan.plan_id)
+            graph_state = apply_updates(graph_state, _swarm_deadlock_updates(plan))
 
         task_results = [results[t.task_id] for t in plan.tasks if t.task_id in results]
-        all_ok = all(r.ok for r in task_results)
+        all_ok = len(task_results) == len(plan.tasks) and all(r.ok for r in task_results)
         synthesized = ""
         if synthesize and task_results:
             synthesized = await self._synthesize(plan, task_results)
+        inspection = inspect_graph_state(graph_state)
+        graph_state = apply_updates(
+            graph_state,
+            {
+                "final": "completed" if all_ok else "failed",
+                "confidence": (
+                    len([r for r in task_results if r.ok]) / len(plan.tasks)
+                    if plan.tasks
+                    else 0.0
+                ),
+                "metadata": {
+                    "inspection": inspection.to_dict(),
+                    "synthesized": bool(synthesized),
+                    "elapsed_seconds": round(time.monotonic() - start, 3),
+                },
+            },
+        )
 
         # 2026-05-24 user-report fix: pre-fix the synthesized output
         # only travelled back via the return value, which app.py:2183
@@ -288,6 +299,7 @@ class WorkerSwarm:
             task_results=task_results,
             synthesized_output=synthesized,
             elapsed_seconds=time.monotonic() - start,
+            graph_state=graph_state,
         )
 
     def _get_or_create_worker(self, task: Task) -> WorkerAgent:
@@ -382,3 +394,97 @@ class WorkerSwarm:
             return "\n\n---\n\n".join(
                 f"[{r.task_id}]\n{r.output}" for r in ok_outputs
             )
+
+
+def _plan_graph_state(plan: ExecutionPlan, *, task_timeout_s: float = 300.0) -> GraphState:
+    """Build the canonical graph-state trace for a swarm plan."""
+    state = GraphState(
+        thread_id=plan.plan_id,
+        run_id=plan.plan_id,
+        goal=plan.goal,
+    )
+    return apply_updates(
+        state,
+        {
+            "subtasks": [
+                {
+                    "id": task.task_id,
+                    "index": index,
+                    "kind": "swarm_task",
+                    "status": "pending",
+                    "prompt": task.prompt or task.description,
+                    "description": task.description,
+                    "dependencies": list(plan.dependencies.get(task.task_id, [])),
+                    "agent_id": task.agent_id,
+                    "required_capabilities": list(task.required_capabilities),
+                }
+                for index, task in enumerate(plan.tasks)
+            ],
+            "node_policies": [
+                {
+                    "id": task.task_id,
+                    "index": index,
+                    "kind": "swarm_task",
+                    "agent_id": task.agent_id,
+                    "max_retries": 0,
+                    "timeout_s": task_timeout_s,
+                }
+                for index, task in enumerate(plan.tasks)
+            ],
+            "metadata": {
+                "source": "worker_swarm",
+                "validated": bool(plan.validated),
+                "validation_errors": list(plan.validation_errors),
+            },
+        },
+    )
+
+
+def _swarm_deadlock_updates(plan: ExecutionPlan) -> dict[str, Any]:
+    return {
+        "errors": [
+            {
+                "kind": "swarm_deadlock",
+                "task_id": task.task_id,
+                "message": "task dependencies are unsatisfied or cyclic",
+                "dependencies": list(plan.dependencies.get(task.task_id, [])),
+            }
+            for task in plan.tasks
+        ],
+    }
+
+
+def _task_result_graph_updates(task: Task, result: TaskResult) -> dict[str, Any]:
+    base = {
+        "id": result.task_id,
+        "task_id": result.task_id,
+        "kind": "swarm_task",
+        "agent_id": task.agent_id,
+        "latency_ms": result.elapsed_seconds * 1000.0,
+        "grader_score": result.grader_score,
+    }
+    updates: dict[str, Any] = {
+        "subtasks": {
+            **base,
+            "status": "completed" if result.ok else "failed",
+            "output_preview": result.output[:500],
+        },
+    }
+    if result.ok:
+        updates["artifacts"] = {
+            **base,
+            "kind": "worker_result",
+            "content": result.output[:4000],
+        }
+        updates["messages"] = {
+            **base,
+            "role": "assistant",
+            "content": result.output[:4000],
+        }
+    else:
+        updates["errors"] = {
+            **base,
+            "kind": "worker_failed",
+            "message": result.error or "worker failed",
+        }
+    return updates

@@ -657,14 +657,14 @@ class AnthropicLLM(LLMProvider):
             except Exception as _e:
                 _etype = type(_e).__name__
                 _msg = str(_e)[:200]
-                if (
-                    "429" not in _msg
-                    and "529" not in _msg
-                    and "overloaded" not in _msg.lower()
-                    and "rate" not in _msg.lower()
-                    and "capacity" not in _msg.lower()
-                    and _attempt >= _max_retries
-                ):
+                _is_retryable = (
+                    "429" in _msg
+                    or "529" in _msg
+                    or "overloaded" in _msg.lower()
+                    or "rate" in _msg.lower()
+                    or "capacity" in _msg.lower()
+                )
+                if not _is_retryable or _attempt >= _max_retries:
                     raise
                 _delay = _base_delay * (2 ** _attempt)
                 _log.warning(

@@ -233,7 +233,12 @@ class DreamCompactor:
                     from xmclaw.core.persona.v2_renderer import (
                         render_persona_file,
                     )
-                    await render_persona_file(v2_svc, pdir, "MEMORY.md")
+                    await render_persona_file(
+                        v2_svc,
+                        pdir,
+                        "MEMORY.md",
+                        include_auto_sections=False,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     return {
                         "ok": False,
@@ -273,13 +278,18 @@ class DreamCompactor:
                         bucket_dedup_report[_bucket] = res.get("merged")
                 except Exception as exc:  # noqa: BLE001
                     bucket_dedup_report[_bucket] = f"error: {exc}"
-            # Re-render the bucketed persona files once after the
-            # dedup pass so the surviving facts land in MD.
+            # Keep persona markdown manual-only in production. Dedup updates
+            # the structured fact store; facts are recalled through
+            # PromptMemoryPack, not projected back into md files.
             try:
                 from xmclaw.core.persona.v2_renderer import (
                     render_all_persona_files,
                 )
-                await render_all_persona_files(v2_svc, pdir)
+                await render_all_persona_files(
+                    v2_svc,
+                    pdir,
+                    include_auto_sections=False,
+                )
             except Exception:  # noqa: BLE001
                 pass
 

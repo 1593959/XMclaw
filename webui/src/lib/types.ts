@@ -184,6 +184,28 @@ export interface TaskSnapshot {
   steps_done: number;
   updated_at: number;
   last_activity: string;
+  artifacts?: TaskArtifact[];
+  strategy_signals?: TaskStrategySignal[];
+}
+
+export interface TaskArtifact {
+  id: string;
+  artifact_type: string;
+  path?: string;
+  url?: string;
+  name?: string;
+  tool_name?: string;
+  target_drive?: string;
+  created_at?: number;
+}
+
+export interface TaskStrategySignal {
+  kind?: string;
+  strategy_decision?: string;
+  should_retry_same?: boolean;
+  recommended_action?: string;
+  tool?: string | null;
+  error_signature?: string;
 }
 
 export const emptyChat = (): ChatState => ({

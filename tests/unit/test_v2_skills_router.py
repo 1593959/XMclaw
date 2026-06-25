@@ -292,6 +292,19 @@ def test_b341_list_skills_pending_restarts_empty_without_watcher(
     assert body["pending_restarts"] == []
 
 
+def test_list_skills_includes_scan_roots(app) -> None:
+    with TestClient(app) as client:
+        r = client.get("/api/v2/skills")
+
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert "roots" in body
+    assert isinstance(body["roots"], list)
+    assert body["roots"]
+    first = body["roots"][0]
+    assert {"kind", "path", "exists", "skill_dirs", "skill_dir_count"} <= set(first)
+
+
 def test_b341_list_skills_no_orchestrator_still_returns_pending(
     tmp_path,
 ) -> None:

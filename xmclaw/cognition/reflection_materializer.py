@@ -135,6 +135,9 @@ class ReflectionMaterializer:
             "reflection_materialize"
         ) or {}
         self._enabled = bool(self._cfg.get("enabled", True))
+        self._materialize_inner_monologue = bool(
+            self._cfg.get("materialize_inner_monologue", False)
+        )
         # Bus-subscription handle for stop().
         self._sub_handle: Any = None
         # Per-kind sliding-window quota: kind → [ts, ts, …].
@@ -217,6 +220,16 @@ class ReflectionMaterializer:
         kind = str(payload.get("kind", "")).strip().lower()
         text = str(payload.get("text", "")).strip()
         if not text or kind not in _INNER_MONOLOGUE_ROUTES:
+            return
+        if (
+            not self._materialize_inner_monologue
+            and payload.get("verified") is not True
+            and payload.get("task_completed") is not True
+        ):
+            logger.info(
+                "reflection_materializer.inner_monologue_held kind=%s",
+                kind,
+            )
             return
         target_file, section, min_conf = _INNER_MONOLOGUE_ROUTES[kind]
         # InnerThought has no explicit confidence — treat as 0.5 default

@@ -25,6 +25,7 @@ from xmclaw.security.undo_cabinet import UndoCabinet
 class _ScriptedLLM(LLMProvider):
     script: list[LLMResponse] = field(default_factory=list)
     _i: int = 0
+    seen_messages: list[list[Message]] = field(default_factory=list)
 
     async def stream(  # pragma: no cover
         self,
@@ -41,6 +42,7 @@ class _ScriptedLLM(LLMProvider):
         messages: list[Message],
         tools: list[ToolSpec] | None = None,
     ) -> LLMResponse:
+        self.seen_messages.append(list(messages))
         if self._i >= len(self.script):
             raise RuntimeError(f"_ScriptedLLM exhausted after {len(self.script)} calls")
         resp = self.script[self._i]
@@ -126,10 +128,18 @@ async def test_empty_response_after_tools_gets_nudged(tmp_path: Path) -> None:
 
     result = await agent.run_turn("s1", "do it")
     assert result.text == "summary"
-    # The nudge should have been appended as a user message.
+    # The nudge is turn-local context. It should reach the LLM without
+    # becoming durable user history.
+    seen_context = "\n\n".join(
+        m.content or ""
+        for batch in llm.seen_messages
+        for m in batch
+        if isinstance(m.content, str)
+    )
+    assert "你刚刚执行了工具调用" in seen_context
     history = agent._histories.get("s1", [])
     assert any(
-        m.role == "user" and "你刚刚执行了工具调用" in (m.content or "")
+        m.role == "assistant" and "summary" in (m.content or "")
         for m in history
     )
 

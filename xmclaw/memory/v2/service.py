@@ -1583,6 +1583,30 @@ class MemoryService:
         )
         return await self._vec.get(fact_id)
 
+    async def delete_persona_manual(self, basename: str) -> bool:
+        """Remove the manual section row for a file.
+
+        Used when a persona file is reset to its bundled template (or
+        otherwise contains no user-curated manual content) so the old
+        manual row does not override the on-disk template on the next
+        render.
+        """
+        if not basename:
+            return False
+        fact_id = (
+            f"persona_manual:session:"
+            f"{hashlib.sha1(basename.encode('utf-8')).hexdigest()[:12]}"
+        )
+        try:
+            deleted = await self._vec.delete(f"id = '{fact_id}'")
+            return deleted > 0
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "memory_service.delete_persona_manual_failed "
+                "basename=%s err=%s", basename, exc,
+            )
+            return False
+
     async def supersede(
         self, *, old_fact_id: str, new_fact_id: str,
     ) -> None:
@@ -2389,9 +2413,12 @@ class MemoryService:
         kinds: list[FactKindStr] | None = None,
         scopes: list[FactScopeStr] | None = None,
         buckets: list[str] | None = None,
+        only_layer: FactLayerStr | None = None,
+        time_range: tuple[float | None, float | None] | None = None,
         # Fix audit 2026-06-11: unified to 0.3 with recall(). Was 0.0, which
         # allowed forgotten facts (confidence=0.0) to surface in hybrid paths.
         min_confidence: float = 0.3,
+        include_relations: bool = True,
         include_superseded: bool = False,
         valid_at: float | None = None,   # Wave-4: point-in-time query
         vec_weight: float = 0.6,
@@ -2447,11 +2474,41 @@ class MemoryService:
             kinds=kinds,
             scopes=scopes,
             buckets=buckets,
+            only_layer=only_layer,
+            time_range=time_range,
             min_confidence=min_confidence,
             include_superseded=include_superseded,
             include_relations=False,
             valid_at=valid_at,   # Wave-4: propagate point-in-time
         )
+
+        def _fact_allowed(fact: Fact | None) -> bool:
+            if fact is None:
+                return False
+            if kinds and fact.kind not in kinds:
+                return False
+            if scopes and fact.scope not in scopes:
+                return False
+            if buckets and fact.bucket not in buckets:
+                return False
+            if only_layer and fact.layer != only_layer:
+                return False
+            if min_confidence > 0 and fact.confidence < min_confidence:
+                return False
+            if not include_superseded and fact.superseded_by:
+                return False
+            if time_range is not None:
+                start, end = time_range
+                if start is not None and fact.ts_last < float(start):
+                    return False
+                if end is not None and fact.ts_last > float(end):
+                    return False
+            at = valid_at if valid_at is not None else time.time()
+            if fact.valid_at is not None and fact.valid_at > at:
+                return False
+            if fact.invalid_at is not None and fact.invalid_at <= at:
+                return False
+            return True
 
         from xmclaw.memory.v2 import bm25
         if not bm25.is_available():
@@ -2525,6 +2582,14 @@ class MemoryService:
                 clauses.append(f"confidence >= {min_confidence}")
             if not include_superseded:
                 clauses.append("superseded_by = ''")
+            if only_layer:
+                clauses.append(f"layer = '{only_layer}'")
+            if time_range is not None:
+                start, end = time_range
+                if start is not None:
+                    clauses.append(f"ts_last >= {float(start)}")
+                if end is not None:
+                    clauses.append(f"ts_last <= {float(end)}")
             where = " AND ".join(clauses) if clauses else None
             # BM25 leg wall-clock budget — see method docstring. We run
             # the corpus scan + Python BM25 build under a single
@@ -2649,7 +2714,7 @@ class MemoryService:
             for fid, fact in await _asyncio.gather(
                 *(_fetch(fid) for fid in missing_ids)
             ):
-                if fact is not None:
+                if _fact_allowed(fact):
                     by_id[fid] = RecallHit(
                         fact=fact, distance=0.0,
                         related_relations=[],
@@ -2673,7 +2738,7 @@ class MemoryService:
         neighbor_by_hop: dict[int, set[str]] = {1: set(), 2: set()}
         # Track degree (connection count) for centrality bonus.
         neighbor_degree: dict[str, int] = {}
-        if self._graph is not None:
+        if include_relations and self._graph is not None:
             import asyncio as _asyncio
             sem = _asyncio.Semaphore(20)
 
@@ -2744,7 +2809,7 @@ class MemoryService:
             for nid, fact in await _asyncio.gather(
                 *(_fetch_neighbor(nid) for nid in all_neighbor_ids)
             ):
-                if fact is not None:
+                if _fact_allowed(fact):
                     by_id[nid] = RecallHit(
                         fact=fact, distance=0.0,
                         related_relations=[],
@@ -2783,7 +2848,7 @@ class MemoryService:
                 for cid, fact in await _asyncio.gather(
                     *(_fetch_contra(c) for c in contra_ids)
                 ):
-                    if fact is not None:
+                    if _fact_allowed(fact):
                         by_id[cid] = RecallHit(
                             fact=fact, distance=0.0,
                             related_relations=[],
@@ -2797,7 +2862,7 @@ class MemoryService:
         out: list[RecallHit] = []
         for fid, _score in ranked:
             hit = by_id.get(fid)
-            if hit is not None:
+            if hit is not None and _fact_allowed(hit.fact):
                 out.append(hit)
             if len(out) >= k:
                 break

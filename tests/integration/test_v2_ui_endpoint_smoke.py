@@ -36,6 +36,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from xmclaw.cognition.graph_runtime import GraphState
 from xmclaw.core.bus import InProcessEventBus
 from xmclaw.daemon.app import create_app
 
@@ -54,6 +55,7 @@ UI_ENDPOINT_INVENTORY: list[tuple[str, str, set[int]]] = [
     ("GET", "/api/v2/cognition/state", {200, 503}),
     ("GET", "/api/v2/cognition/tasks", {200, 503}),
     ("GET", "/api/v2/cognition/tasks/graph", {200, 503}),
+    ("GET", "/api/v2/cognition/tasks/graph-state", {200, 503}),
     ("GET", "/api/v2/cognition/proposals", {200, 503}),
     ("GET", "/api/v2/cognition/graph/stats", {200, 503}),
     # ── memory ─────────────────────────────────
@@ -114,6 +116,57 @@ UI_ENDPOINT_INVENTORY: list[tuple[str, str, set[int]]] = [
 ]
 
 
+# React Mission Control inventory extracted from ``webui/src``. Dynamic
+# resource URLs allow 404 because the handler may legitimately report "not
+# found" for the synthetic id; the canary still rejects 405 and unexpected 5xx.
+REACT_UI_ENDPOINT_INVENTORY: list[tuple[str, str, set[int], dict | None]] = [
+    ("GET", "/api/v2/pair", {200}, None),
+    ("GET", "/api/v2/status", {200, 401}, None),
+    ("GET", "/api/v2/tasks?limit=100", {200, 401}, None),
+    ("GET", "/api/v2/sessions/demo-session", {200, 401, 404}, None),
+    ("DELETE", "/api/v2/sessions/demo-session", {200, 401, 404}, None),
+    ("GET", "/api/v2/pending_questions", {200, 401}, None),
+    ("GET", "/api/v2/pending_fanout_reviews", {200, 401}, None),
+    ("GET", "/api/v2/llm/profiles", {200, 401}, None),
+    ("POST", "/api/v2/voice/tts", {200, 400, 401, 422, 503}, {"text": "hello"}),
+    ("GET", "/api/v2/system/health", {200, 401, 503}, None),
+    ("GET", "/api/v2/logs?limit=120", {200, 401, 404}, None),
+    ("GET", "/api/v2/skills", {200, 401}, None),
+    ("GET", "/api/v2/evolution/snapshot", {200, 401, 503}, None),
+    ("GET", "/api/v2/skills/demo-skill/history", {200, 401, 404}, None),
+    ("POST", "/api/v2/skills/demo-skill/rollback", {200, 400, 401, 404, 422}, {"version": 1}),
+    ("PATCH", "/api/v2/llm/profiles/demo-profile/enabled", {200, 400, 401, 404, 422}, {"enabled": True}),
+    ("GET", "/api/v2/session_workspaces/demo-session/commits", {200, 401, 404, 503}, None),
+    ("GET", "/api/v2/session_workspaces/demo-session/diff?commit=demo", {200, 400, 401, 404, 503}, None),
+    ("GET", "/api/v2/session_workspaces/demo-session/tree", {200, 401, 404, 503}, None),
+    ("GET", "/api/v2/session_workspaces/demo-session/file?path=README.md", {200, 400, 401, 404, 503}, None),
+    ("GET", "/api/v2/session_workspaces/demo-session/raw?path=README.md", {200, 400, 401, 404, 503}, None),
+    ("GET", "/api/v2/memory/v2/overview", {200, 401, 503}, None),
+    ("GET", "/api/v2/memory/v2/facts?limit=80&include_superseded=true", {200, 401, 503}, None),
+    ("POST", "/api/v2/memory/v2/facts/demo-fact/promote", {200, 400, 401, 404, 422, 503}, {}),
+    ("POST", "/api/v2/memory/v2/facts/demo-fact/archive", {200, 400, 401, 404, 422, 503}, {}),
+    ("GET", "/api/v2/memory/v2/graph?limit=80", {200, 401, 503}, None),
+    ("GET", "/api/v2/memory/v2/graph_positions", {200, 401, 503}, None),
+    ("GET", "/api/v2/cognition/state", {200, 503}, None),
+    ("GET", "/api/v2/cognition/tasks", {200, 503}, None),
+    ("GET", "/api/v2/cognition/tasks/graph-state", {200, 503}, None),
+    ("GET", "/api/v2/cron", {200, 401}, None),
+    ("POST", "/api/v2/cron", {200, 400, 401, 422}, {"name": "demo"}),
+    ("POST", "/api/v2/cron/demo-job/pause", {200, 400, 401, 404, 422}, {}),
+    ("POST", "/api/v2/cron/demo-job/resume", {200, 400, 401, 404, 422}, {}),
+    ("POST", "/api/v2/cron/demo-job/trigger", {200, 400, 401, 404, 422}, {}),
+    ("DELETE", "/api/v2/cron/demo-job", {200, 401, 404}, None),
+    ("POST", "/api/v2/llm/endpoints/discover", {200, 400, 401, 422, 503}, {}),
+    ("POST", "/api/v2/llm/endpoints/probe_vision", {200, 400, 401, 422, 503}, {}),
+    ("POST", "/api/v2/llm/endpoints/hotload", {200, 400, 401, 422, 503}, {}),
+    ("POST", "/api/v2/llm/profiles", {200, 400, 401, 422}, {}),
+    ("DELETE", "/api/v2/llm/profiles/demo-profile", {200, 401, 404}, None),
+    ("GET", "/api/v2/files/roots", {200, 401}, None),
+    ("GET", "/api/v2/files?path=.", {200, 400, 401, 404}, None),
+    ("PUT", "/api/v2/files", {200, 400, 401, 403, 422}, {"path": "demo.txt", "content": "hello"}),
+]
+
+
 @pytest.fixture
 def smoke_client() -> TestClient:
     """Boot the daemon with cognition enabled + minimal scheduler/state
@@ -144,6 +197,9 @@ def smoke_client() -> TestClient:
     from unittest.mock import AsyncMock
     fake_sched.list_tasks = AsyncMock(return_value=[])
     fake_sched.get_task = AsyncMock(return_value=None)
+    fake_sched.snapshot_graph_state = AsyncMock(
+        return_value=GraphState(thread_id="smoke", run_id="smoke")
+    )
     app.state.task_scheduler = fake_sched
     fake_evol = MagicMock()
     # cognition router calls .list_pending() — match the real surface
@@ -195,4 +251,40 @@ def test_smoke_every_ui_url_resolves(smoke_client: TestClient) -> None:
         "  - METHOD_MISMATCH (405): frontend method ≠ backend decorator\n"
         "  - HANDLER_CRASH (5xx≠503): inspect handler stack trace\n"
         "  - UNEXPECTED: check expected-status-set in inventory"
+    )
+
+
+def _request_inventory_entry(
+    client: TestClient,
+    method: str,
+    url: str,
+    body: dict | None,
+):
+    if method == "GET":
+        return client.get(url)
+    if method == "POST":
+        return client.post(url, json=body or {})
+    if method == "PATCH":
+        return client.patch(url, json=body or {})
+    if method == "PUT":
+        return client.put(url, json=body or {})
+    if method == "DELETE":
+        return client.delete(url)
+    return client.request(method, url, json=body)
+
+
+def test_smoke_every_react_mission_control_url_resolves(smoke_client: TestClient) -> None:
+    """Every API URL used by ``webui/src`` should reach a backend handler."""
+    failures: list[tuple[str, str, int, str]] = []
+    for method, url, expected_set, body in REACT_UI_ENDPOINT_INVENTORY:
+        r = _request_inventory_entry(smoke_client, method, url, body)
+        kind = _failure_kind(r.status_code, expected_set)
+        if kind is not None:
+            failures.append((method, url, r.status_code, kind))
+    assert not failures, (
+        "React Mission Control endpoint inventory has broken routes:\n  "
+        + "\n  ".join(
+            f"{m} {url} -> {st} [{kind}]"
+            for m, url, st, kind in failures
+        )
     )

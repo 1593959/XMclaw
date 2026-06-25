@@ -3,7 +3,7 @@
 
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "../store/app";
-import { apiGet, type ApiError } from "../lib/api";
+import { apiGetFresh, type ApiError } from "../lib/api";
 import SegTabs from "../components/SegTabs";
 
 const ModelConfig = lazy(() => import("./ModelConfig"));
@@ -31,13 +31,20 @@ export default function SystemView() {
 
   useEffect(() => {
     if (!token) return;
-    apiGet<Health>("/api/v2/system/health", token)
+    const ctl = new AbortController();
+    apiGetFresh<Health>("/api/v2/system/health", token, ctl.signal)
       .then(setHealth)
       // degraded 时端点回 503 但 body 仍带 {status, checks} — 捞出来渲染。
-      .catch((err: ApiError) => setHealth((err?.body as Health) || null));
-    apiGet<{ lines?: string[]; logs?: string[] }>("/api/v2/logs?limit=120", token)
+      .catch((err: ApiError) => {
+        if (ctl.signal.aborted) return;
+        setHealth((err?.body as Health) || null);
+      });
+    apiGetFresh<{ lines?: string[]; logs?: string[] }>("/api/v2/logs?limit=120", token, ctl.signal)
       .then((d) => setLogs(d?.lines || d?.logs || []))
-      .catch(() => setLogs([]));
+      .catch(() => {
+        if (!ctl.signal.aborted) setLogs([]);
+      });
+    return () => ctl.abort();
   }, [token]);
 
   if (tab === "models" || tab === "cron") {

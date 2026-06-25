@@ -70,9 +70,12 @@ async def health_check(request: Request) -> JSONResponse:
             checks["llm"] = "not_configured"; ok = False
         mem = getattr(app_state, "memory_service", None)
         if mem is None:
-            # V2 memory service lives on agent._memory_service, not
-            # app.state.memory_service (legacy V1 path). Phase 7.A.6
-            # moved all memory wiring to the agent for unified access.
+            # V2 memory service may live on app.state.memory_v2_service
+            # (when the daemon boots in echo mode without a fully-wired
+            # agent) or on agent._memory_service (normal mode). Check
+            # both so the health probe reflects the actual backend state.
+            mem = getattr(app_state, "memory_v2_service", None)
+        if mem is None:
             agent = getattr(app_state, "agent", None)
             mem = getattr(agent, "_memory_service", None) if agent else None
         checks["memory"] = "ok" if mem is not None else "not_configured"

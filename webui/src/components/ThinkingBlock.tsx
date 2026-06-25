@@ -10,7 +10,9 @@ export default function ThinkingBlock({ content }: { content: string }) {
   return (
     <div className="border-l-2 border-mc-border pl-2">
       <button
+        type="button"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
         className="text-[11px] text-mc-faint cursor-pointer hover:text-mc-muted"
       >
         {open ? "▾ 思考过程" : "▸ 思考过程"}
