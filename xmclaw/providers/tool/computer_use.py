@@ -76,6 +76,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import difflib
+import hashlib
 import json
 import os
 import platform
@@ -796,6 +797,13 @@ _LEGACY_TOOL_MAP: dict[str, tuple[str, dict]] = {
     "gui_send_chat":        ("gui_send_chat", {}),
 }
 
+_READ_ONLY_ACTIONS = {
+    "observe", "capture", "screen_size", "cursor_position", "list_windows",
+    "window_list", "ocr", "find_text", "find_on_screen", "region_capture",
+    "screen_region_capture", "find_image", "find_image_on_screen",
+    "ui_inspect",
+}
+
 _MUTATING_ACTIONS = {
     "move", "click", "double_click", "right_click", "drag", "scroll",
     "type", "key", "click_text", "click_image", "ui_click", "gui_send_chat",
@@ -807,7 +815,7 @@ _COMPUTER_USE_SPEC = ToolSpec(
     description=("""控制本地桌面：截图、点击、输入、滚动、应用管理。
 
 核心参数：
-- action: capture | click | double_click | right_click | scroll | type | key | wait | list_windows | focus_window | screen_size | cursor_position | move | drag | ocr | find_text | click_text | wait_for_text | region_capture | find_image | click_image | scroll_to_text | ui_inspect | ui_click | gui_send_chat
+- action: observe | capture | click | double_click | right_click | scroll | type | key | wait | list_windows | focus_window | screen_size | cursor_position | move | drag | ocr | find_text | click_text | wait_for_text | region_capture | find_image | click_image | scroll_to_text | ui_inspect | ui_click | gui_send_chat
 - element: 元素索引（SOM 模式截图后返回的编号）
 - coordinate: [x, y]（坐标模式 fallback）
 - capture_after: 动作后自动截图并返回（默认 true，对 mutating 动作）
@@ -831,7 +839,7 @@ _COMPUTER_USE_SPEC = ToolSpec(
                 "type": "string",
                 "description": (
                     "Sub-action to perform. One of: capture, click, double_click, "
-                    "right_click, scroll, type, key, wait, list_windows, focus_window, "
+                    "observe, capture, click, double_click, right_click, scroll, type, key, wait, list_windows, focus_window, "
                     "screen_size, cursor_position, move, drag, ocr, find_text, click_text, "
                     "wait_for_text, region_capture, find_image, click_image, scroll_to_text, "
                     "ui_inspect, ui_click, gui_send_chat"
@@ -968,6 +976,13 @@ class ComputerUseTools(ToolProvider):
         # SOM sticky state for element indexing
         self._last_som_elements: list[dict[str, Any]] = []
         self._last_som_overlay_path: str | None = None
+        # Unified computer-use runtime state: compact action log,
+        # last screen hash, and repeated no-change counter so the
+        # planner can switch routes instead of retrying the same click.
+        self._action_log: list[dict[str, Any]] = []
+        self._last_observation: dict[str, Any] | None = None
+        self._last_screen_hash: str | None = None
+        self._no_change_streak: int = 0
 
     def list_tools(self) -> list[ToolSpec]:
         return [_COMPUTER_USE_SPEC]
@@ -1080,6 +1095,7 @@ class ComputerUseTools(ToolProvider):
 
     async def _maybe_capture_after(
         self, result: ToolResult, call: ToolCall, t0: float,
+        before_hash: str | None = None,
     ) -> ToolResult:
         """If capture_after is enabled, attach a post-action screenshot."""
         try:
@@ -1095,8 +1111,20 @@ class ComputerUseTools(ToolProvider):
                 metadata=result.metadata,
             )
         content = json.loads(result.content) if result.content else {}
+        after_hash = _sha256_file(path)
+        if before_hash and after_hash:
+            visual_changed = before_hash != after_hash
+            content["visual_changed"] = visual_changed
+            self._no_change_streak = 0 if visual_changed else self._no_change_streak + 1
+            content["no_change_streak"] = self._no_change_streak
+        if after_hash:
+            self._last_screen_hash = after_hash
         content["capture_after"] = True
         content["post_capture_path"] = path
+        content["coordinate_space"] = self._coordinate_space()
+        if self._no_change_streak >= 2:
+            content["strategy_switch_required"] = True
+            content["recoveries"] = self._computer_recoveries("no_visual_change")
         metadata = dict(result.metadata or {})
         metadata["attach_image"] = path
         return ToolResult(
@@ -1106,6 +1134,184 @@ class ComputerUseTools(ToolProvider):
             latency_ms=(time.perf_counter() - t0) * 1000.0,
             metadata=metadata,
         )
+
+    async def _screen_hash_snapshot(self) -> str | None:
+        try:
+            path = await self._quick_capture()
+        except Exception:  # noqa: BLE001
+            return self._last_screen_hash
+        digest = _sha256_file(path)
+        if digest:
+            self._last_screen_hash = digest
+        return digest
+
+    async def _observe(
+        self, call: ToolCall, t0: float, args: dict,
+    ) -> ToolResult:
+        include_screenshot = bool(args.get("include_screenshot", True))
+        include_ocr = bool(args.get("include_ocr", True))
+        include_uia = bool(args.get("include_uia", True))
+        include_action_log = bool(args.get("include_action_log", True))
+
+        observation: dict[str, Any] = {
+            "kind": "ScreenObservation",
+            "platform": platform.system(),
+            "coordinate_space": self._coordinate_space(),
+            "active_window": {
+                "hwnd": self._active_hwnd,
+                "pid": self._active_pid,
+                "title": self._last_window_title,
+            },
+            "no_change_streak": self._no_change_streak,
+            "recoveries": self._computer_recoveries(
+                "no_visual_change" if self._no_change_streak >= 2 else "observe"
+            ),
+            "recommended_next_actions": self._computer_next_actions(),
+        }
+
+        if include_screenshot:
+            try:
+                path = await self._quick_capture()
+                digest = _sha256_file(path)
+                if digest:
+                    self._last_screen_hash = digest
+                observation["screenshot"] = {
+                    "path": path,
+                    "sha256": digest,
+                }
+            except Exception as exc:  # noqa: BLE001
+                observation["screenshot_error"] = str(exc)
+
+        size_result = await self._screen_size(call, t0)
+        if size_result.ok:
+            observation["screen_size"] = _json_content(size_result.content)
+        else:
+            observation["screen_size_error"] = size_result.error
+
+        cursor_result = await self._cursor_position(call, t0)
+        if cursor_result.ok:
+            observation["cursor"] = _json_content(cursor_result.content)
+        else:
+            observation["cursor_error"] = cursor_result.error
+
+        windows_result = await self._window_list(call, t0, args)
+        if windows_result.ok:
+            observation["windows"] = _json_content(windows_result.content)
+        else:
+            observation["windows_error"] = windows_result.error
+
+        if include_ocr:
+            try:
+                ocr_result = await self._screen_ocr(call, t0, args)
+                if ocr_result.ok:
+                    observation["ocr"] = _json_content(ocr_result.content)
+                else:
+                    observation["ocr_error"] = ocr_result.error
+            except Exception as exc:  # noqa: BLE001
+                observation["ocr_error"] = str(exc)
+
+        if include_uia:
+            try:
+                uia_result = await self._ui_inspect(call, t0, args)
+                if uia_result.ok:
+                    observation["uia"] = _json_content(uia_result.content)
+                else:
+                    observation["uia_error"] = uia_result.error
+            except Exception as exc:  # noqa: BLE001
+                observation["uia_error"] = str(exc)
+
+        if include_action_log:
+            observation["action_log"] = list(self._action_log[-30:])
+
+        self._last_observation = observation
+        metadata: dict[str, Any] = {"computer_observation": observation}
+        shot = observation.get("screenshot")
+        if isinstance(shot, dict) and shot.get("path"):
+            metadata["attach_image"] = shot["path"]
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content=json.dumps(observation, ensure_ascii=False),
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            metadata=metadata,
+        )
+
+    async def _finalize_runtime_result(
+        self, call: ToolCall, t0: float, action: str, result: ToolResult,
+    ) -> ToolResult:
+        self._record_computer_action(action, result)
+        metadata = dict(result.metadata or {})
+        if not result.ok:
+            metadata.setdefault("recoveries", self._computer_recoveries(action))
+        metadata.setdefault("coordinate_space", self._coordinate_space())
+        return ToolResult(
+            call_id=result.call_id,
+            ok=result.ok,
+            content=result.content,
+            error=result.error,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            side_effects=result.side_effects,
+            schema_version=result.schema_version,
+            metadata=metadata,
+        )
+
+    def _record_computer_action(self, action: str, result: ToolResult) -> None:
+        self._action_log.append({
+            "ts": time.time(),
+            "action": action,
+            "ok": bool(result.ok),
+            "error": result.error,
+            "no_change_streak": self._no_change_streak,
+        })
+        del self._action_log[:-120]
+
+    def _coordinate_space(self) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "screen_coordinate_origin": "top_left",
+            "coordinate_unit": "physical_pixel_after_dpi_awareness",
+            "screenshot_to_click_scale": [1.0, 1.0],
+            "window_relative_coordinates": False,
+        }
+        try:
+            pg = self._require_pyautogui()
+            size = pg.size()
+            info["pyautogui_size"] = [int(size[0]), int(size[1])]
+        except Exception as exc:  # noqa: BLE001
+            info["pyautogui_error"] = str(exc)
+        return info
+
+    def _computer_next_actions(self) -> list[dict[str, str]]:
+        if self._no_change_streak >= 2:
+            return [
+                {"action": "ui_inspect/ui_click", "reason": "连续动作无画面变化，优先换 UIA 控件路线。"},
+                {"action": "ocr/find_text", "reason": "UIA 不可用时改用 OCR 文本定位。"},
+                {"action": "ask_user", "reason": "仍无变化时让用户确认窗口/权限/目标位置。"},
+            ]
+        return [
+            {"action": "ui_inspect", "reason": "能用控件树就不用裸坐标。"},
+            {"action": "capture(mode='som')", "reason": "需要视觉定位时先取 SOM 元素索引。"},
+        ]
+
+    def _computer_recoveries(self, state_or_action: str) -> list[dict[str, str]]:
+        if state_or_action == "no_visual_change":
+            return [
+                {"route": "UIA", "reason": "同一动作没有改变屏幕，改用控件树定位。"},
+                {"route": "OCR", "reason": "控件树不可用时按屏幕文字定位。"},
+                {"route": "SOM", "reason": "文字不稳定时重新截图并用编号元素点击。"},
+                {"route": "ask_user", "reason": "连续失败后确认权限、窗口焦点或目标是否存在。"},
+            ]
+        if state_or_action in {"click", "double_click", "right_click", "click_text", "click_image"}:
+            return [
+                {"route": "observe", "reason": "先确认窗口、坐标、缩放和画面是否变化。"},
+                {"route": "ui_inspect/ui_click", "reason": "优先使用原生控件模式。"},
+                {"route": "capture(mode='som')", "reason": "刷新元素编号后再点。"},
+            ]
+        if state_or_action in {"type", "key"}:
+            return [
+                {"route": "focus_window", "reason": "输入前确认焦点窗口。"},
+                {"route": "observe", "reason": "输入后检查光标位置与文本变化。"},
+            ]
+        return [{"route": "observe", "reason": "重新汇总桌面状态后再选择路线。"}]
 
     async def _update_sticky_window(self) -> None:
         """Record foreground window into sticky state (Windows only)."""
@@ -1330,6 +1536,9 @@ class ComputerUseTools(ToolProvider):
         if isinstance(capture_after, str):
             capture_after = capture_after.lower() in ("true", "1", "yes")
         capture_after = bool(capture_after)
+        before_hash: str | None = None
+        if capture_after and action in _MUTATING_ACTIONS:
+            before_hash = await self._screen_hash_snapshot()
 
         # Resolve element index -> coordinate (1-indexed, matched by `index` field)
         element_idx = args.get("element")
@@ -1372,7 +1581,9 @@ class ComputerUseTools(ToolProvider):
 
         result: ToolResult | None = None
 
-        if action == "capture":
+        if action == "observe":
+            result = await self._observe(call, t0, args)
+        elif action == "capture":
             mode = args.get("mode", "vision")
             if mode == "som":
                 result = await self._capture_with_som(call, t0, args)
@@ -1434,16 +1645,16 @@ class ComputerUseTools(ToolProvider):
             return _fail(call, t0, f"unknown action: {action!r}")
 
         # Post-action capture for mutating actions (except capture itself)
-        if capture_after and result and result.ok and action not in (
-            "capture", "screen_size", "cursor_position", "list_windows", "ocr",
-        ):
-            result = await self._maybe_capture_after(result, call, t0)
+        if capture_after and result and result.ok and action not in _READ_ONLY_ACTIONS:
+            result = await self._maybe_capture_after(result, call, t0, before_hash)
 
         # Update sticky window after capture
         if action == "capture" and result and result.ok:
             await self._update_sticky_window()
 
-        return result
+        if result is not None:
+            return await self._finalize_runtime_result(call, t0, action, result)
+        return _fail(call, t0, f"unknown action: {action!r}")
 
 
     # ── pyautogui import gate ──────────────────────────────────────
@@ -3447,6 +3658,24 @@ def _fail(call: ToolCall, t0: float, err: str) -> ToolResult:
         call_id=call.id, ok=False, content=None, error=err,
         latency_ms=(time.perf_counter() - t0) * 1000.0,
     )
+
+
+def _json_content(raw: Any) -> Any:
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return raw
+    return raw
+
+
+def _sha256_file(path: str | Path | None) -> str | None:
+    if not path:
+        return None
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _release_topmost(window: Any) -> bool:

@@ -105,7 +105,7 @@ try {
 # ── unified browser spec ──────────────────────────────────────────
 
 _BROWSER_ACTIONS = [
-    "navigate", "click", "press", "fill", "hover", "scroll",
+    "observe", "navigate", "click", "press", "fill", "hover", "scroll",
     "select_option", "upload", "wait_for", "back", "forward", "reload",
     "tabs", "tab_switch", "tab_close", "screenshot", "snapshot", "eval",
     "close", "click_ref", "type_ref", "dialog", "dialog_arm",
@@ -187,6 +187,14 @@ _BROWSER_SPEC = ToolSpec(
                 "enum": _BROWSER_ACTIONS,
                 "description": "Browser operation to perform.",
             },
+            "include_action_log": {
+                "type": "boolean",
+                "description": "For observe, include recent actions. Default true.",
+            },
+            "include_refs": {
+                "type": "boolean",
+                "description": "For observe, include current snapshot refs. Default true.",
+            },
             "capture_after": {
                 "type": "boolean",
                 "description": (
@@ -197,6 +205,7 @@ _BROWSER_SPEC = ToolSpec(
             "url": {"type": "string", "description": "URL for navigate or use_my_browser."},
             "wait_until": {"type": "string", "description": "'load' | 'domcontentloaded' | 'networkidle'. Default 'load'."},
             "visible": {"type": "boolean", "description": "Show a real browser window (navigate). Default true."},
+            "focus": {"type": "boolean", "description": "When visible=true, bring the window to the foreground and steal focus. Default false — the window opens quietly in the background so it does not interrupt the user."},
             "load_state": {"type": "string", "description": "Name of a saved storage-state profile (navigate)."},
             "persistent_profile": {"type": "boolean", "description": "Use a real Chrome profile dir (navigate)."},
             "profile_name": {"type": "string", "description": "Profile namespace for persistent_profile (navigate)."},
@@ -339,6 +348,17 @@ _BROWSER_OPEN_SPEC = ToolSpec(
                     "'github', 'qq') so site-specific cookies stay "
                     "isolated. Only meaningful when "
                     "``persistent_profile=true``."
+                ),
+            },
+            "focus": {
+                "type": "boolean",
+                "description": (
+                    "When visible=true, bring the window to the foreground "
+                    "and steal OS focus. **Default FALSE** — the window opens "
+                    "quietly in the background so it does NOT interrupt the "
+                    "user's current work. Only set true when the user has "
+                    "explicitly asked to watch the page or the task "
+                    "requires immediate visual attention (e.g. QR-code scan)."
                 ),
             },
             "use_system_chrome": {
@@ -1340,6 +1360,13 @@ class BrowserTools(ToolProvider):
         self._pending_downloads: dict[
             tuple[str, str], dict[str, Any],
         ] = {}
+        # Unified automation runtime bookkeeping. This is intentionally
+        # compact: enough to replay what the agent tried and to decide
+        # whether the next route should be refs, locator, DOM/CDP, or
+        # user confirmation.
+        self._action_log: dict[str, list[dict[str, Any]]] = {}
+        self._last_observation: dict[str, dict[str, Any]] = {}
+        self._session_state: dict[str, str] = {}
         # Guard the lazy init with a lock to avoid multiple concurrent
         # tool calls trying to spin up the browser at once.
         self._boot_lock = asyncio.Lock()
@@ -1415,7 +1442,9 @@ class BrowserTools(ToolProvider):
             capture_after = action in _MUTATING_ACTIONS
 
         # Dispatch to existing private methods (unchanged).
-        if action == "navigate":
+        if action == "observe":
+            result = await self._observe(call, t0)
+        elif action == "navigate":
             result = await self._open(call, t0)
         elif action == "click":
             result = await self._click(call, t0)
@@ -1497,6 +1526,7 @@ class BrowserTools(ToolProvider):
 
         if capture_after and result.ok and action != "screenshot":
             result = await self._append_screenshot(call, t0, result)
+        result = await self._finalize_runtime_result(call, t0, action, result)
         return result
 
     async def _append_screenshot(
@@ -1538,6 +1568,253 @@ class BrowserTools(ToolProvider):
             metadata=merged_metadata,
         )
 
+    async def _observe(self, call: ToolCall, t0: float) -> ToolResult:
+        """Return a compact BrowserObservation for planning and recovery."""
+        sid = call.session_id or "default"
+        page = self._pages.get(sid)
+        include_refs = bool(call.args.get("include_refs", True))
+        include_log = bool(call.args.get("include_action_log", True))
+
+        if page is None or (hasattr(page, "is_closed") and page.is_closed()):
+            obs = {
+                "kind": "BrowserObservation",
+                "session_id": sid,
+                "state": "no_page",
+                "has_page": False,
+                "recoveries": self._browser_recoveries("no_page"),
+                "recommended_next_actions": [
+                    {"action": "navigate", "reason": "当前会话还没有打开页面。"},
+                ],
+            }
+            self._last_observation[sid] = obs
+            return ToolResult(
+                call_id=call.id,
+                ok=True,
+                content=obs,
+                latency_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+
+        url = str(getattr(page, "url", "") or "")
+        title = ""
+        ready_state = "unknown"
+        try:
+            title = str(await page.title())
+        except Exception:  # noqa: BLE001
+            title = ""
+        try:
+            ready_state = str(await page.evaluate("document.readyState"))
+        except Exception:  # noqa: BLE001
+            ready_state = "unknown"
+
+        pending_dialogs = list(self._session_dialogs_pending.get(sid, []))
+        downloads = [
+            {"ticket": ticket, "armed_ts": item.get("armed_ts")}
+            for (s, ticket), item in self._pending_downloads.items()
+            if s == sid
+        ]
+        network = self._network_buffers.get(sid, [])
+        console = self._console_buffers.get(sid, [])
+        network_failures = [
+            e for e in network
+            if int(e.get("status") or 0) >= 400 or e.get("error")
+        ][-10:]
+        console_errors = [
+            e for e in console
+            if str(e.get("level", "")).lower() in {"error", "pageerror"}
+        ][-10:]
+
+        state = self._classify_browser_state(
+            ready_state=ready_state,
+            pending_dialogs=pending_dialogs,
+            pending_downloads=downloads,
+            network_failures=network_failures,
+            console_errors=console_errors,
+        )
+        refs = self._session_refs.get(sid, {}) if include_refs else {}
+        ctx = self._contexts.get(sid)
+        tabs: list[dict[str, Any]] = []
+        if ctx is not None:
+            try:
+                for idx, tab in enumerate(getattr(ctx, "pages", []) or []):
+                    tabs.append({
+                        "index": idx,
+                        "url": str(getattr(tab, "url", "") or ""),
+                        "active": tab is page,
+                    })
+            except Exception:  # noqa: BLE001
+                tabs = []
+
+        obs = {
+            "kind": "BrowserObservation",
+            "session_id": sid,
+            "state": state,
+            "has_page": True,
+            "url": url,
+            "title": title,
+            "ready_state": ready_state,
+            "tabs": tabs,
+            "pending_dialogs": pending_dialogs,
+            "pending_downloads": downloads,
+            "network_failures": network_failures,
+            "console_errors": console_errors,
+            "refs": refs,
+            "ref_count": len(refs),
+            "recoveries": self._browser_recoveries(state),
+            "recommended_next_actions": self._browser_next_actions(state, refs),
+        }
+        if include_log:
+            obs["action_log"] = list(self._action_log.get(sid, []))[-20:]
+        self._session_state[sid] = state
+        self._last_observation[sid] = obs
+        return ToolResult(
+            call_id=call.id,
+            ok=True,
+            content=obs,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+        )
+
+    async def _finalize_runtime_result(
+        self, call: ToolCall, t0: float, action: str, result: ToolResult,
+    ) -> ToolResult:
+        sid = call.session_id or "default"
+        self._record_browser_action(sid, action, result)
+        if action == "observe":
+            return result
+        if result.ok:
+            obs_result = await self._observe(
+                ToolCall(
+                    name="browser",
+                    args={
+                        "action": "observe",
+                        "include_action_log": False,
+                        "include_refs": True,
+                    },
+                    provenance=getattr(call, "provenance", "synthetic"),
+                    id=getattr(call, "id", ""),
+                    session_id=getattr(call, "session_id", None),
+                ),
+                t0,
+            )
+            if obs_result.ok:
+                return self._merge_browser_observation(result, obs_result.content)
+        return self._merge_browser_recoveries(result, self._browser_recoveries(action))
+
+    def _record_browser_action(
+        self, sid: str, action: str, result: ToolResult,
+    ) -> None:
+        entry = {
+            "ts": time.time(),
+            "action": action,
+            "ok": bool(result.ok),
+            "error": result.error,
+            "state_after": self._session_state.get(sid),
+        }
+        buf = self._action_log.setdefault(sid, [])
+        buf.append(entry)
+        del buf[:-80]
+
+    def _merge_browser_observation(
+        self, result: ToolResult, observation: Any,
+    ) -> ToolResult:
+        if not isinstance(observation, dict):
+            return result
+        content = (
+            dict(result.content)
+            if isinstance(result.content, dict)
+            else {"text": result.content}
+        )
+        content["observation"] = observation
+        metadata = dict(result.metadata or {})
+        metadata["browser_observation"] = observation
+        return ToolResult(
+            call_id=result.call_id,
+            ok=result.ok,
+            content=content,
+            error=result.error,
+            latency_ms=result.latency_ms,
+            side_effects=result.side_effects,
+            schema_version=result.schema_version,
+            metadata=metadata,
+        )
+
+    def _merge_browser_recoveries(
+        self, result: ToolResult, recoveries: list[dict[str, str]],
+    ) -> ToolResult:
+        metadata = dict(result.metadata or {})
+        metadata.setdefault("recoveries", recoveries)
+        return ToolResult(
+            call_id=result.call_id,
+            ok=result.ok,
+            content=result.content,
+            error=result.error,
+            latency_ms=result.latency_ms,
+            side_effects=result.side_effects,
+            schema_version=result.schema_version,
+            metadata=metadata,
+        )
+
+    def _classify_browser_state(
+        self,
+        *,
+        ready_state: str,
+        pending_dialogs: list[dict[str, Any]],
+        pending_downloads: list[dict[str, Any]],
+        network_failures: list[dict[str, Any]],
+        console_errors: list[dict[str, Any]],
+    ) -> str:
+        if pending_dialogs:
+            return "dialog_waiting"
+        if pending_downloads:
+            return "download_waiting"
+        if ready_state in {"loading", "interactive"}:
+            return "loading"
+        if network_failures:
+            return "network_failed"
+        if console_errors:
+            return "script_error"
+        return "ready"
+
+    def _browser_next_actions(
+        self, state: str, refs: dict[int, dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        if state == "dialog_waiting":
+            return [{"action": "dialog", "reason": "页面存在未处理的 JS 弹窗。"}]
+        if state == "download_waiting":
+            return [{"action": "download_next", "reason": "已有下载监听 ticket 等待完成。"}]
+        if state == "loading":
+            return [{"action": "wait_for", "reason": "页面仍在加载，先等待 load/domcontentloaded。"}]
+        if state in {"network_failed", "script_error"}:
+            return [
+                {"action": "network_log", "reason": "检查 4xx/5xx 或请求失败。"},
+                {"action": "get_console", "reason": "检查页面错误和脚本异常。"},
+            ]
+        if refs:
+            return [{"action": "click_ref/type_ref", "reason": "优先使用 snapshot refs，避免脆弱 CSS。"}]
+        return [{"action": "snapshot", "reason": "先建立可交互元素 refs。"}]
+
+    def _browser_recoveries(self, state_or_action: str) -> list[dict[str, str]]:
+        table: dict[str, list[dict[str, str]]] = {
+            "no_page": [{"route": "navigate", "reason": "当前会话没有页面。"}],
+            "loading": [{"route": "wait_for", "reason": "先等待页面进入稳定状态。"}],
+            "dialog_waiting": [{"route": "dialog", "reason": "先处理弹窗，页面动作可能被阻塞。"}],
+            "download_waiting": [{"route": "download_next", "reason": "下载流程应走下载监听。"}],
+            "network_failed": [{"route": "network_log", "reason": "定位失败请求，再决定重试或换 URL。"}],
+            "script_error": [{"route": "get_console", "reason": "页面脚本错误可能导致按钮无效。"}],
+            "click": [
+                {"route": "snapshot -> click_ref", "reason": "选择稳定 ref 替代 CSS/text selector。"},
+                {"route": "wait_for -> click", "reason": "元素可能尚未可操作。"},
+                {"route": "screenshot(annotate=true)", "reason": "用视觉确认目标位置。"},
+            ],
+            "fill": [
+                {"route": "snapshot -> type_ref", "reason": "选择稳定输入框 ref。"},
+                {"route": "wait_for", "reason": "输入框可能尚未渲染。"},
+            ],
+        }
+        return table.get(state_or_action, [
+            {"route": "observe", "reason": "重新汇总页面状态后再决定下一步。"},
+            {"route": "snapshot", "reason": "刷新 DOM/a11y 视图与 refs。"},
+        ])
+
     async def close_session(self, session_id: str) -> None:
         """Tear down a session's page + context. Safe to call repeatedly."""
         page = self._pages.pop(session_id, None)
@@ -1577,6 +1854,9 @@ class BrowserTools(ToolProvider):
         # Wave 25.2 / 25.3 / 25.4: drop per-session state.
         self._session_storage_state.pop(session_id, None)
         self._console_buffers.pop(session_id, None)
+        self._action_log.pop(session_id, None)
+        self._last_observation.pop(session_id, None)
+        self._session_state.pop(session_id, None)
         # 2026-05-28 P0.1 / P0.2 / P2.4 / P3.5: drop ref map +
         # dialog records + pre-arm + network log on session close.
         self._session_refs.pop(session_id, None)
@@ -2538,14 +2818,11 @@ class BrowserTools(ToolProvider):
             self._session_storage_state[sid] = str(state_path)
         page = await self._page_for(sid, headless=headless)
         resp = await page.goto(url, wait_until=wait_until)
-        # Headed mode: pop the window to the user's foreground so
-        # they actually SEE the navigation. Without this the Chrome
-        # window often opens behind the chat (Windows blocks
-        # background-process foreground-stealing by default) — the
-        # user-visible symptom is "agent says it opened the page
-        # but I see nothing." See ``_bring_to_foreground`` for the
-        # layered fallback strategy.
-        await self._bring_to_foreground(sid, page)
+        # focus=true (opt-in): pop the window to the user's foreground.
+        # Default false: the window opens quietly in the background
+        # so it does NOT interrupt the user's current work.
+        if call.args.get("focus"):
+            await self._bring_to_foreground(sid, page)
         final_url = page.url
         title = await page.title()
         status = resp.status if resp is not None else None

@@ -214,6 +214,28 @@ async def test_cursor_position_returns_xy(tools, fake_pyautogui):
     assert _json(r) == {"x": 123, "y": 456}
 
 
+async def test_observe_returns_unified_screen_observation(
+    tools, fake_mss, fake_pyautogui, fake_pygetwindow,
+):
+    r = await tools.invoke(_call(
+        "computer_use",
+        {
+            "action": "observe",
+            "include_ocr": False,
+            "include_uia": False,
+        },
+    ))
+    assert r.ok, r.error
+    payload = _json(r)
+    assert payload["kind"] == "ScreenObservation"
+    assert payload["screen_size"] == {"width": 1920, "height": 1080}
+    assert payload["cursor"] == {"x": 123, "y": 456}
+    assert payload["windows"]["count"] >= 1
+    assert "coordinate_space" in payload
+    assert "screenshot" in payload
+    assert r.metadata.get("attach_image") == payload["screenshot"]["path"]
+
+
 # ── Mouse ─────────────────────────────────────────────────────────
 
 

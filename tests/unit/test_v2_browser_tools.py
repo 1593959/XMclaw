@@ -489,6 +489,32 @@ async def test_snapshot_returns_text_and_links(patched_browser: BrowserTools) ->
 
 
 @pytest.mark.asyncio
+async def test_observe_returns_unified_browser_observation(
+    patched_browser: BrowserTools,
+) -> None:
+    await patched_browser.invoke(_call(
+        "browser", {"action": "navigate", "url": "https://example.com"},
+        session_id="s1",
+    ))
+    snap = await patched_browser.invoke(_call(
+        "browser", {"action": "snapshot"}, session_id="s1",
+    ))
+    assert snap.ok is True
+
+    obs = await patched_browser.invoke(_call(
+        "browser", {"action": "observe"}, session_id="s1",
+    ))
+
+    assert obs.ok is True
+    assert obs.content["kind"] == "BrowserObservation"
+    assert obs.content["state"] in {"ready", "loading", "script_error", "network_failed"}
+    assert obs.content["url"] == "https://example.com"
+    assert "recoveries" in obs.content
+    assert obs.content["ref_count"] >= 1
+    assert isinstance(obs.content["action_log"], list)
+
+
+@pytest.mark.asyncio
 async def test_sessions_are_isolated(patched_browser: BrowserTools) -> None:
     """Two different session_ids must get independent pages / contexts."""
     await patched_browser.invoke(_call(
