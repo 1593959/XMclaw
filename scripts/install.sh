@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
-# XMclaw one-shot installer for Linux / macOS.
+# XMclaw one-shot installer for Linux / macOS / WSL.
 #
 #   curl -fsSL https://raw.githubusercontent.com/1593959/XMclaw/main/scripts/install.sh | bash
 #
-# Installs the latest published `xmclaw` into an isolated virtualenv at
-# ~/.xmclaw-venv and drops a launcher in ~/.local/bin/xmclaw. The venv
-# is fully owned by the user — no sudo. Re-running upgrades in place.
-#
-# Skips service registration — that's platform-specific and belongs in
-# deploy/systemd or deploy/launchd, not a generic installer. Run
-# `xmclaw start` or set up the relevant unit file afterwards.
+# Installs XMclaw directly from GitHub into an isolated virtualenv at
+# ~/.xmclaw-venv, installs optional runtime dependencies, installs
+# Playwright Chromium, and drops a launcher in ~/.local/bin/xmclaw.
+# Re-running upgrades in place. No sudo required.
 set -euo pipefail
 
 VENV_DIR="${XMCLAW_VENV:-$HOME/.xmclaw-venv}"
 LAUNCHER_DIR="${XMCLAW_LAUNCHER_DIR:-$HOME/.local/bin}"
 LAUNCHER="$LAUNCHER_DIR/xmclaw"
 PYTHON="${PYTHON:-python3}"
+REF="${XMCLAW_REF:-main}"
+REPO_URL="${XMCLAW_REPO:-https://github.com/1593959/XMclaw.git}"
 
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
     echo "error: $PYTHON not found. Install Python 3.10+ and re-run." >&2
     exit 1
 fi
+if ! command -v git >/dev/null 2>&1; then
+    echo "error: git not found. Install git and re-run." >&2
+    exit 1
+fi
 
-# Python 3.10+ required — XMclaw uses PEP 604 union syntax throughout.
 if ! "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
     echo "error: $PYTHON is $($PYTHON -V 2>&1); XMclaw needs 3.10 or newer." >&2
     exit 1
@@ -35,15 +37,15 @@ if [ ! -d "$VENV_DIR" ]; then
     "$PYTHON" -m venv "$VENV_DIR"
 fi
 
-# `pip install -U xmclaw` upgrades on repeat runs. Using the venv's pip
-# directly avoids inheriting a globally-activated venv that'd scramble
-# which interpreter hosts XMclaw.
 "$VENV_DIR/bin/pip" install --upgrade pip
-"$VENV_DIR/bin/pip" install --upgrade xmclaw
+"$VENV_DIR/bin/pip" install --upgrade "xmclaw[all] @ git+$REPO_URL@$REF"
 
-# Launcher is a thin shim so users can `xmclaw ...` without activating
-# the venv. Re-created each run so a venv relocation (renamed $HOME,
-# moved to another disk) is a one-command fix.
+if ! "$VENV_DIR/bin/python" -m playwright install chromium; then
+    echo "warning: Playwright Chromium install failed." >&2
+    echo "         Browser automation can be installed later with:" >&2
+    echo "         $VENV_DIR/bin/python -m playwright install chromium" >&2
+fi
+
 cat > "$LAUNCHER" <<'LAUNCH'
 #!/usr/bin/env bash
 exec "__VENV__/bin/xmclaw" "$@"
@@ -52,7 +54,7 @@ sed -i.bak "s|__VENV__|$VENV_DIR|" "$LAUNCHER" && rm -f "$LAUNCHER.bak"
 chmod +x "$LAUNCHER"
 
 echo
-echo "✓ XMclaw installed."
+echo "[OK] XMclaw installed from $REPO_URL@$REF."
 echo "  venv:     $VENV_DIR"
 echo "  launcher: $LAUNCHER"
 echo

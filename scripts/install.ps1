@@ -2,8 +2,9 @@
 #
 #   irm https://raw.githubusercontent.com/1593959/XMclaw/main/scripts/install.ps1 | iex
 #
-# Installs the latest published `xmclaw` into an isolated venv at
-# %USERPROFILE%\.xmclaw-venv and drops a launcher in
+# Installs XMclaw directly from GitHub into an isolated venv at
+# %USERPROFILE%\.xmclaw-venv, installs optional runtime dependencies,
+# installs Playwright Chromium, and drops a launcher in
 # %USERPROFILE%\.xmclaw-venv\Scripts\ (added to User PATH if missing).
 # No admin required.
 #
@@ -14,6 +15,8 @@ $ErrorActionPreference = "Stop"
 
 $VenvDir = if ($env:XMCLAW_VENV) { $env:XMCLAW_VENV } else { Join-Path $HOME ".xmclaw-venv" }
 $Python  = if ($env:PYTHON)       { $env:PYTHON       } else { "python" }
+$Ref     = if ($env:XMCLAW_REF)   { $env:XMCLAW_REF   } else { "main" }
+$RepoUrl = if ($env:XMCLAW_REPO)  { $env:XMCLAW_REPO  } else { "https://github.com/1593959/XMclaw.git" }
 
 function Test-PythonVersion {
     param([string]$Exe)
@@ -31,6 +34,10 @@ if (-not (Get-Command $Python -ErrorAction SilentlyContinue)) {
     Write-Error "error: $Python not found. Install Python 3.10+ from https://python.org and re-run."
     exit 1
 }
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Error "error: git not found. Install Git for Windows from https://git-scm.com/download/win and re-run."
+    exit 1
+}
 if (-not (Test-PythonVersion -Exe $Python)) {
     Write-Error "error: $Python is too old (need 3.10+)."
     exit 1
@@ -45,10 +52,16 @@ $VenvPip     = Join-Path $VenvDir "Scripts\pip.exe"
 $VenvXmclaw  = Join-Path $VenvDir "Scripts\xmclaw.exe"
 
 & $VenvPip install --upgrade pip
-& $VenvPip install --upgrade xmclaw
+& $VenvPip install --upgrade "xmclaw[all] @ git+$RepoUrl@$Ref"
+
+try {
+    & $VenvDir\Scripts\python.exe -m playwright install chromium
+} catch {
+    Write-Warning "Playwright Chromium install failed. Browser automation can still be installed later with: python -m playwright install chromium"
+}
 
 Write-Host ""
-Write-Host "[OK] XMclaw installed."
+Write-Host "[OK] XMclaw installed from $RepoUrl@$Ref."
 Write-Host "  venv:     $VenvDir"
 Write-Host "  launcher: $VenvXmclaw"
 Write-Host ""

@@ -24,49 +24,82 @@ Reach it however suits the moment:
 
 Use any model — Anthropic / OpenAI / OpenRouter / Moonshot Kimi / DeepSeek / MiniMax / DashScope / Qwen / 本地 Ollama — switch with one config change. Plus **tier-based routing**: cheap models for trivial turns, strong models for tools/complex work, automatic via regex classifier (no LLM call to decide what model to call).
 
-[Quick Start](#-quick-start) · [What's different](#-whats-different) · [Architecture](#-architecture-briefly) · [Memory v3](#-memory-v3) · [Tools](#-tools) · [Docs](./docs/JARVIS_IMPLEMENTATION_PLAN_2026.md) · [Changelog](./CHANGELOG.md)
+[Quick Start](#quick-start) · [What's different](#whats-different) · [Architecture](#architecture-briefly) · [Memory v3](#memory-v3) · [Tools](#tools) · [Docs](./docs/JARVIS_IMPLEMENTATION_PLAN_2026.md) · [Changelog](./CHANGELOG.md)
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
+
+Install from GitHub in one command. The installer creates an isolated virtualenv,
+installs `xmclaw[all]`, installs Playwright Chromium for browser automation, and
+adds the `xmclaw` launcher to your user PATH.
+
+**Windows PowerShell**
+
+```powershell
+irm https://raw.githubusercontent.com/1593959/XMclaw/main/scripts/install.ps1 | iex
+```
+
+**macOS / Linux / WSL**
 
 ```bash
-git clone https://github.com/1593959/XMclaw.git && cd XMclaw
-pip install -e .
+curl -fsSL https://raw.githubusercontent.com/1593959/XMclaw/main/scripts/install.sh | bash
+```
+
+Then start XMclaw:
+
+```bash
+xmclaw config init
 xmclaw start                  # daemon up on 127.0.0.1:8766
 ```
 
-Open `http://127.0.0.1:8766/ui/` — the web UI's **first-run setup banner** has three inline forms (LLM key · persona · embedding). Fill in, restart, talk to an agent that owns your machine.
+Open `http://127.0.0.1:8766/ui/`. The web UI's first-run setup banner walks
+through LLM key, persona, and embedding setup. Prefer a wizard?
+`xmclaw onboard` walks the same steps in the terminal.
 
-Prefer a wizard? `xmclaw onboard` walks the same three steps in the terminal.
+Install a specific branch, tag, or commit by setting `XMCLAW_REF`:
+
+```powershell
+$env:XMCLAW_REF="main"; irm https://raw.githubusercontent.com/1593959/XMclaw/main/scripts/install.ps1 | iex
+```
+
+```bash
+XMCLAW_REF=main curl -fsSL https://raw.githubusercontent.com/1593959/XMclaw/main/scripts/install.sh | bash
+```
+
+Developer checkout:
+
+```bash
+git clone https://github.com/1593959/XMclaw.git && cd XMclaw
+pip install -e ".[dev,all]"
+python -m playwright install chromium
+```
 
 ```bash
 xmclaw chat                   # interactive REPL
-xmclaw chat --plan            # plan mode — agent proposes steps, you approve
-xmclaw doctor                 # 28 health checks, 5 auto-fixable
+xmclaw chat --plan            # plan mode: agent proposes steps, you approve
+xmclaw doctor                 # health checks and auto-fixable diagnostics
 xmclaw skill list-marketplace # browse the curated skill catalog
-xmclaw skill install <id>     # clone + scan + register a community skill
+xmclaw skill install <id>     # clone, scan, and register a community skill
 xmclaw stop
 ```
 
 **Isolated dev sandbox** (recommended for hacking on XMclaw itself):
 
 ```powershell
-./start-dev.ps1   # PowerShell — XMC_DATA_DIR=./.data, port 8766, no prod ~/.xmclaw collision
+./start-dev.ps1   # XMC_DATA_DIR=./.data, port 8766, no prod ~/.xmclaw collision
 ```
 
 **Mobile / outside-the-LAN access**:
 
 ```bash
-scripts/tunnel.ps1            # Windows — wraps cloudflared quick tunnel
+scripts/tunnel.ps1            # Windows: wraps cloudflared quick tunnel
 scripts/tunnel.sh             # Linux / macOS / WSL
                               # *.trycloudflare.com URL until Ctrl+C
                               # Pairing-token auth still gates every /api/v2/* request
 ```
 
-Python ≥ 3.10. Cross-platform (Windows is a first-class target). Web UI is plain ESM served by FastAPI `StaticFiles` — no Node.js build step or runtime required.
-
-**Phone-first**: set `channels.feishu.enabled = true` + `app_id` / `app_secret` in `daemon/config.json` (飞书 open platform → 创建应用 → 启用机器人 + 订阅 `im.message.receive_v1` over WebSocket long-poll). After restart, `@` the bot in any 飞书 chat and you're talking to the same AgentLoop the web UI hits. Drop `/订阅` in that chat to register it as the proactive-push target — calendar reminders + idle check-ins land on 飞书's native push, lock screen and all.
+Python >= 3.10. Cross-platform; Windows is a first-class target.
 
 ---
 
