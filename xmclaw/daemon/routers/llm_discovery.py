@@ -26,7 +26,6 @@ Design:
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import time
 from pathlib import Path
@@ -34,6 +33,12 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
+from xmclaw.daemon.config_store import (
+    load_config_file,
+    replace_runtime_config,
+    request_config_file,
+    write_config_file,
+)
 
 router = APIRouter(prefix="/api/v2/llm/endpoints", tags=["llm-discovery"])
 
@@ -70,33 +75,15 @@ def _redact_key(key: str | None) -> str:
 
 
 def _config_path(request: Request) -> Path | None:
-    cfg_path = getattr(request.app.state, "config_path", None)
-    if cfg_path:
-        return Path(cfg_path)
-    fallback = Path("daemon") / "config.json"
-    return fallback if fallback.exists() else None
+    return request_config_file(request)
 
 
 def _load_config(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"existing config is invalid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        return {}
-    return data
+    return load_config_file(path)
 
 
 def _atomic_write(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    write_config_file(path, data)
 
 
 @router.post("/discover")
@@ -565,6 +552,7 @@ async def apply_discovered_models(
         return JSONResponse(
             {"ok": False, "error": f"write failed: {exc}"}, status_code=500
         )
+    replace_runtime_config(request, cfg)
 
     return JSONResponse({
         "ok": True,
@@ -757,6 +745,7 @@ async def hotload_profiles(request: Request) -> JSONResponse:
                 profiles[idx] = prof_entry
 
         _atomic_write(target, cfg)
+        replace_runtime_config(request, cfg)
     except Exception:  # noqa: BLE001
         pass  # persistence failure doesn't invalidate the hot-load
 

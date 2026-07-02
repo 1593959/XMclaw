@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Request
 from starlette.responses import JSONResponse
 
+from xmclaw.daemon.config_store import request_config_file
 from xmclaw.daemon.config_schema import validate_config
 from xmclaw.utils.fs_locks import atomic_write_text
 
@@ -424,8 +425,7 @@ def _current_config(request: Request) -> dict[str, Any]:
 
 
 def _config_path(request: Request) -> Path | None:
-    raw = getattr(request.app.state, "config_path", None)
-    return Path(raw) if raw else None
+    return request_config_file(request)
 
 
 def _config_path_str(request: Request) -> str | None:

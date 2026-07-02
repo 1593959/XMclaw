@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 
+from xmclaw.daemon.config_store import resolve_config_file
 from xmclaw.utils.paths import file_memory_dir
 
 router = APIRouter(prefix="/api/v2/memory", tags=["memory"])
@@ -343,14 +344,15 @@ async def configure_relevant_picker(request: Request) -> JSONResponse:
     cfg.setdefault("evolution", {}).setdefault("memory", {})["relevant_picker"] = {
         "enabled": enabled, "k": k, "max_chars": max_chars,
     }
-    config_path = getattr(state, "config_path", None)
+    config_path = resolve_config_file(getattr(state, "config_path", None))
     if config_path:
         try:
-            from pathlib import Path as _P
             from xmclaw.utils.fs_locks import atomic_write_text
-            p = _P(config_path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(p, json.dumps(cfg, indent=2, ensure_ascii=False))
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                config_path,
+                json.dumps(cfg, indent=2, ensure_ascii=False),
+            )
         except OSError as exc:
             return JSONResponse(
                 {"ok": False, "error": f"config write failed: {exc}"},
@@ -442,16 +444,17 @@ async def configure_embedding(request: Request) -> JSONResponse:
         return JSONResponse(
             {"ok": False, "error": "no config attached to daemon"}, status_code=500,
         )
-    config_path = getattr(state, "config_path", None)
+    config_path = resolve_config_file(getattr(state, "config_path", None))
     cfg.setdefault("evolution", {}).setdefault("memory", {})["embedding"] = section
 
     if config_path:
         try:
-            from pathlib import Path as _P
             from xmclaw.utils.fs_locks import atomic_write_text
-            p = _P(config_path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(p, json.dumps(cfg, indent=2, ensure_ascii=False))
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                config_path,
+                json.dumps(cfg, indent=2, ensure_ascii=False),
+            )
         except OSError as exc:
             return JSONResponse(
                 {"ok": False, "error": f"config write failed: {exc}"},
@@ -494,18 +497,19 @@ async def switch_provider(request: Request) -> JSONResponse:
         return JSONResponse(
             {"ok": False, "error": "no config attached to daemon"}, status_code=500,
         )
-    config_path = getattr(state, "config_path", None)
+    config_path = resolve_config_file(getattr(state, "config_path", None))
     cfg.setdefault("evolution", {}).setdefault("memory", {})["provider"] = provider
     if config_path:
         try:
-            from pathlib import Path as _P
             from xmclaw.utils.fs_locks import atomic_write_text
-            p = _P(config_path)
-            p.parent.mkdir(parents=True, exist_ok=True)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
             # B-74: atomic write so a crash mid-save doesn't leave the
             # daemon's config truncated (which would prevent the next
             # restart from loading anything).
-            atomic_write_text(p, json.dumps(cfg, indent=2, ensure_ascii=False))
+            atomic_write_text(
+                config_path,
+                json.dumps(cfg, indent=2, ensure_ascii=False),
+            )
         except OSError as exc:
             return JSONResponse(
                 {"ok": False, "error": f"config write failed: {exc}"},

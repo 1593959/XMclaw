@@ -26,6 +26,7 @@ from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
 from xmclaw import __version__
+from xmclaw.daemon.config_store import resolve_config_file
 from xmclaw.daemon.agent_context import (
     AgentContextMiddleware,
     use_current_agent_id,
@@ -982,8 +983,7 @@ def create_app(
                 {"ok": False, "error": "body must be a JSON object"},
                 status_code=400,
             )
-        target_path = config_path or Path("daemon") / "config.json"
-        target_path = Path(target_path)
+        target_path = resolve_config_file(config_path) or Path("daemon") / "config.json"
         try:
             existing: dict[str, Any] = {}
             if target_path.exists():
@@ -1039,8 +1039,7 @@ def create_app(
                 status_code=400,
             )
 
-        target_path = config_path or Path("daemon") / "config.json"
-        target_path = Path(target_path)
+        target_path = resolve_config_file(config_path) or Path("daemon") / "config.json"
 
         if target_path.exists():
             try:
@@ -1405,7 +1404,7 @@ def create_app(
         if config_path:
             try:
                 from xmclaw.utils.fs_locks import atomic_write_text
-                p = Path(str(config_path))
+                p = resolve_config_file(config_path) or Path("daemon") / "config.json"
                 p.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write_text(
                     p, json.dumps(config, indent=2, ensure_ascii=False),
@@ -1444,7 +1443,7 @@ def create_app(
         )
         body = payload or {}
         apply_fix = bool(body.get("fix", False))
-        target_path = config_path or Path("daemon") / "config.json"
+        target_path = resolve_config_file(config_path) or Path("daemon") / "config.json"
         ctx = DoctorContext(
             config_path=Path(target_path),
             host="127.0.0.1",

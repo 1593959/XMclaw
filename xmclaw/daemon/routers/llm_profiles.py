@@ -17,13 +17,18 @@ existing ``PUT /api/v2/config/llm`` endpoint owns that block.
 """
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
+from xmclaw.daemon.config_store import (
+    load_config_file,
+    replace_runtime_config,
+    request_config_file,
+    write_config_file,
+)
 
 router = APIRouter(prefix="/api/v2/llm/profiles", tags=["llm-profiles"])
 
@@ -47,35 +52,16 @@ def _redact_key(key: str | None) -> str:
 
 
 def _config_path(request: Request) -> Path | None:
-    """Where to write the updated config. Same fallback logic as
-    ``PUT /api/v2/config/llm`` so the two endpoints stay coherent."""
-    cfg_path = getattr(request.app.state, "config_path", None)
-    if cfg_path:
-        return Path(cfg_path)
-    fallback = Path("daemon") / "config.json"
-    return fallback if fallback.exists() else None
+    """Where to write the updated config."""
+    return request_config_file(request)
 
 
 def _load_config(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"existing config is invalid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        return {}
-    return data
+    return load_config_file(path)
 
 
 def _atomic_write(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    write_config_file(path, data)
 
 
 @router.get("")
@@ -351,6 +337,7 @@ async def upsert_profile(request: Request, payload: dict[str, Any]) -> JSONRespo
         _atomic_write(target, cfg)
     except OSError as exc:
         return JSONResponse({"ok": False, "error": f"write failed: {exc}"}, status_code=500)
+    replace_runtime_config(request, cfg)
 
     return JSONResponse({
         "ok": True,
@@ -407,6 +394,7 @@ async def set_profile_enabled(
         _atomic_write(target, cfg)
     except OSError as exc:
         return JSONResponse({"ok": False, "error": f"write failed: {exc}"}, status_code=500)
+    replace_runtime_config(request, cfg)
 
     # Live apply against the in-memory registry (no restart).
     registry = getattr(request.app.state, "llm_registry", None)
@@ -467,6 +455,7 @@ async def delete_profile(request: Request, profile_id: str) -> JSONResponse:
                         {"ok": False, "error": f"write failed: {exc}"},
                         status_code=500,
                     )
+                replace_runtime_config(request, cfg)
                 removed_from_disk = True
             # If default_profile_id pointed at the deleted id, clear it
             # so the daemon doesn't boot into a dangling default.
@@ -474,6 +463,7 @@ async def delete_profile(request: Request, profile_id: str) -> JSONResponse:
                 llm.pop("default_profile_id", None)
                 try:
                     _atomic_write(target, cfg)
+                    replace_runtime_config(request, cfg)
                 except OSError:
                     pass
 
@@ -545,6 +535,7 @@ async def set_default_profile(request: Request, payload: dict[str, Any]) -> JSON
         _atomic_write(target, cfg)
     except OSError as exc:
         return JSONResponse({"ok": False, "error": f"write failed: {exc}"}, status_code=500)
+    replace_runtime_config(request, cfg)
     return JSONResponse({
         "ok": True,
         "default_profile_id": new_id,
