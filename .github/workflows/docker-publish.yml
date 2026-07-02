@@ -73,6 +73,8 @@ jobs:
           push: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
