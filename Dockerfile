@@ -5,15 +5,15 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
+# Copy application code and install Python dependencies
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e ".[all]"
-
-# Copy application code
+COPY README.md ./
 COPY xmclaw/ ./xmclaw/
 COPY docs/ ./docs/
+RUN pip install --no-cache-dir -e .
 
 # Create data directories
 RUN mkdir -p /data/.xmclaw
