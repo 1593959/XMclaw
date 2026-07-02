@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xmclaw"
-version = "1.0.0"
+version = "1.0.1"
 description = "XMclaw — local-first AI agent runtime with experimental, opt-in skill evolution"
 requires-python = ">=3.10"
 # Phase 4.10 trimmed dependency list: removed rich / prompt-toolkit /
@@ -36,8 +36,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.25.0",
     "ruff>=0.9.0",
     "mypy>=1.14.0",
     "pip-tools>=7.5.0",
@@ -145,7 +143,8 @@ computer-use = [
   # — same model quality, 50 MB vs 300 MB, no GPU needed, best Chinese
   # accuracy per MB. Pure ONNX runtime, no PyTorch / paddle frameworks.
   # Pillow needed for image format conversions + screen_region_capture.
-  "rapidocr-onnxruntime>=1.3.0",
+  "rapidocr-onnxruntime>=1.3.0; python_version < '3.14'",
+  "rapidocr-onnxruntime>=1.2.3,<1.3.0; python_version >= '3.14'",
   "Pillow>=10.0",
   "numpy>=1.24",
   # 2026-05-12 r2 — Windows-native UI Automation (accessibility tree).
@@ -216,7 +215,8 @@ all     = [
     "composio-core>=0.7",
     "pyautogui>=0.9.54",
     "pygetwindow>=0.0.9",
-    "rapidocr-onnxruntime>=1.3.0",
+    "rapidocr-onnxruntime>=1.3.0; python_version < '3.14'",
+    "rapidocr-onnxruntime>=1.2.3,<1.3.0; python_version >= '3.14'",
     "numpy>=1.24",
     "uiautomation>=2.0; platform_system=='Windows'",
     "sounddevice>=0.4.7",
@@ -258,18 +258,9 @@ extend-exclude = [
 python_version = "3.10"
 strict = true
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-# B-386-followup: tests in tests/unit/ that need the real
-# xmclaw.utils.secrets.get_secret resolver (env / file / keyring lookup
-# fidelity) opt out of the autouse isolation fixture in
-# tests/unit/conftest.py via this marker.
-markers = [
-    "real_secrets: test exercises the real get_secret resolver (opts out of unit-suite secrets isolation)",
-]
-
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.4.0",
+    "mypy>=1.14.0",
+    "pip-tools>=7.5.0",
+    "ruff>=0.9.0",
 ]

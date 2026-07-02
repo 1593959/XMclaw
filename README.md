@@ -9,7 +9,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10+-blue.svg?style=for-the-badge" alt="Python"></a>
   <img src="https://img.shields.io/badge/Platform-Win%20%7C%20macOS%20%7C%20Linux-blue?style=for-the-badge" alt="Cross-platform">
-  <img src="https://img.shields.io/badge/Version-1.0.0-brightgreen?style=for-the-badge" alt="1.0.0">
+  <img src="https://img.shields.io/badge/Version-1.0.1-brightgreen?style=for-the-badge" alt="1.0.1">
 </p>
 
 XMclaw is **not a chatbot**. It is a runtime that thinks, acts, remembers across sessions, and — when you enable it — **speaks up on its own**: calendar reminders, idle check-ins, stale-project nudges, scheduled daily briefings. A single FastAPI daemon binds `127.0.0.1:8766`, hosts the **AgentLoop**, and composes pluggable **LLM / Tool / Memory / Channel** providers over a streaming `BehavioralEvent` bus.

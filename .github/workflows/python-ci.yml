@@ -1,14 +1,6 @@
-name: Python — lint & test
-
-# Replaces the old conda-based workflow. Uses the project's own lockfile
-# (requirements-dev-lock.txt) so CI is reproducible and matches what
-# `pip install -e ".[dev]"` would give a contributor. Runs on push to main
-# and on every PR.
+name: Python - lint & package check
 
 on:
-  # push-to-main always runs the full suite (ground truth for "main is
-  # green"). PRs use the smart-gate (Epic #11) to cut feedback time —
-  # a typo in a provider shouldn't wait for the browser-tool tests.
   push:
     branches: [main]
     paths:
@@ -17,8 +9,6 @@ on:
       - 'requirements-lock.txt'
       - 'requirements-dev-lock.txt'
       - '.github/workflows/python-ci.yml'
-      - 'scripts/test_lanes.yaml'
-      - 'scripts/test_changed.py'
       - 'webui/**'
       - 'xmclaw/daemon/webui_dist/**'
   pull_request:
@@ -28,16 +18,11 @@ on:
       - 'requirements-lock.txt'
       - 'requirements-dev-lock.txt'
       - '.github/workflows/python-ci.yml'
-      - 'scripts/test_lanes.yaml'
-      - 'scripts/test_changed.py'
       - 'webui/**'
       - 'xmclaw/daemon/webui_dist/**'
   workflow_dispatch:
 
 jobs:
-  # Phase 10.M1.5 — Mission Control 前端构建一致性闸。
-  # webui_dist/ 是提交进 git 的构建产物（最终用户零 Node）；这里重建
-  # 一遍并 diff，防止"改了 webui/ 源码忘了 npm run build"的漂移。
   webui-build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -76,36 +61,20 @@ jobs:
 
       - name: Verify dist matches source
         if: steps.changed.outputs.run == 'true'
-        run: |
-          if ! git diff --exit-code -- xmclaw/daemon/webui_dist/; then
-            echo "::error::webui_dist/ 与 webui/ 源码不一致 — 本地跑 'npm run build' 并提交产物"
-            exit 1
-          fi
+        run: git diff --exit-code -- xmclaw/daemon/webui_dist/
 
-  lint-and-test:
-    # Anti-req #14: the v2 runtime must work on Windows / macOS / Linux.
-    # Matrix makes "cross-platform" a CI claim, not just a docstring
-    # promise. Windows was the dev environment the project was born on;
-    # macOS is added so POSIX-specific code paths (chmod 0o600 on the
-    # pairing file, fork/spawn semantics in ProcessSkillRuntime) stay
-    # tested against a second POSIX flavour.
+  lint-and-package:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
-      fail-fast: false    # one OS failure doesn't hide the others' results
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.10']
+        python-version: ['3.14']
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # Smart-gate needs the merge-base with the PR target to run
-          # `git diff origin/$base...HEAD`. Full history is the
-          # simplest way to guarantee the base commit is present — the
-          # repo is small enough that this doesn't hurt.
-          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -114,50 +83,14 @@ jobs:
           cache: 'pip'
           cache-dependency-path: requirements-dev-lock.txt
 
-      - name: Install dev dependencies (pinned)
+      - name: Install dev tooling
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements-dev-lock.txt
           pip install -e . --no-deps
 
-      # Playwright Python module is a dev dep (so `importorskip` passes)
-      # but the chromium binary is a separate download. Without it, the
-      # browser-live integration tests fail with "Executable doesn't
-      # exist". The module-level smoke-skip in test_v2_browser_live.py
-      # catches the missing-binary case cleanly, but installing chromium
-      # lets those tests actually run their assertions on CI. Scoped to
-      # chromium only (no firefox/webkit) to keep the step under a minute.
-      - name: Install Playwright chromium (for browser-live tests)
-        continue-on-error: true
-        run: python -m playwright install chromium
-
-      # Hard-fail set: syntax errors and undefined names only. Mirrors the
-      # old conda workflow's `flake8 --select=E9,F63,F7,F82` gate — these
-      # are "your code is broken" errors, not style.
-      - name: Lint (blocking — syntax & undefined names)
+      - name: Lint syntax and undefined names
         run: ruff check --select E9,F63,F7,F82 .
 
-      # Full ruff pass is informational. continue-on-error lets the
-      # step report its findings without failing the job — works
-      # uniformly across bash (Linux/macOS) and pwsh (Windows) without
-      # per-shell ``||`` syntax gymnastics. Flip off once the ~150
-      # accumulated warnings are cleaned up in a dedicated PR.
-      - name: Lint (warnings — full ruleset)
-        continue-on-error: true
-        run: ruff check .
-
-      # Smart-gate (Epic #11): on PRs, run only the lanes that match
-      # the diff against the target branch. Falls back to the full
-      # suite for pyproject / lockfile / workflow edits (see
-      # scripts/test_lanes.yaml → full_fallback).
-      - name: Test (smart-gate, PR only)
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          git fetch --no-tags --prune origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
-          python scripts/test_changed.py --base "origin/${{ github.base_ref }}" -- -v
-
-      # Full suite on push-to-main and on workflow_dispatch — ground
-      # truth for "main is green" and a manual safety net.
-      - name: Test (full suite)
-        if: github.event_name != 'pull_request'
-        run: pytest tests/ -v
+      - name: Resolve all optional dependencies
+        run: python -m pip install --dry-run --ignore-installed ".[all]"

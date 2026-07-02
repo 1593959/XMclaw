@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-02
+
+### Fixed
+
+- Windows one-shot installer now avoids non-ASCII user-profile paths by using ASCII-only venv/temp fallbacks when needed.
+- `xmclaw[all]` now resolves on Python 3.14 by selecting the latest RapidOCR ONNX runtime version available for that interpreter.
+
+### Removed
+
+- Removed repository test, diagnosis, probe, and smoke-test files from the distributable source tree.
+- Removed pytest configuration and dev dependency entries after test cleanup.
+
 ### Added — MCP HTTP transport (SSE / streamableHttp)
 
 - `xmclaw/providers/tool/mcp_http_bridge.py` — new `MCPHttpBridge` class implementing JSON-RPC 2.0 over HTTP. Supports both `sse` (Server-Sent Events) and `streamableHttp` transports via `httpx`.

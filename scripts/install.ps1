@@ -2,10 +2,11 @@
 #
 #   irm https://raw.githubusercontent.com/1593959/XMclaw/main/scripts/install.ps1 | iex
 #
-# Installs XMclaw directly from GitHub into an isolated venv at
-# %USERPROFILE%\.xmclaw-venv, installs optional runtime dependencies,
-# installs Playwright Chromium, and drops a launcher in
-# %USERPROFILE%\.xmclaw-venv\Scripts\ (added to User PATH if missing).
+# Installs XMclaw directly from GitHub into an isolated venv, installs
+# optional runtime dependencies, installs Playwright Chromium, and drops
+# a launcher in the venv's Scripts directory (added to User PATH if missing).
+# The default venv is %USERPROFILE%\.xmclaw-venv; on Windows with a
+# non-ASCII user path it falls back to C:\xmclaw-venv.
 # No admin required.
 #
 # Service registration is intentionally out of scope — see
@@ -13,10 +14,34 @@
 
 $ErrorActionPreference = "Stop"
 
-$VenvDir = if ($env:XMCLAW_VENV) { $env:XMCLAW_VENV } else { Join-Path $HOME ".xmclaw-venv" }
 $Python  = if ($env:PYTHON)       { $env:PYTHON       } else { "python" }
 $Ref     = if ($env:XMCLAW_REF)   { $env:XMCLAW_REF   } else { "main" }
 $RepoUrl = if ($env:XMCLAW_REPO)  { $env:XMCLAW_REPO  } else { "https://github.com/1593959/XMclaw.git" }
+$IsWindowsHost = ($PSVersionTable.PSEdition -eq "Desktop") -or ($PSVersionTable.Platform -eq "Win32NT")
+
+function Test-AsciiPath {
+    param([string]$Path)
+    return $Path -cmatch '^[\x00-\x7F]+$'
+}
+
+$DefaultVenvDir = Join-Path $HOME ".xmclaw-venv"
+if ($env:XMCLAW_VENV) {
+    $VenvDir = $env:XMCLAW_VENV
+} elseif ($IsWindowsHost -and -not (Test-AsciiPath -Path $DefaultVenvDir)) {
+    $VenvDir = "C:\xmclaw-venv"
+    Write-Host "non-ASCII user path detected; using $VenvDir for the venv"
+} else {
+    $VenvDir = $DefaultVenvDir
+}
+
+if ($IsWindowsHost) {
+    $InstallTemp = if ($env:XMCLAW_TEMP) { $env:XMCLAW_TEMP } else { "C:\xmclaw-piptmp" }
+    if (-not (Test-Path $InstallTemp)) {
+        New-Item -ItemType Directory -Force -Path $InstallTemp | Out-Null
+    }
+    $env:TEMP = $InstallTemp
+    $env:TMP = $InstallTemp
+}
 
 function Test-PythonVersion {
     param([string]$Exe)
