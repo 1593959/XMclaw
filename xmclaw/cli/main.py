@@ -317,17 +317,18 @@ def serve(
     #      the running ``xmclaw`` package (``pip install -e .`` case).
     from xmclaw.utils.paths import data_dir
     _explicit = _Path(config)
-    _candidates = [
-        _explicit,
-        data_dir() / "config.json",
-        _Path("daemon/config.json"),
-        _Path(__file__).resolve().parent.parent.parent / "daemon" / "config.json",
-    ]
-    cfg_path = next(
-        (p for p in _candidates if p.exists()),
-        _explicit,  # fall back to the literal path so the warning stays accurate
-    )
-    if cfg_path != _explicit and cfg_path.exists():
+    _user_config = data_dir() / "config.json"
+    _default_config_arg = str(_explicit).replace("\\", "/") == "daemon/config.json"
+    if _default_config_arg:
+        _candidates = [
+            _user_config,
+            _Path("daemon/config.json"),
+            _Path(__file__).resolve().parent.parent.parent / "daemon" / "config.json",
+        ]
+        cfg_path = next((p for p in _candidates if p.exists()), _user_config)
+    else:
+        cfg_path = _explicit
+    if cfg_path != _explicit:
         typer.echo(f"  [ok]  config resolved: {cfg_path}")
     agent = None
     cfg: dict | None = None

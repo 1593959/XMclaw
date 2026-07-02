@@ -20,6 +20,14 @@ config_app = typer.Typer(
 )
 
 
+def _resolve_config_path(path: str) -> Path:
+    raw = Path(path)
+    if str(raw).replace("\\", "/") == "daemon/config.json":
+        from xmclaw.utils.paths import data_dir
+        return data_dir() / "config.json"
+    return raw
+
+
 def _default_config_template() -> dict:
     """Thin wrapper around the shared template so this module keeps its
     import surface stable. See :mod:`xmclaw.cli.config_template`."""
@@ -75,7 +83,7 @@ def config_init(
     import json as _json
     from pathlib import Path as _Path
 
-    target = _Path(path)
+    target = _resolve_config_path(path)
     if target.exists() and not force:
         typer.echo(
             f"  [!]   config already exists at {target}", err=True,
@@ -141,7 +149,7 @@ def config_set(
     import json as _json
     from pathlib import Path as _Path
 
-    target = _Path(path)
+    target = _resolve_config_path(path)
     if not target.exists():
         typer.echo(
             f"  [x]  no config at {target} -- run 'xmclaw config init' first",
@@ -511,7 +519,7 @@ def config_unset(
     """
     import json as _json
 
-    target = Path(path)
+    target = _resolve_config_path(path)
     if not target.exists():
         typer.echo(
             f"  [x]  no config at {target} -- run 'xmclaw config init' first",
@@ -627,7 +635,7 @@ def config_get(
     """
     import json as _json
 
-    target = Path(path)
+    target = _resolve_config_path(path)
     if not target.exists():
         typer.echo(
             f"  [x]  no config at {target} -- run 'xmclaw config init' first",
@@ -701,7 +709,7 @@ def config_show(
     """
     import json as _json
 
-    target = Path(path)
+    target = _resolve_config_path(path)
     if not target.exists():
         typer.echo(
             f"  [x]  no config at {target} -- run 'xmclaw config init' first",

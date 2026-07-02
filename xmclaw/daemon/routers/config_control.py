@@ -121,6 +121,11 @@ CONFIG_FIELDS: dict[str, dict[str, Any]] = {
         description="TTS 声音名称，例如 zh-CN-XiaoxiaoNeural。",
         restart_required=True,
     ),
+    "voice.tts.model": _field(
+        "voice", "语音合成模型", "string",
+        description="TTS 使用的模型名称，例如 step-audio-2.5-tts。",
+        restart_required=True,
+    ),
     "voice.tts.rate": _field(
         "voice", "语音合成语速", "string",
         description="TTS 语速，例如 +0%、+10%、-10%。",
